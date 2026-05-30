@@ -10,3 +10,14 @@ Exit codes (mirrors script.py's sys.exit pattern):
     2 = MANUAL REVIEW → hold; check review_queue.csv
     1 = REJECTED     → skip; check rejection_logs/
 """
+import sys
+import csv
+import json
+import re
+import time
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from pathlib import Path
+from typing import List, Dict, Tuple, Any, Optional
+import pdfplumber
