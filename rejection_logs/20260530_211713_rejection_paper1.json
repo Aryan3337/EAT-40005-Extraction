@@ -1,0 +1,90 @@
+{
+  "paper": "paper1.pdf",
+  "paper_name": "paper1",
+  "timestamp": "20260530_211713",
+  "model_used": "mistral-small3.1",
+  "outcome": "REJECTED",
+  "total_score": 2,
+  "max_possible": 100,
+  "score_pct": 2.0,
+  "thresholds": {
+    "reject_below": 60,
+    "manual_review_band": "60-75",
+    "auto_approve_above": 75
+  },
+  "rejection_reason": "Total score 2/100 (2.0%) is below the reject threshold of 60%.",
+  "review_reason": null,
+  "criteria": [
+    {
+      "name": "Structural Completeness",
+      "score": 0,
+      "max_score": 20,
+      "passed": false,
+      "evaluated_by": "fallback",
+      "justification": "Model evaluation failed \u2014 could not connect to Ollama or parse response.",
+      "flags": [
+        "Model unavailable"
+      ]
+    },
+    {
+      "name": "Peer-Review Quality",
+      "score": 0,
+      "max_score": 25,
+      "passed": false,
+      "evaluated_by": "fallback",
+      "justification": "Model evaluation failed \u2014 could not connect to Ollama or parse response.",
+      "flags": [
+        "Model unavailable"
+      ]
+    },
+    {
+      "name": "Climate and Domain Relevance",
+      "score": 0,
+      "max_score": 15,
+      "passed": false,
+      "evaluated_by": "fallback",
+      "justification": "Model evaluation failed \u2014 could not connect to Ollama or parse response.",
+      "flags": [
+        "Model unavailable"
+      ]
+    },
+    {
+      "name": "Ethical Source Handling (ICAT)",
+      "score": 0,
+      "max_score": 25,
+      "passed": false,
+      "evaluated_by": "fallback",
+      "justification": "Model evaluation failed \u2014 could not connect to Ollama or parse response.",
+      "flags": [
+        "Model unavailable"
+      ]
+    },
+    {
+      "name": "Metadata Completeness",
+      "score": 0,
+      "max_score": 10,
+      "passed": false,
+      "evaluated_by": "code",
+      "justification": "Metadata present: []. Missing: ['title', 'authors', 'year', 'journal', 'doi'].",
+      "flags": [
+        "Missing: title",
+        "Missing: authors",
+        "Missing: year",
+        "Missing: journal",
+        "Missing: doi"
+      ]
+    },
+    {
+      "name": "Red-Flag Absence",
+      "score": 2,
+      "max_score": 5,
+      "passed": true,
+      "evaluated_by": "code",
+      "justification": "Red-flag phrases found: ['social media'].",
+      "flags": [
+        "Red flag: 'social media'"
+      ]
+    }
+  ],
+  "next_steps": "REJECTED \u2014 paper skipped. Review the model justifications above for each criterion to understand why this paper did not meet the required standard."
+}
