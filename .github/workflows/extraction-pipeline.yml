@@ -1,0 +1,27 @@
+name: Extraction Pipeline
+
+on:
+  push:
+    paths:
+      - 'input_papers/**'
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show uploaded papers
+        run: |
+          echo "New paper detected"
+          ls -R input_papers
+
+      - name: Placeholder extraction step
+        run: |
+          echo "Run Aryan extraction script here"
+
+      - name: Placeholder storage step
+        run: |
+          echo "Store output in Neo4j here"
