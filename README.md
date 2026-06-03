@@ -1,35 +1,113 @@
-# KG Extractor – Local Knowledge Graph from PDFs
+# Knowledge Graph Extraction Backend
 
-Extract (subject, predicate, object) triples from academic PDFs using a free local LLM (Ollama + Mistral 7B). No API keys, no cloud costs.
+Automatically extract knowledge graph triples from academic PDF papers using a local LLM (Ollama + Mistral) and upload them directly into a Neo4j database.
+
+## Overview
+
+This backend provides an end-to-end pipeline that converts unstructured academic papers into a structured knowledge graph.
+
+### Pipeline
+
+```text
+PDF Research Paper
+        ↓
+Text Extraction
+        ↓
+Text Chunking
+        ↓
+LLM Triple Extraction (Ollama + Mistral)
+        ↓
+Deduplication
+        ↓
+Neo4j Upload
+        ↓
+Knowledge Graph
+```
 
 ## Requirements
 
-- macOS / Linux / Windows
-- Python 3.8+
-- Ollama installed ([ollama.com](https://ollama.com))
+- Windows / macOS / Linux
+- Python 3.10+
+- Ollama installed (https://ollama.com)
+- Neo4j Aura account and database instance
 - At least 8GB RAM (16GB recommended)
 
 ## Installation
 
-1. **Install Ollama**  
-   macOS/Linux: `curl -fsSL https://ollama.com/install.sh | sh`  
-   Windows: Download from ollama.com
+### 1. Install Ollama
 
-2. **Start the Ollama server** (keep this terminal open)  
-   `ollama serve`
+Windows: Download from https://ollama.com
 
-3. **Pull the Mistral model** (in a new terminal, ~4GB download)  
-   `ollama pull mistral:7b`
+macOS/Linux:
 
-4. **Install Python dependencies**  
-   `pip install pdfplumber requests`
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+```
 
-5. **Get the script**  
-   Save the provided `script.py` in a folder (see the repository for the full code).
+### 2. Start the Ollama Server
+
+```bash
+ollama serve
+```
+
+### 3. Download the Mistral Model
+
+```bash
+ollama pull mistral:7b
+```
+
+### 4. Install Python Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+Or:
+
+```bash
+pip install neo4j python-dotenv pdfplumber requests
+```
 
 ## Usage
 
-Place your PDF file in the same folder as `script.py`. Then run:
+```bash
+python main.py your_paper.pdf mistral:7b
+```
+
+Example:
 
 ```bash
-python script.py your_paper.pdf mistral:7b
+python main.py paper.pdf mistral:7b
+```
+
+## What Happens During Execution
+
+1. Extract text from the PDF.
+2. Split the text into chunks.
+3. Send chunks to Mistral via Ollama.
+4. Extract knowledge graph triples.
+5. Deduplicate triples.
+6. Upload nodes and relationships to Neo4j.
+
+## Viewing the Knowledge Graph
+
+Go to: https://browser.neo4j.io/
+ 
+Enter
+URI: neo4j+s://cf02815e.databases.neo4j.io
+user: cf02815e
+password: L9t6VQGnCr55FHipQQbVGP43vM_YPdR6HElfFlxVw-w
+
+```cypher
+MATCH (n)-[r]->(m)
+RETURN n, r, m
+LIMIT 100
+```
+
+Count relationships:
+
+```cypher
+MATCH ()-[r]->()
+RETURN count(r)
+```
+
