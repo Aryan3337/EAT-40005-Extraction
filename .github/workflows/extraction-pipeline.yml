@@ -30,9 +30,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests pdfplumber
 
-      - name: Check Python script syntax
+      - name: Show repository files
         run: |
-          python -m py_compile "DeepSeek Output/scriptdeep.py"
+          pwd
+          find . -type f
 
       - name: List extraction output files
         run: |
