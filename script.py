@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Knowledge Graph Extraction from Academic Papers using Ollama
-Outputs CSV with columns: extraction_number, paper, subject, predicate, object, source_section, confidence, passage, sentence_ref
+Knowledge Graph Extraction – DeepSeek
+Uses custom prompt: extract triples with sentence references.
+Outputs CSV + JSON with timing.
 """
 
 import sys
@@ -11,11 +12,12 @@ import re
 import time
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
+from datetime import datetime
 import requests
 import pdfplumber
 
 # ============================================================
-# 1. Text Extraction from PDF
+# 1. Text Extraction
 # ============================================================
 def extract_text_from_pdf(pdf_path: str) -> str:
     text = ""
@@ -30,7 +32,7 @@ def extract_text_from_pdf(pdf_path: str) -> str:
 # ============================================================
 # 2. Chunking
 # ============================================================
-def chunk_text(text: str, chunk_size: int = 1500, overlap: int = 200) -> List[Tuple[str, int]]:
+def chunk_text(text: str, chunk_size: int = 2500, overlap: int = 400) -> List[Tuple[str, int]]:
     page_pattern = r"(===== Page \d+ =====\n)"
     parts = re.split(page_pattern, text)
     pages = []
@@ -55,125 +57,141 @@ def chunk_text(text: str, chunk_size: int = 1500, overlap: int = 200) -> List[Tu
     return chunks_with_page
 
 # ============================================================
-# 3. Ollama API call with custom prompt
+# 3. Strip DeepSeek reasoning
 # ============================================================
-OLLAMA_URL = "http://localhost:11434/api/generate"
+def strip_deepseek_reasoning(raw: str) -> str:
+    """Remove thinking prefixes."""
+    for marker in ['(', '[', '{']:
+        idx = raw.find(marker)
+        if idx != -1:
+            raw = raw[idx:]
+            break
+    raw = re.sub(r'^```(?:cypher|json)?\n?', '', raw)
+    raw = re.sub(r'\n?```$', '', raw)
+    return raw.strip()
 
-def make_extraction_prompt(chunk_text: str) -> str:
-    return f"""You are a knowledge graph extraction assistant. You will be provided with a passage from an academic research paper.
+# ============================================================
+# 4. User-specified prompt
+# ============================================================
+def make_prompt(chunk: str) -> str:
+    return f"""Read the paper and extract knowledge graph triples in these steps:
+1. Identify informative sentences
+2. Identify the main subject of each sentence
+3. Extract as Subject–Predicate–Object. They should have a format like: (GaroWomen)-[ARE_KNOWN_AS]->(SkilledBeauticians)
+4. Each triple needs to be referenced to a sentence, so extract the location of the sentence alongside the triple
 
-Read the passage. Identify every factual claim, relationship, practice, observation, or piece of knowledge about the Garo / Mandi community discussed in the passage.
-
-For each meaningful piece, output a Cypher comment block in this exact format:
-
-// PASSAGE: <paraphrased passage — retain all factual content, remove filler words, following this format (GaroWomen)-[ARE_KNOWN_AS]->(SkilledBeauticians)>
-// SENTENCE REF: <exact sentence from the paper this was drawn from>
-// SOURCE: <paper title placeholder>
+Output each triple and its reference on one line in this exact format:
+(Subject)-[PREDICATE]->(Object) | Location: "sentence text" (Page X)
 
 Rules:
-- Do not decide in advance what topics or domains to look for — extract everything factual the passage contains.
-- Each passage must be traceable to a specific sentence.
-- Output only the formatted comment blocks. No explanation or prose.
+- Predicates: UPPER_CASE_WITH_UNDERSCORES
+- Only extract explicit facts. No inference.
+- If no triples, output nothing.
 
 Passage:
-{chunk_text}
+{chunk}
 """
 
-def parse_ollama_blocks(raw_response: str, page_num: int) -> List[Dict[str, str]]:
-    blocks = re.split(r'\n\s*// PASSAGE:', raw_response, flags=re.IGNORECASE)
+# ============================================================
+# 5. Parse triples and references
+# ============================================================
+def parse_triples_with_reference(output: str, page_num: int) -> List[Dict[str, Any]]:
+    """
+    Parse lines like:
+    (Subject)-[PREDICATE]->(Object) | Location: "sentence text" (Page 5)
+    """
     triples = []
-    for block in blocks:
-        if not block.strip():
-            continue
-        passage_match = re.search(r'^(.*?)(?=\n// SENTENCE REF:|$)', block, re.DOTALL)
-        passage_text = passage_match.group(1).strip() if passage_match else ""
-        sent_match = re.search(r'// SENTENCE REF:\s*(.*?)(?=\n// SOURCE:|$)', block, re.DOTALL)
-        sentence_ref = sent_match.group(1).strip() if sent_match else ""
-        src_match = re.search(r'// SOURCE:\s*(.*?)$', block, re.DOTALL)
-        source = src_match.group(1).strip() if src_match else "Unknown"
-        triple_match = re.search(r'\(([^)]+)\)\s*-\s*\[([^\]]+)\]\s*->\s*\(([^)]+)\)', passage_text)
+    lines = output.split('\n')
+    for line in lines:
+        line = line.strip()
+        # Match triple part
+        triple_match = re.search(r'\(([^)]+)\)\s*-\s*\[:?([^\]]+)\]\s*->\s*\(([^)]+)\)', line)
         if triple_match:
             subject = triple_match.group(1).strip()
-            predicate = triple_match.group(2).strip()
+            predicate = triple_match.group(2).strip().upper()
             obj = triple_match.group(3).strip()
+            # Extract location / sentence reference after '|'
+            ref_match = re.search(r'\|\s*Location:\s*["]?(.*?)["]?(?:\s*\(Page\s*(\d+)\))?$', line, re.IGNORECASE)
+            if ref_match:
+                sentence_ref = ref_match.group(1).strip()
+                ref_page = ref_match.group(2) if ref_match.group(2) else str(page_num)
+            else:
+                # Fallback: use whole line after triple
+                parts = line.split('|', 1)
+                sentence_ref = parts[1].strip() if len(parts) > 1 else "NO_REFERENCE"
+                ref_page = str(page_num)
             triples.append({
                 "subject": subject,
                 "predicate": predicate,
                 "object": obj,
-                "source_section": f"Page {page_num}",
+                "source_section": f"Page {ref_page}",
                 "confidence": "High",
-                "passage": passage_text,
-                "sentence_ref": sentence_ref,
-                "source": source
-            })
-        else:
-            triples.append({
-                "subject": "UNKNOWN",
-                "predicate": "UNKNOWN",
-                "object": "UNKNOWN",
-                "source_section": f"Page {page_num}",
-                "confidence": "Low",
-                "passage": passage_text,
-                "sentence_ref": sentence_ref,
-                "source": source
+                "passage": f"({subject})-[:{predicate}]->({obj})",
+                "sentence_ref": sentence_ref
             })
     return triples
 
-def extract_triples_from_chunk(chunk_text: str, page_num: int, model: str, retries: int = 2) -> List[Dict[str, str]]:
-    prompt = make_extraction_prompt(chunk_text)
+# ============================================================
+# 6. Ollama API call
+# ============================================================
+OLLAMA_URL = "http://localhost:11434/api/generate"
+
+def extract_chunk(chunk_text: str, page_num: int, model: str, retries: int = 2) -> Tuple[List[Dict], float]:
+    prompt = make_prompt(chunk_text)
+    start_time = time.time()
     for attempt in range(retries):
         try:
-            response = requests.post(
+            resp = requests.post(
                 OLLAMA_URL,
                 json={
                     "model": model,
                     "prompt": prompt,
                     "stream": False,
-                    "options": {"temperature": 0.1, "num_predict": 2048}
+                    "options": {"temperature": 0.0, "num_predict": 2048}
                 },
-                timeout=120
+                timeout=150
             )
-            if response.status_code != 200:
-                return []
-            result = response.json()
-            raw_text = result.get("response", "")
-            triples = parse_ollama_blocks(raw_text, page_num)
+            elapsed = time.time() - start_time
+            if resp.status_code != 200:
+                continue
+            raw = resp.json().get("response", "")
+            cleaned = strip_deepseek_reasoning(raw)
+            triples = parse_triples_with_reference(cleaned, page_num)
             if triples:
-                return triples
-        except Exception:
+                return triples, elapsed
+        except Exception as e:
+            print(f"Attempt {attempt+1} error: {e}")
             time.sleep(1)
-    return []
+    return [], time.time() - start_time
 
 # ============================================================
-# 4. Deduplication
+# 7. Deduplication
 # ============================================================
-def deduplicate_triples(triples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def deduplicate(triples: List[Dict]) -> List[Dict]:
     seen = {}
     for t in triples:
-        if not isinstance(t, dict):
-            continue
-        if not all(k in t for k in ["subject", "predicate", "object"]):
-            continue
-        key = f"{t['subject'].lower().strip()}|{t['predicate'].lower().strip()}|{t['object'].lower().strip()}"
+        key = f"{t['subject'].lower()}|{t['predicate']}|{t['object'].lower()}"
         if key not in seen:
             seen[key] = t
         else:
-            if t.get('confidence') == 'High' and seen[key].get('confidence') != 'High':
+            # Keep longer sentence reference (more informative)
+            if len(t.get('sentence_ref', '')) > len(seen[key].get('sentence_ref', '')):
                 seen[key] = t
     return list(seen.values())
 
 # ============================================================
-# 5. Save to CSV with sequential numbering
+# 8. Save CSV and JSON
 # ============================================================
-def save_triples_to_csv(triples: List[Dict], output_path: str, paper_name: str):
-    with open(output_path, 'w', newline='', encoding='utf-8') as f:
-        fieldnames = ['extraction_number', 'paper', 'subject', 'predicate', 'object', 'source_section', 'confidence', 'passage', 'sentence_ref']
+def save_csv(triples: List[Dict], path: str, paper: str):
+    with open(path, 'w', newline='', encoding='utf-8') as f:
+        fieldnames = ['extraction_number', 'paper', 'subject', 'predicate', 'object',
+                      'source_section', 'confidence', 'passage', 'sentence_ref']
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        for idx, t in enumerate(triples, start=1):
+        for idx, t in enumerate(triples, 1):
             writer.writerow({
                 'extraction_number': idx,
-                'paper': paper_name,
+                'paper': paper,
                 'subject': t.get('subject', ''),
                 'predicate': t.get('predicate', ''),
                 'object': t.get('object', ''),
@@ -183,55 +201,116 @@ def save_triples_to_csv(triples: List[Dict], output_path: str, paper_name: str):
                 'sentence_ref': t.get('sentence_ref', '')
             })
 
+def save_json(triples: List[Dict], path: str, paper: str):
+    data = []
+    for idx, t in enumerate(triples, 1):
+        data.append({
+            'extraction_number': idx,
+            'paper': paper,
+            'subject': t['subject'],
+            'predicate': t['predicate'],
+            'object': t['object'],
+            'source_section': t['source_section'],
+            'confidence': t['confidence'],
+            'passage': t['passage'],
+            'sentence_ref': t['sentence_ref']
+        })
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
 # ============================================================
-# 6. Main Pipeline
+# 9. Format time
 # ============================================================
-def run_kg_extraction(pdf_path: str, model: str = "mistral:7b"):
-    print(f"1. Extracting text from {pdf_path}...")
+def format_time(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.2f} sec"
+    minutes = int(seconds // 60)
+    secs = seconds % 60
+    return f"{minutes}m {secs:.2f}s"
+
+# ============================================================
+# 10. Main pipeline
+# ============================================================
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: python kg_deepseek_final.py <pdf_path> [model_name]")
+        print("Example: python kg_deepseek_final.py paper.pdf deepseek-r1:7b")
+        sys.exit(1)
+
+    pdf_path = sys.argv[1]
+    model = sys.argv[2] if len(sys.argv) > 2 else "deepseek-r1:7b"
+
+    if not Path(pdf_path).exists():
+        print(f"File not found: {pdf_path}")
+        sys.exit(1)
+
+    total_start = time.time()
+
+    print("=" * 70)
+    print(f"Knowledge Graph Extraction – DeepSeek (User Prompt)")
+    print(f"PDF: {pdf_path}")
+    print(f"Model: {model}")
+    print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 70)
+
+    # Step 1: Extract text
+    print("\n1. Extracting text from PDF...")
+    step_start = time.time()
     full_text = extract_text_from_pdf(pdf_path)
     if not full_text.strip():
         print("No text extracted.")
         return
+    print(f"   Done in {format_time(time.time() - step_start)}")
 
-    print("2. Chunking text...")
-    chunks = chunk_text(full_text, chunk_size=1500, overlap=200)
-    print(f"   Created {len(chunks)} chunks.")
+    # Step 2: Chunk
+    print("\n2. Chunking text...")
+    step_start = time.time()
+    chunks = chunk_text(full_text, chunk_size=2500, overlap=400)
+    print(f"   Created {len(chunks)} chunks in {format_time(time.time() - step_start)}")
 
-    print("3. Extracting triples with Ollama...")
+    # Step 3: Extract triples
+    print(f"\n3. Extracting triples with {model}...")
     all_triples = []
-    for idx, (chunk, page_num) in enumerate(chunks):
-        print(f"   Chunk {idx+1}/{len(chunks)} (page ~{page_num})...", end=" ", flush=True)
-        triples = extract_triples_from_chunk(chunk, page_num, model)
+    chunk_times = []
+    extraction_start = time.time()
+
+    for idx, (chunk, page) in enumerate(chunks, 1):
+        print(f"   Chunk {idx}/{len(chunks)} (page ~{page})...", end=" ", flush=True)
+        triples, chunk_time = extract_chunk(chunk, page, model)
         all_triples.extend(triples)
-        print(f"got {len(triples)} triples")
-        time.sleep(0.3)
+        chunk_times.append(chunk_time)
+        print(f"got {len(triples)} triples in {format_time(chunk_time)}")
+        time.sleep(0.2)
 
-    print(f"   Total raw triples: {len(all_triples)}")
+    total_extraction_time = time.time() - extraction_start
+    print(f"\n   Extraction Summary:")
+    print(f"   - Total raw triples: {len(all_triples)}")
+    print(f"   - Total extraction time: {format_time(total_extraction_time)}")
 
-    print("4. Deduplicating...")
-    unique = deduplicate_triples(all_triples)
-    print(f"   Kept {len(unique)} unique triples.")
+    # Step 4: Deduplicate
+    print("\n4. Deduplicating...")
+    step_start = time.time()
+    unique = deduplicate(all_triples)
+    print(f"   Kept {len(unique)} unique triples in {format_time(time.time() - step_start)}")
 
-    high = sum(1 for t in unique if t.get('confidence') == 'High')
-    print(f"   High confidence: {high}")
+    # Step 5: Save
+    print("\n5. Saving output files...")
+    step_start = time.time()
+    base_name = Path(pdf_path).stem
+    csv_path = f"{base_name}_kg.csv"
+    json_path = f"{base_name}_kg.json"
+    save_csv(unique, csv_path, base_name)
+    save_json(unique, json_path, base_name)
+    print(f"   Saved to {csv_path} and {json_path} in {format_time(time.time() - step_start)}")
 
-    output_csv = Path(pdf_path).stem + "_kg_extractions.csv"
-    paper_name = Path(pdf_path).stem
-    save_triples_to_csv(unique, output_csv, paper_name)
-    print(f"5. Saved to {output_csv}")
-    print("Done!")
+    total_time = time.time() - total_start
+    print("\n" + "=" * 70)
+    print(f"COMPLETED!")
+    print(f"Total time: {format_time(total_time)}")
+    print(f"Unique triples: {len(unique)}")
+    print(f"Extractions/sec: {len(unique) / total_time:.2f}")
+    print(f"Finished at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 70)
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python script.py <path_to_pdf> [model_name]")
-        print("Example: python script.py paper.pdf mistral:7b")
-        sys.exit(1)
-
-    pdf_file = sys.argv[1]
-    model = sys.argv[2] if len(sys.argv) > 2 else "mistral:7b"
-
-    if not Path(pdf_file).exists():
-        print(f"File not found: {pdf_file}")
-        sys.exit(1)
-
-    run_kg_extraction(pdf_file, model)
+    main()
