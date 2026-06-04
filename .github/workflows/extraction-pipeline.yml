@@ -1,27 +1,56 @@
-name: Extraction Pipeline
+name: Automated KG Extraction Pipeline
 
 on:
   push:
+    branches:
+      - github-actions
+      - complete
     paths:
-      - 'input_papers/**'
+      - "DeepSeek Output/**"
+      - "script.py"
+      - ".github/workflows/extraction-pipeline.yml"
+
+  workflow_dispatch:
 
 jobs:
-  extract:
+  validate-kg-pipeline:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Show uploaded papers
-        run: |
-          echo "New paper detected"
-          ls -R input_papers
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-      - name: Placeholder extraction step
+      - name: Install Python dependencies
         run: |
-          echo "Run Aryan extraction script here"
+          python -m pip install --upgrade pip
+          pip install requests pdfplumber
 
-      - name: Placeholder storage step
+      - name: Check Python script syntax
         run: |
-          echo "Store output in Neo4j here"
+          python -m py_compile "DeepSeek Output/scriptdeep.py"
+
+      - name: List extraction output files
+        run: |
+          echo "Checking DeepSeek output folder..."
+          ls -la "DeepSeek Output"
+
+      - name: Verify CSV output exists
+        run: |
+          test -f "DeepSeek Output/paper1_kg.csv"
+
+      - name: Verify JSON output exists
+        run: |
+          test -f "DeepSeek Output/paper1_kg.json"
+
+      - name: Upload extraction outputs as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kg-extraction-results
+          path: |
+            DeepSeek Output/*.csv
+            DeepSeek Output/*.json
