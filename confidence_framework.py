@@ -1,39 +1,16 @@
 #!/usr/bin/env python3
 """
-confidence_framework.py  —  Version 5.0
+confidence_framework.py  —  Version 5.1
 =========================================
 P85 – Mandi Climate Knowledge Graph Project  |  EAT40005 Capstone
 
-Model-based Confidence Framework using Ollama + mistral-small3.1.
+Model-based Confidence Framework using Ollama + DeepSeek (configurable).
 
-Replaces keyword scanning with contextual LLM evaluation for subjective
-criteria (ICAT, domain relevance, structural quality, peer-review).
-Objective criteria (metadata, red-flags) remain code-based.
-
-Changes in v5.0
+Changes in v5.1
 ---------------
-- LLM-based evaluation for Criteria 1-4 via Ollama
-- Structured system prompt returns scored JSON with written justifications
-- Justifications saved to rejection/review logs for full audit trail
-- Hard-fail gates removed from code; incorporated into system prompt guidance
-- Criteria 5-6 (metadata, red-flags) remain code-based (deterministic)
-
-Usage
------
-    # Make sure Ollama is running: ollama serve
-    python confidence_framework.py paper.pdf
-    python confidence_framework.py paper.pdf --title "..." --year 2023 --journal "Nature"
-
-Integration with script.py:
-    from confidence_framework import run_confidence_check, EvaluationOutcome
-    result = run_confidence_check(pdf_path, metadata)
-    if result.passed:
-        run_kg_extraction(pdf_path, model)
-
-Exit codes:
-    0 = APPROVED       → safe to pass to run_kg_extraction()
-    2 = MANUAL REVIEW  → hold; check review_queue.csv
-    1 = REJECTED       → skip; check rejection_logs/
+- Logs stored in confidence_logs/ with subfolders: approved/, rejected/, review/
+- Approval log created on APPROVED outcome
+- Uses configurable model (default deepseek-r1:7b)
 """
 
 import sys
@@ -54,13 +31,17 @@ import pdfplumber
 # ============================================================
 
 OLLAMA_URL      = "http://localhost:11434/api/chat"
-OLLAMA_MODEL    = "mistral:7b"
+OLLAMA_MODEL    = "deepseek-r1:7b"   # can be changed
 
 REJECT_THRESHOLD = 60   # score <  60        → REJECTED
 REVIEW_THRESHOLD = 75   # score 60–75        → MANUAL REVIEW
                         # score >  75        → APPROVED
 
-LOG_DIR           = Path("rejection_logs")
+LOG_DIR           = Path("confidence_logs")
+APPROVED_DIR      = LOG_DIR / "approved"
+REJECTED_DIR      = LOG_DIR / "rejected"
+REVIEW_DIR        = LOG_DIR / "review"
+
 REVIEW_QUEUE_FILE = Path("review_queue.csv")
 
 RED_FLAG_PHRASES: List[str] = [
@@ -89,8 +70,8 @@ class CriterionResult:
     score:         int
     max_score:     int
     passed:        bool
-    justification: str          # model's written reasoning
-    evaluated_by:  str          # "model" or "code"
+    justification: str
+    evaluated_by:  str
     flags:         List[str] = field(default_factory=list)
 
 
@@ -120,7 +101,6 @@ class EvaluationResult:
 
 # ============================================================
 # 1. Text Extraction from PDF
-#    Identical to script.py — same function signature and behaviour
 # ============================================================
 
 def extract_text_from_pdf(pdf_path: str) -> str:
@@ -136,8 +116,6 @@ def extract_text_from_pdf(pdf_path: str) -> str:
 
 # ============================================================
 # 2. System prompt
-#    Instructs the model to evaluate the paper and return
-#    structured JSON scores + justifications for each criterion
 # ============================================================
 
 def build_system_prompt() -> str:
@@ -222,15 +200,13 @@ Return only this JSON structure, with no text before or after it:
 }"""
 
 
-# Chunk size in words — keeps each request well within timeout limits
 CHUNK_WORD_SIZE = 1500
 CHUNK_OVERLAP   = 200
 
 def chunk_paper(paper_text: str) -> List[str]:
-    """Split paper into overlapping word chunks, mirroring script.py logic."""
-    words  = paper_text.split()
+    words = paper_text.split()
     chunks = []
-    start  = 0
+    start = 0
     while start < len(words):
         end = min(start + CHUNK_WORD_SIZE, len(words))
         chunks.append(" ".join(words[start:end]))
@@ -257,7 +233,6 @@ Evaluate this excerpt against all four criteria and return only the JSON respons
 
 # ============================================================
 # 3. Ollama API call
-#    Follows same pattern as script.py's extract_triples_from_chunk()
 # ============================================================
 
 def call_ollama(system_prompt: str, user_prompt: str, retries: int = 2) -> Optional[str]:
@@ -273,11 +248,11 @@ def call_ollama(system_prompt: str, user_prompt: str, retries: int = 2) -> Optio
                     ],
                     "stream": False,
                     "options": {
-                        "temperature": 0.1,   # low temp for consistent scoring
+                        "temperature": 0.1,
                         "num_predict": 2048,
                     }
                 },
-                timeout=300   # longer timeout — full paper evaluation takes time
+                timeout=300
             )
             if response.status_code == 200:
                 return response.json().get("message", {}).get("content", "")
@@ -294,10 +269,7 @@ def call_ollama(system_prompt: str, user_prompt: str, retries: int = 2) -> Optio
 
 
 def parse_model_response(raw: str) -> Optional[List[Dict]]:
-    """Extract and parse the JSON block from the model response."""
-    # Strip any markdown code fences the model may have added
     cleaned = re.sub(r"```json|```", "", raw).strip()
-    # Find the outermost JSON object
     match = re.search(r"\{.*\}", cleaned, re.DOTALL)
     if not match:
         return None
@@ -313,14 +285,9 @@ def parse_model_response(raw: str) -> Optional[List[Dict]]:
 # ============================================================
 
 def evaluate_with_model(paper_text: str, metadata: Dict[str, Any]) -> List[CriterionResult]:
-    """
-    Chunk the paper and evaluate each chunk separately via Ollama.
-    Scores are averaged across chunks; justifications and flags are aggregated.
-    Mirrors script.py chunking logic for consistency.
-    """
     system_prompt = build_system_prompt()
-    chunks        = chunk_paper(paper_text)
-    total_chunks  = len(chunks)
+    chunks = chunk_paper(paper_text)
+    total_chunks = len(chunks)
     print(f"   Split into {total_chunks} chunks of ~{CHUNK_WORD_SIZE} words each.")
 
     expected = [
@@ -330,7 +297,6 @@ def evaluate_with_model(paper_text: str, metadata: Dict[str, Any]) -> List[Crite
         ("Ethical Source Handling (ICAT)", 25),
     ]
 
-    # Accumulate scores, justifications, flags across chunks
     accumulated: Dict[str, Dict] = {
         name: {"scores": [], "justifications": [], "flags": [], "max_score": mx}
         for name, mx in expected
@@ -350,7 +316,7 @@ def evaluate_with_model(paper_text: str, metadata: Dict[str, Any]) -> List[Crite
             continue
 
         successful_chunks += 1
-        print(f"OK")
+        print("OK")
         for (name, _), item in zip(expected, criteria_data):
             accumulated[name]["scores"].append(int(item.get("score", 0)))
             accumulated[name]["justifications"].append(item.get("justification", ""))
@@ -363,69 +329,65 @@ def evaluate_with_model(paper_text: str, metadata: Dict[str, Any]) -> List[Crite
 
     print(f"   {successful_chunks}/{total_chunks} chunks evaluated successfully.")
 
-    # Aggregate: take the MAX score across chunks (best evidence wins)
-    # and combine all justifications and unique flags
     results = []
     for name, mx in expected:
-        acc      = accumulated[name]
-        scores   = acc["scores"]
-        score    = max(0, min(max(scores) if scores else 0, mx))
-        # Pick the justification from the highest-scoring chunk
+        acc = accumulated[name]
+        scores = acc["scores"]
+        score = max(0, min(max(scores) if scores else 0, mx))
         best_idx = scores.index(max(scores)) if scores else 0
         justification = acc["justifications"][best_idx] if acc["justifications"] else "No justification."
-        unique_flags  = list(dict.fromkeys(acc["flags"]))  # deduplicate, preserve order
+        unique_flags = list(dict.fromkeys(acc["flags"]))
 
         results.append(CriterionResult(
-            name          = name,
-            score         = score,
-            max_score     = mx,
-            passed        = score > 0,
-            justification = justification,
-            evaluated_by  = "model",
-            flags         = unique_flags,
+            name=name,
+            score=score,
+            max_score=mx,
+            passed=score > 0,
+            justification=justification,
+            evaluated_by="model",
+            flags=unique_flags,
         ))
     return results
 
 
 def _fallback_criteria() -> List[CriterionResult]:
-    """Return zero-scored criteria if model call fails."""
     specs = [
-        ("Structural Completeness",        20),
-        ("Peer-Review Quality",            25),
-        ("Climate and Domain Relevance",   15),
+        ("Structural Completeness", 20),
+        ("Peer-Review Quality", 25),
+        ("Climate and Domain Relevance", 15),
         ("Ethical Source Handling (ICAT)", 25),
     ]
     return [
         CriterionResult(
-            name          = name,
-            score         = 0,
-            max_score     = max_pts,
-            passed        = False,
-            justification = "Model evaluation failed — could not connect to Ollama or parse response.",
-            evaluated_by  = "fallback",
-            flags         = ["Model unavailable"],
+            name=name,
+            score=0,
+            max_score=mx,
+            passed=False,
+            justification="Model evaluation failed — could not connect to Ollama or parse response.",
+            evaluated_by="fallback",
+            flags=["Model unavailable"],
         )
-        for name, max_pts in specs
+        for name, mx in specs
     ]
 
 
 # ============================================================
-# 5. Code-based criteria (Criteria 5–6 — deterministic)
+# 5. Code-based criteria (Criteria 5–6)
 # ============================================================
 
 def check_metadata_completeness(metadata: Dict[str, Any]) -> CriterionResult:
     field_scores = {"title": 3, "authors": 2, "year": 2, "journal": 2, "doi": 1}
-    score   = sum(pts for f, pts in field_scores.items() if metadata.get(f))
-    found   = [f for f in field_scores if metadata.get(f)]
+    score = sum(pts for f, pts in field_scores.items() if metadata.get(f))
+    found = [f for f in field_scores if metadata.get(f)]
     missing = [f for f in field_scores if not metadata.get(f)]
     return CriterionResult(
-        name          = "Metadata Completeness",
-        score         = score,
-        max_score     = 10,
-        passed        = score >= 5,
-        justification = f"Metadata present: {found}. Missing: {missing}.",
-        evaluated_by  = "code",
-        flags         = [f"Missing: {m}" for m in missing] if missing else [],
+        name="Metadata Completeness",
+        score=score,
+        max_score=10,
+        passed=score >= 5,
+        justification=f"Metadata present: {found}. Missing: {missing}.",
+        evaluated_by="code",
+        flags=[f"Missing: {m}" for m in missing] if missing else [],
     )
 
 
@@ -433,50 +395,65 @@ def check_red_flags(text_lower: str) -> CriterionResult:
     found = [f for f in RED_FLAG_PHRASES if f in text_lower]
     score = max(0, 5 - len(found) * 3)
     return CriterionResult(
-        name          = "Red-Flag Absence",
-        score         = score,
-        max_score     = 5,
-        passed        = True,
-        justification = f"Red-flag phrases found: {found}." if found else "No red-flag phrases detected.",
-        evaluated_by  = "code",
-        flags         = [f"Red flag: '{f}'" for f in found],
+        name="Red-Flag Absence",
+        score=score,
+        max_score=5,
+        passed=True,
+        justification=f"Red-flag phrases found: {found}." if found else "No red-flag phrases detected.",
+        evaluated_by="code",
+        flags=[f"Red flag: '{f}'" for f in found],
     )
 
 
 # ============================================================
-# 6. Output writers
+# 6. Output writers (logs with subfolders)
 # ============================================================
 
 def save_evaluation_log(result: EvaluationResult, log_type: str) -> Path:
+    """
+    log_type: 'approval', 'rejection', or 'review'
+    """
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    if log_type == "approval":
+        subdir = APPROVED_DIR
+    elif log_type == "rejection":
+        subdir = REJECTED_DIR
+    elif log_type == "review":
+        subdir = REVIEW_DIR
+    else:
+        subdir = LOG_DIR   # fallback
+
+    subdir.mkdir(parents=True, exist_ok=True)
+
     safe_name = re.sub(r"[^\w\-]", "_", Path(result.paper_path).stem)[:50]
-    log_path  = LOG_DIR / f"{result.timestamp}_{log_type}_{safe_name}.json"
+    log_path = subdir / f"{result.timestamp}_{log_type}_{safe_name}.json"
 
     data = {
-        "paper":           result.paper_path,
-        "paper_name":      result.paper_name,
-        "timestamp":       result.timestamp,
-        "model_used":      result.model_used,
-        "outcome":         result.outcome.value,
-        "total_score":     result.total_score,
-        "max_possible":    result.max_possible,
-        "score_pct":       result.score_pct,
+        "paper": result.paper_path,
+        "paper_name": result.paper_name,
+        "timestamp": result.timestamp,
+        "model_used": result.model_used,
+        "outcome": result.outcome.value,
+        "total_score": result.total_score,
+        "max_possible": result.max_possible,
+        "score_pct": result.score_pct,
         "thresholds": {
-            "reject_below":       REJECT_THRESHOLD,
+            "reject_below": REJECT_THRESHOLD,
             "manual_review_band": f"{REJECT_THRESHOLD}-{REVIEW_THRESHOLD}",
             "auto_approve_above": REVIEW_THRESHOLD,
         },
         "rejection_reason": result.rejection_reason,
-        "review_reason":    result.review_reason,
+        "review_reason": result.review_reason,
         "criteria": [
             {
-                "name":          c.name,
-                "score":         c.score,
-                "max_score":     c.max_score,
-                "passed":        c.passed,
-                "evaluated_by":  c.evaluated_by,
+                "name": c.name,
+                "score": c.score,
+                "max_score": c.max_score,
+                "passed": c.passed,
+                "evaluated_by": c.evaluated_by,
                 "justification": c.justification,
-                "flags":         c.flags,
+                "flags": c.flags,
             }
             for c in result.criteria
         ],
@@ -484,9 +461,10 @@ def save_evaluation_log(result: EvaluationResult, log_type: str) -> Path:
             "REJECTED — paper skipped. Review the model justifications above for each criterion "
             "to understand why this paper did not meet the required standard."
             if log_type == "rejection"
-            else
-            "MANUAL REVIEW — extraction is held. A team member should read the model justifications, "
-            "particularly for ICAT, before deciding to approve or reject this paper."
+            else "MANUAL REVIEW — extraction is held. A team member should read the model justifications, "
+                 "particularly for ICAT, before deciding to approve or reject this paper."
+            if log_type == "review"
+            else "APPROVED — paper is ready for KG extraction."
         ),
     }
     log_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -524,7 +502,6 @@ def append_review_queue(result: EvaluationResult) -> Path:
 
 # ============================================================
 # 7. Main pipeline function
-#    run_confidence_check() — sits before run_kg_extraction()
 # ============================================================
 
 def run_confidence_check(
@@ -532,40 +509,31 @@ def run_confidence_check(
     metadata: Optional[Dict[str, Any]] = None,
     override_approve: Optional[str] = None,
 ) -> EvaluationResult:
-    """
-    Run confidence checks on a paper using Ollama + mistral-small3.1.
-
-    Integration with script.py:
-        result = run_confidence_check(pdf_path, metadata)
-        if result.passed:
-            run_kg_extraction(pdf_path, model)
-    """
     paper_path = Path(pdf_path)
     paper_name = paper_path.stem
-    metadata   = metadata or {}
-    timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
+    metadata = metadata or {}
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # ── Manual override ───────────────────────────────────────────────────
     if override_approve:
         print(f"[OVERRIDE] {paper_name} manually approved: {override_approve}")
         return EvaluationResult(
-            paper_path    = str(paper_path),
-            paper_name    = paper_name,
-            timestamp     = timestamp,
-            total_score   = -1,
-            max_possible  = 100,
-            outcome       = EvaluationOutcome.APPROVED,
-            review_reason = f"Manual override: {override_approve}",
+            paper_path=str(paper_path),
+            paper_name=paper_name,
+            timestamp=timestamp,
+            total_score=-1,
+            max_possible=100,
+            outcome=EvaluationOutcome.APPROVED,
+            review_reason=f"Manual override: {override_approve}",
         )
 
     print(f"1. Extracting text from {paper_name}...")
     try:
-        full_text  = extract_text_from_pdf(str(paper_path))
+        full_text = extract_text_from_pdf(str(paper_path))
         text_lower = full_text.lower()
         print(f"   Extracted {len(text_lower.split())} words.")
     except Exception as e:
         print(f"   Text extraction failed: {e}")
-        full_text  = ""
+        full_text = ""
         text_lower = ""
 
     print("2. Running model evaluation (Criteria 1–4)...")
@@ -579,62 +547,63 @@ def run_confidence_check(
     for c in code_criteria:
         print(f"   {c.name}: {c.score}/{c.max_score}")
 
-    all_criteria  = model_criteria + code_criteria
-    total_score   = sum(c.score for c in all_criteria)
-    max_possible  = sum(c.max_score for c in all_criteria)
+    all_criteria = model_criteria + code_criteria
+    total_score = sum(c.score for c in all_criteria)
+    max_possible = sum(c.max_score for c in all_criteria)
 
-    # ── Determine outcome ─────────────────────────────────────────────────
+    # Determine outcome
     if total_score < REJECT_THRESHOLD:
-        outcome          = EvaluationOutcome.REJECTED
+        outcome = EvaluationOutcome.REJECTED
         rejection_reason = (
             f"Total score {total_score}/{max_possible} ({round(total_score/max_possible*100,1)}%) "
             f"is below the reject threshold of {REJECT_THRESHOLD}%."
         )
         review_reason = None
     elif total_score <= REVIEW_THRESHOLD:
-        outcome          = EvaluationOutcome.MANUAL_REVIEW
+        outcome = EvaluationOutcome.MANUAL_REVIEW
         rejection_reason = None
-        review_reason    = (
+        review_reason = (
             f"Score {total_score}/{max_possible} ({round(total_score/max_possible*100,1)}%) "
             f"is in the manual review band ({REJECT_THRESHOLD}-{REVIEW_THRESHOLD}). "
             f"Check model justifications in the review log before proceeding."
         )
     else:
-        outcome          = EvaluationOutcome.APPROVED
+        outcome = EvaluationOutcome.APPROVED
         rejection_reason = None
-        review_reason    = None
+        review_reason = None
 
     result = EvaluationResult(
-        paper_path       = str(paper_path),
-        paper_name       = paper_name,
-        timestamp        = timestamp,
-        total_score      = total_score,
-        max_possible     = max_possible,
-        outcome          = outcome,
-        criteria         = all_criteria,
-        rejection_reason = rejection_reason,
-        review_reason    = review_reason,
-        model_used       = OLLAMA_MODEL,
+        paper_path=str(paper_path),
+        paper_name=paper_name,
+        timestamp=timestamp,
+        total_score=total_score,
+        max_possible=max_possible,
+        outcome=outcome,
+        criteria=all_criteria,
+        rejection_reason=rejection_reason,
+        review_reason=review_reason,
+        model_used=OLLAMA_MODEL,
     )
 
-    # ── Write outputs ─────────────────────────────────────────────────────
+    # Write outputs
     if outcome == EvaluationOutcome.REJECTED:
-        log_path        = save_evaluation_log(result, "rejection")
+        log_path = save_evaluation_log(result, "rejection")
         result.log_path = str(log_path)
         print(f"4. REJECTED — {rejection_reason}")
         print(f"   Log: {log_path}")
-
     elif outcome == EvaluationOutcome.MANUAL_REVIEW:
-        log_path             = save_evaluation_log(result, "review")
-        result.log_path      = str(log_path)
-        rq_path              = append_review_queue(result)
+        log_path = save_evaluation_log(result, "review")
+        result.log_path = str(log_path)
+        rq_path = append_review_queue(result)
         result.review_queue_path = str(rq_path)
         print(f"4. MANUAL REVIEW — {review_reason}")
         print(f"   Log: {log_path}")
         print(f"   Review queue: {rq_path}")
-
-    else:
+    else:  # APPROVED
+        log_path = save_evaluation_log(result, "approval")
+        result.log_path = str(log_path)
         print(f"4. APPROVED — score {total_score}/{max_possible} ({result.score_pct}%)")
+        print(f"   Log: {log_path}")
 
     print("Done!")
     return result
@@ -646,9 +615,9 @@ def run_confidence_check(
 
 def _print_result(r: EvaluationResult) -> None:
     ICONS = {
-        EvaluationOutcome.APPROVED:      "APPROVED",
+        EvaluationOutcome.APPROVED: "APPROVED",
         EvaluationOutcome.MANUAL_REVIEW: "MANUAL REVIEW",
-        EvaluationOutcome.REJECTED:      "REJECTED",
+        EvaluationOutcome.REJECTED: "REJECTED",
     }
     print(f"\n{'='*65}")
     print(f"{ICONS[r.outcome]}  —  {r.paper_name}")
@@ -681,40 +650,39 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="P85 Confidence Framework v5.0 — model-based evaluation via Ollama"
+        description="P85 Confidence Framework v5.1 — model-based evaluation via Ollama"
     )
     parser.add_argument("pdf_path", help="Path to the PDF file")
-    parser.add_argument("--title",            default="")
-    parser.add_argument("--authors",          default="")
-    parser.add_argument("--year",             default="")
-    parser.add_argument("--journal",          default="")
-    parser.add_argument("--doi",              default="")
-    parser.add_argument("--model",            default=OLLAMA_MODEL,
+    parser.add_argument("--title", default="")
+    parser.add_argument("--authors", default="")
+    parser.add_argument("--year", default="")
+    parser.add_argument("--journal", default="")
+    parser.add_argument("--doi", default="")
+    parser.add_argument("--model", default=OLLAMA_MODEL,
                         help=f"Ollama model to use (default: {OLLAMA_MODEL})")
     parser.add_argument("--override-approve", default=None,
                         help="Manually approve a MANUAL_REVIEW paper with a justification string")
     args = parser.parse_args()
 
     meta = {
-        "title":   args.title,
+        "title": args.title,
         "authors": [a.strip() for a in args.authors.split(",")] if args.authors else [],
-        "year":    args.year,
+        "year": args.year,
         "journal": args.journal,
-        "doi":     args.doi,
+        "doi": args.doi,
     }
 
-    # Allow model override via CLI
     OLLAMA_MODEL = args.model
 
     result = run_confidence_check(
         args.pdf_path,
-        metadata         = meta,
-        override_approve = args.override_approve,
+        metadata=meta,
+        override_approve=args.override_approve,
     )
     _print_result(result)
 
     sys.exit(
-        0 if result.outcome == EvaluationOutcome.APPROVED      else
+        0 if result.outcome == EvaluationOutcome.APPROVED else
         2 if result.outcome == EvaluationOutcome.MANUAL_REVIEW else
         1
     )
