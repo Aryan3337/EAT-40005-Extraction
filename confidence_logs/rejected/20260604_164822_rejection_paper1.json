@@ -1,0 +1,109 @@
+{
+  "paper": "paper1.pdf",
+  "paper_name": "paper1",
+  "timestamp": "20260604_164822",
+  "model_used": "deepseek-r1:7b",
+  "outcome": "REJECTED",
+  "total_score": 58,
+  "max_possible": 100,
+  "score_pct": 58.0,
+  "thresholds": {
+    "reject_below": 60,
+    "manual_review_band": "60-75",
+    "auto_approve_above": 75
+  },
+  "rejection_reason": "Total score 58/100 (58.0%) is below the reject threshold of 60%.",
+  "review_reason": null,
+  "criteria": [
+    {
+      "name": "Structural Completeness",
+      "score": 15,
+      "max_score": 20,
+      "passed": true,
+      "evaluated_by": "model",
+      "justification": "The paper has a clear structure with sections including introduction, methodology, results, discussion, and references. However, it lacks elements like a title page or table of contents.",
+      "flags": [
+        "Too brief for full-scale study",
+        "missing structural completeness elements",
+        "Insufficient depth in methodology and results",
+        "lacks conclusion and references",
+        "Insufficient structural elements",
+        "missing structure elements"
+      ]
+    },
+    {
+      "name": "Peer-Review Quality",
+      "score": 10,
+      "max_score": 25,
+      "passed": true,
+      "evaluated_by": "model",
+      "justification": "The paper was published in a journal with a DOI and ISBN, indicating some form of formal review process. However, it does not mention peer-reviewed status or reviewers.",
+      "flags": [
+        "No evidence of peer review",
+        "lack of traditional peer-review evidence",
+        "not peer-reviewed",
+        "no peer review evidence"
+      ]
+    },
+    {
+      "name": "Climate and Domain Relevance",
+      "score": 10,
+      "max_score": 15,
+      "passed": true,
+      "evaluated_by": "model",
+      "justification": "The paper discusses the Garo community's language practices, which is relevant to climate and cultural knowledge. However, it focuses more on linguistic aspects than broader environmental or social issues.",
+      "flags": [
+        "Focuses narrowly on language",
+        "missing climate relevance",
+        "Focused on language, not climate",
+        "focused on limited domains",
+        "Focused on a specific aspect",
+        "off-topic for climate focus"
+      ]
+    },
+    {
+      "name": "Ethical Source Handling (ICAT)",
+      "score": 18,
+      "max_score": 25,
+      "passed": true,
+      "evaluated_by": "model",
+      "justification": "The paper uses respectful terminology and mentions informed consent in the context of interviews. However, it does not explicitly state that the researchers are part of the community or have a special relationship with participants.",
+      "flags": [
+        "Lack of discussion on ethical aspects",
+        "missing ICAT checks b, d, e",
+        "lack of explicit researcher-community connection",
+        "Inadequate ethical handling",
+        "no informed consent",
+        "lack of Indigenous authorship",
+        "Insufficient ethical handling",
+        "incomplete ethical handling"
+      ]
+    },
+    {
+      "name": "Metadata Completeness",
+      "score": 3,
+      "max_score": 10,
+      "passed": false,
+      "evaluated_by": "code",
+      "justification": "Metadata present: ['title']. Missing: ['authors', 'year', 'journal', 'doi'].",
+      "flags": [
+        "Missing: authors",
+        "Missing: year",
+        "Missing: journal",
+        "Missing: doi"
+      ]
+    },
+    {
+      "name": "Red-Flag Absence",
+      "score": 2,
+      "max_score": 5,
+      "passed": true,
+      "evaluated_by": "code",
+      "justification": "Red-flag phrases found: ['social media'].",
+      "flags": [
+        "Red flag: 'social media'"
+      ]
+    }
+  ],
+  "next_steps": "REJECTED \u2014 paper skipped. Review the model justifications above for each criterion to understand why this paper did not meet the required standard."
+}

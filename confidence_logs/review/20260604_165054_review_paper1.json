@@ -1,0 +1,116 @@
+{
+  "paper": "paper1.pdf",
+  "paper_name": "paper1",
+  "timestamp": "20260604_165054",
+  "model_used": "deepseek-r1:7b",
+  "outcome": "MANUAL_REVIEW",
+  "total_score": 67,
+  "max_possible": 100,
+  "score_pct": 67.0,
+  "thresholds": {
+    "reject_below": 60,
+    "manual_review_band": "60-75",
+    "auto_approve_above": 75
+  },
+  "rejection_reason": null,
+  "review_reason": "Score 67/100 (67.0%) is in the manual review band (60-75). Check model justifications in the review log before proceeding.",
+  "criteria": [
+    {
+      "name": "Structural Completeness",
+      "score": 17,
+      "max_score": 20,
+      "passed": true,
+      "evaluated_by": "model",
+      "justification": "The paper has a clear structure with sections including introduction, methodology, results, discussion, and references. However, some sections are somewhat brief, leading to a slightly lower score.",
+      "flags": [
+        "incomplete",
+        "Insufficient methodological detail",
+        "missing key sections",
+        "Insufficient structure",
+        "Insufficient structural elements",
+        "Missing structural elements"
+      ]
+    },
+    {
+      "name": "Peer-Review Quality",
+      "score": 20,
+      "max_score": 25,
+      "passed": true,
+      "evaluated_by": "model",
+      "justification": "The paper is published in an academic journal with a DOI and volume information. It uses formal language and proper citation practices, though authors are listed as anonymous. The methodology is rigorous with qualitative research methods.",
+      "flags": [
+        "lack.peer.review",
+        "No peer review",
+        "Basic academic language",
+        "preliminary analysis",
+        "Not peer-reviewed",
+        "No evidence of peer review",
+        "Lack of peer-review info"
+      ]
+    },
+    {
+      "name": "Climate and Domain Relevance",
+      "score": 10,
+      "max_score": 15,
+      "passed": true,
+      "evaluated_by": "model",
+      "justification": "The paper discusses Garo community members, their language maintenance, and cultural practices. While relevant to the Mandi/Garo context, it focuses more on language rather than broader cultural or environmental knowledge specific to the Mandi/Garo community.",
+      "flags": [
+        "relevant",
+        "not focused",
+        "Lack of explicit focus on climate and Indigenous practices",
+        "relevant but limited scope",
+        "Not sufficiently focused on climate",
+        "Lack of focus on climate relevance",
+        "Lack of climate relevance"
+      ]
+    },
+    {
+      "name": "Ethical Source Handling (ICAT)",
+      "score": 15,
+      "max_score": 25,
+      "passed": true,
+      "evaluated_by": "model",
+      "justification": "Mentions respecting terminology and involving the community but lacks detailed documentation of informed consent procedures.",
+      "flags": [
+        "ethical.considerations",
+        "missing.consent.documentation",
+        "a failed",
+        "b failed",
+        "Insufficient ethical handling",
+        "No mention of cultural respect",
+        "ethics concerns",
+        "Ethical concerns",
+        "Lack of author relationship",
+        "No discussion of ethical authorship",
+        "Serious ethical concerns"
+      ]
+    },
+    {
+      "name": "Metadata Completeness",
+      "score": 3,
+      "max_score": 10,
+      "passed": false,
+      "evaluated_by": "code",
+      "justification": "Metadata present: ['title']. Missing: ['authors', 'year', 'journal', 'doi'].",
+      "flags": [
+        "Missing: authors",
+        "Missing: year",
+        "Missing: journal",
+        "Missing: doi"
+      ]
+    },
+    {
+      "name": "Red-Flag Absence",
+      "score": 2,
+      "max_score": 5,
+      "passed": true,
+      "evaluated_by": "code",
+      "justification": "Red-flag phrases found: ['social media'].",
+      "flags": [
+        "Red flag: 'social media'"
+      ]
+    }
+  ],
+  "next_steps": "MANUAL REVIEW \u2014 extraction is held. A team member should read the model justifications, particularly for ICAT, before deciding to approve or reject this paper."
+}

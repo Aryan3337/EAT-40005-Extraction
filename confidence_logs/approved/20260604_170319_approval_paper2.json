@@ -1,0 +1,100 @@
+{
+  "paper": "paper2.pdf",
+  "paper_name": "paper2",
+  "timestamp": "20260604_170319",
+  "model_used": "deepseek-r1:7b",
+  "outcome": "APPROVED",
+  "total_score": 80,
+  "max_possible": 100,
+  "score_pct": 80.0,
+  "thresholds": {
+    "reject_below": 60,
+    "manual_review_band": "60-75",
+    "auto_approve_above": 75
+  },
+  "rejection_reason": null,
+  "review_reason": null,
+  "criteria": [
+    {
+      "name": "Structural Completeness",
+      "score": 15,
+      "max_score": 20,
+      "passed": true,
+      "evaluated_by": "model",
+      "justification": "The document appears to be a genuine research paper as it includes an abstract, introduction, methodology, and references. However, it lacks detailed sections on results or conclusion.",
+      "flags": [
+        "Missing detailed sections on results and conclusion",
+        "missing sections",
+        "Missing explicit conclusion or references",
+        "lack of detailed methodology"
+      ]
+    },
+    {
+      "name": "Peer-Review Quality",
+      "score": 20,
+      "max_score": 25,
+      "passed": true,
+      "evaluated_by": "model",
+      "justification": "The paper is published in an international journal with volume and issue numbers, a DOI, and mentions of government and NGOs providing services. The methodology appears rigorous.",
+      "flags": [
+        "No mention of peer review",
+        "Insufficient methodological rigor",
+        "lack of publication",
+        "no mention of peer review",
+        "lack of detailed methodology"
+      ]
+    },
+    {
+      "name": "Climate and Domain Relevance",
+      "score": 14,
+      "max_score": 15,
+      "passed": true,
+      "evaluated_by": "model",
+      "justification": "The paper discusses the Garo community's challenges related to climate factors, education, healthcare, etc., making it relevant. It also touches on cultural practices but could be more detailed.",
+      "flags": [
+        "Limited focus on climate impact",
+        "shallow coverage",
+        "more detailed discussion needed"
+      ]
+    },
+    {
+      "name": "Ethical Source Handling (ICAT)",
+      "score": 23,
+      "max_score": 25,
+      "passed": true,
+      "evaluated_by": "model",
+      "justification": "The paper uses respectful terminology, does not identify as a Garo author, and mentions informed consent through participants' agreement. It emphasizes Indigenous ways of knowing without reducing their knowledge to objects.",
+      "flags": [
+        "No engagement with ICAT criteria",
+        "missing ethics",
+        "Author's positionality or relationship to the knowledge is not mentioned",
+        "no informed consent",
+        "no discussion of author's positionality"
+      ]
+    },
+    {
+      "name": "Metadata Completeness",
+      "score": 3,
+      "max_score": 10,
+      "passed": false,
+      "evaluated_by": "code",
+      "justification": "Metadata present: ['title']. Missing: ['authors', 'year', 'journal', 'doi'].",
+      "flags": [
+        "Missing: authors",
+        "Missing: year",
+        "Missing: journal",
+        "Missing: doi"
+      ]
+    },
+    {
+      "name": "Red-Flag Absence",
+      "score": 5,
+      "max_score": 5,
+      "passed": true,
+      "evaluated_by": "code",
+      "justification": "No red-flag phrases detected.",
+      "flags": []
+    }
+  ],
+  "next_steps": "APPROVED \u2014 paper is ready for KG extraction."
+}
