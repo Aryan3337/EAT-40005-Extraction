@@ -5,11 +5,6 @@ on:
     branches:
       - github-actions
       - complete
-    paths:
-      - "DeepSeek Output/**"
-      - "script.py"
-      - ".github/workflows/extraction-pipeline.yml"
-
   workflow_dispatch:
 
 jobs:
@@ -32,21 +27,49 @@ jobs:
 
       - name: Show repository files
         run: |
-          pwd
+          echo "Repository file structure:"
           find . -type f
+
+      - name: Check Python script syntax
+        run: |
+          if [ -f "DeepSeek Output/scriptdeep.py" ]; then
+            python -m py_compile "DeepSeek Output/scriptdeep.py"
+          elif [ -f "script.py" ]; then
+            python -m py_compile "script.py"
+          else
+            echo "No extraction Python script found."
+            exit 1
+          fi
 
       - name: List extraction output files
         run: |
-          echo "Checking DeepSeek output folder..."
-          ls -la "DeepSeek Output"
+          echo "Checking output folders..."
+          ls -la
+          if [ -d "DeepSeek Output" ]; then
+            ls -la "DeepSeek Output"
+          fi
 
       - name: Verify CSV output exists
         run: |
-          test -f "DeepSeek Output/paper1_kg.csv"
+          if [ -f "DeepSeek Output/paper1_kg.csv" ]; then
+            echo "CSV found in DeepSeek Output"
+          elif [ -f "paper1_kg.csv" ]; then
+            echo "CSV found in root folder"
+          else
+            echo "CSV output not found"
+            exit 1
+          fi
 
       - name: Verify JSON output exists
         run: |
-          test -f "DeepSeek Output/paper1_kg.json"
+          if [ -f "DeepSeek Output/paper1_kg.json" ]; then
+            echo "JSON found in DeepSeek Output"
+          elif [ -f "paper1_kg.json" ]; then
+            echo "JSON found in root folder"
+          else
+            echo "JSON output not found"
+            exit 1
+          fi
 
       - name: Upload extraction outputs as artifacts
         uses: actions/upload-artifact@v4
@@ -55,3 +78,5 @@ jobs:
           path: |
             DeepSeek Output/*.csv
             DeepSeek Output/*.json
+            *.csv
+            *.json
