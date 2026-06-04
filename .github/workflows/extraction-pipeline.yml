@@ -32,51 +32,24 @@ jobs:
 
       - name: Check Python script syntax
         run: |
-          if [ -f "DeepSeek Output/scriptdeep.py" ]; then
-            python -m py_compile "DeepSeek Output/scriptdeep.py"
-          elif [ -f "script.py" ]; then
-            python -m py_compile "script.py"
-          else
-            echo "No extraction Python script found."
-            exit 1
-          fi
+          python -m py_compile script.py
 
       - name: List extraction output files
         run: |
-          echo "Checking output folders..."
+          echo "Checking repository files..."
           ls -la
-          if [ -d "DeepSeek Output" ]; then
-            ls -la "DeepSeek Output"
-          fi
 
       - name: Verify CSV output exists
         run: |
-          if [ -f "DeepSeek Output/paper1_kg.csv" ]; then
-            echo "CSV found in DeepSeek Output"
-          elif [ -f "paper1_kg.csv" ]; then
-            echo "CSV found in root folder"
+          if [ -f "paper1_kg_extractions.csv" ]; then
+            echo "CSV output found"
           else
             echo "CSV output not found"
             exit 1
           fi
 
-      - name: Verify JSON output exists
-        run: |
-          if [ -f "DeepSeek Output/paper1_kg.json" ]; then
-            echo "JSON found in DeepSeek Output"
-          elif [ -f "paper1_kg.json" ]; then
-            echo "JSON found in root folder"
-          else
-            echo "JSON output not found"
-            exit 1
-          fi
-
-      - name: Upload extraction outputs as artifacts
+      - name: Upload extraction output as artifact
         uses: actions/upload-artifact@v4
         with:
           name: kg-extraction-results
-          path: |
-            DeepSeek Output/*.csv
-            DeepSeek Output/*.json
-            *.csv
-            *.json
+          path: paper1_kg_extractions.csv
