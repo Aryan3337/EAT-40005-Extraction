@@ -25,31 +25,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests pdfplumber
 
-      - name: Show repository files
-        run: |
-          echo "Repository file structure:"
-          find . -type f
-
       - name: Check Python script syntax
         run: |
           python -m py_compile script.py
 
-      - name: List extraction output files
+      - name: List repository files
         run: |
-          echo "Checking repository files..."
-          ls -la
+          echo "Repository files:"
+          find . -type f
 
-      - name: Verify CSV output exists
+      - name: Verify extraction CSV outputs exist
         run: |
-          if [ -f "paper1_kg_extractions.csv" ]; then
-            echo "CSV output found"
-          else
-            echo "CSV output not found"
-            exit 1
-          fi
+          echo "Checking for KG extraction CSV files..."
+          ls *_kg_extractions.csv
 
-      - name: Upload extraction output as artifact
+      - name: Upload all extraction outputs as artifacts
         uses: actions/upload-artifact@v4
         with:
           name: kg-extraction-results
-          path: paper1_kg_extractions.csv
+          path: |
+            *_kg_extractions.csv
