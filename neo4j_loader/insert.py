@@ -12,7 +12,8 @@ def insert_triple(tx, triple):
     MERGE (s:Entity {{name: $subject}})
     MERGE (o:Entity {{name: $object}})
     MERGE (s)-[r:{relation}]->(o)
-    SET r.source_section = $source_section,
+    SET r.source_file = $source_file,
+        r.source_section = $source_section,
         r.confidence = $confidence,
         r.passage = $passage,
         r.sentence_ref = $sentence_ref
@@ -22,6 +23,7 @@ def insert_triple(tx, triple):
         query,
         subject=subject,
         object=obj,
+        source_file=triple.get("source_file", ""),
         source_section=triple.get("source_section", ""),
         confidence=triple.get("confidence", ""),
         passage=triple.get("passage", ""),
