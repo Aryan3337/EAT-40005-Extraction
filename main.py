@@ -20,6 +20,12 @@ triples = run_kg_extraction(pdf_path, model)
 print(f"Extracted {len(triples)} triples.")
 
 if triples:
+    # Preserve the original PDF filename for source traceability
+    source_file = Path(pdf_path).name
+
+    for triple in triples:
+        triple["source_file"] = source_file
+
     add_triples(triples)
 else:
     print("No triples extracted.")
