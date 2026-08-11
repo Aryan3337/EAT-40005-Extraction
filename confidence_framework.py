@@ -46,7 +46,7 @@ REVIEW_QUEUE_FILE = Path("review_queue.csv")
 
 RED_FLAG_PHRASES: List[str] = [
     "blog post", "opinion piece", "press release", "news article",
-    "wikipedia", "social media", "unreviewed",
+    "wikipedia", "social media",
 ]
 
 
