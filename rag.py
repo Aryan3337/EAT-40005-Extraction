@@ -31,7 +31,13 @@ from pathlib import Path
 from typing import List, Dict, Any, Set, Tuple
 from collections import defaultdict
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
+
+# Message returned whenever we can't find relevant triples for a question (SCRUM-174).
+NO_MATCH_MESSAGE = "I don't have information on that."
+ 
+# Default location for the knowledge-gap log (SCRUM-175).
+DEFAULT_GAP_LOG_PATH = "knowledge_gaps.jsonl"
 
 
 # ============================================================
@@ -218,6 +224,11 @@ Return only the query, no explanation."""
 class ConceptRetriever:
     def __init__(self, kg: KnowledgeGraph):
         self.kg = kg
+        # Tracks the confidence of the *last* retrieve() call so RAGSkeleton 
+        # can tell a solid entity match apart from a weak
+        # fallback match without re-parsing the question. SCRUM-173.
+        self.last_entities: Set[str] = set()
+        self.last_match_type: str = "none"  # 'entity' | 'predicate' | 'none'
     
     def _extract_entities(self, question: str) -> Set[str]:
         """
@@ -239,6 +250,9 @@ class ConceptRetriever:
         entities = self._extract_entities(question)
         if not entities:
             # No known entity found – try matching predicates instead.
+            # This is a weak, low-confidence signal (a stray word like "live"
+            # matching a predicate isn't the same as recognizing a real
+            # entity), so we flag it as such via last_match_type.
             predicates = set(t['predicate'].lower() for t in self.kg.triples)
             question_lower = question.lower()
             matched_preds = [p for p in predicates if p in question_lower]
@@ -246,6 +260,7 @@ class ConceptRetriever:
             for t in self.kg.triples:
                 if t['predicate'].lower() in matched_preds:
                     results.append(t)
+            self.last_match_type = "predicate" if matched_preds else "none"
             return results[:top_k]
         
         # Get all triples that contain any of these entities.
@@ -370,10 +385,13 @@ class RAGSkeleton:
     You can choose which retrieval approach to use.
     """
 
-    def __init__(self, kg_path: str, approach: str = "concept"):
+    def __init__(self, kg_path: str, approach: str = "concept",
+                 gap_log_path: str = DEFAULT_GAP_LOG_PATH):
         # Load the knowledge graph from the CSV.
         self.kg = KnowledgeGraph(kg_path)
         self.approach = approach
+        # Where failed / no-match queries get logged (SCRUM-175).
+        self.gap_log_path = Path(gap_log_path)
         # Instantiate the chosen retriever.
         if approach == "concept":
             self.retriever = ConceptRetriever(self.kg)
@@ -407,6 +425,60 @@ class RAGSkeleton:
         return "\n".join(lines)
 
 
+    def _is_knowledge_gap(self, triples: List[Dict]) -> bool:
+        """
+        Decide whether this retrieval counts as "no relevant triples found".
+ 
+        Two conditions trigger a gap (SCRUM-173):
+          1. Empty result set, nothing was retrieved at all.
+          2. Low-confidence match, for concept matching, results came only
+             from the weak predicate-word fallback rather than a real
+             entity match, so they're unreliable enough to treat as a miss.
+        """
+        if not triples:
+            return True
+        if self.approach == "concept":
+            match_type = getattr(self.retriever, "last_match_type", "entity")
+            if match_type != "entity":
+                return True
+        return False
+
+    def _log_knowledge_gap(self, question: str, triples: List[Dict]) -> None:
+        """
+        Append a record of the failed query to the knowledge-gap log
+        (SCRUM-175): the query text, a timestamp, and a no-match flag,
+        plus a bit of context useful for later review.
+        """
+        entry = {
+            "text": question,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "no_match": True,
+            "approach": self.approach,
+            "triples_returned": len(triples),
+        }
+        try:
+            with open(self.gap_log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+        except OSError as e:
+            # Logging should never crash the query path itself.
+            print(f"Warning: could not write knowledge gap log: {e}")
+
+    def answer(self, question: str, top_k: int = 10) -> Tuple[str, bool]:
+        """
+        Full pipeline for a single question: retrieve triples, detect a
+        knowledge gap, log it if needed, and return a user-facing response.
+ 
+        Returns:
+            (response_text, is_gap) - is_gap is True when we fell back to
+            the "I don't have information on that." response (SCRUM-174).
+        """
+        triples = self.query(question, top_k=top_k)
+        if self._is_knowledge_gap(triples):
+            self._log_knowledge_gap(question, triples)
+            return NO_MATCH_MESSAGE, True
+        return self.format_output(triples), False
+
+
 # ============================================================
 # 6. Command‑line interface
 # This section parses the command‑line arguments and runs
@@ -417,6 +489,8 @@ def main():
     parser = argparse.ArgumentParser(description="RAG Retrieval Comparison")
     parser.add_argument("--kg", required=True, help="Path to KG CSV file")
     parser.add_argument("--test-questions", action="store_true", help="Run comparison with built-in test questions")
+    parser.add_argument("--test-out-of-scope", action="store_true",
+                        help="Run deliberately out-of-scope questions to confirm graceful failure (SCRUM-176)")
     parser.add_argument("--query", help="Single question to test")
     parser.add_argument("--approach", choices=["concept", "cypher"], default="concept", 
                         help="Retrieval approach (default: concept)")
@@ -467,15 +541,46 @@ def main():
         print("5. Add Cypher translation later as an optional route for advanced queries.")
         print("=" * 70)
     
+    elif args.test_out_of_scope:
+        # Mode: deliberately ask out-of-scope questions and confirm the
+        # system fails gracefully instead of fabricating an answer (SCRUM-176).
+        out_of_scope_questions = [
+            "What is the capital of France?",
+            "How do you configure a Kubernetes ingress controller?",
+            "What was the score of last night's football game?",
+            "Who won the Nobel Prize in Physics in 2023?",
+            "What's the recipe for chocolate chip cookies?",
+        ]
+        print("=" * 70)
+        print("OUT-OF-SCOPE GRACEFUL FAILURE TEST")
+        print(f"KG: {args.kg} ({len(kg.triples)} triples)")
+        print(f"Approach: {args.approach}")
+        print("=" * 70)
+ 
+        skeleton = RAGSkeleton(args.kg, approach=args.approach)
+        passed = 0
+        for i, q in enumerate(out_of_scope_questions, 1):
+            response, is_gap = skeleton.answer(q, top_k=args.top_k)
+            status = "PASS" if is_gap and response == NO_MATCH_MESSAGE else "FAIL"
+            passed += status == "PASS"
+            print(f"\n[{i}] {status} — \"{q}\"")
+            print(f"    Response: {response}")
+ 
+        print("\n" + "-" * 70)
+        print(f"Result: {passed}/{len(out_of_scope_questions)} questions failed gracefully")
+        print(f"Knowledge gap log: {skeleton.gap_log_path.resolve()}")
+        print("=" * 70)
+ 
     elif args.query:
         # Mode 2: run a single query with the chosen approach.
         skeleton = RAGSkeleton(args.kg, approach=args.approach)
-        triples = skeleton.query(args.query, top_k=args.top_k)
+        response, is_gap = skeleton.answer(args.query, top_k=args.top_k)
         print(f"\nQuestion: {args.query}")
         print(f"Approach: {args.approach}")
-        print(f"Triples retrieved: {len(triples)}")
+        if is_gap:
+            print("Knowledge gap: yes (logged)")
         print("\n" + "-" * 40)
-        print(skeleton.format_output(triples))
+        print(response)
     
     else:
         # Mode 3: interactive mode – keep asking questions until 'exit'.
@@ -493,11 +598,12 @@ def main():
                 break
             if not q.strip():
                 continue
-            triples = skeleton.query(q, top_k=args.top_k)
-            print(f"\nTriples retrieved: {len(triples)}")
+            response, is_gap = skeleton.answer(q, top_k=args.top_k)
+            if is_gap:
+                print("\n(No relevant triples found — logged as a knowledge gap)")
             print("-" * 40)
-            print(skeleton.format_output(triples))
-
-
+            print(response)
+ 
+ 
 if __name__ == "__main__":
     main()
