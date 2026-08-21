@@ -546,10 +546,10 @@ def main():
         # system fails gracefully instead of fabricating an answer (SCRUM-176).
         out_of_scope_questions = [
             "What is the capital of France?",
-            "How do you configure a Kubernetes ingress controller?",
-            "What was the score of last night's football game?",
-            "Who won the Nobel Prize in Physics in 2023?",
-            "What's the recipe for chocolate chip cookies?",
+            "How do you read a book?",
+            "What did I eat for dinner last night?",
+            "Who am I?",
+             "What did I do today?",
         ]
         print("=" * 70)
         print("OUT-OF-SCOPE GRACEFUL FAILURE TEST")
