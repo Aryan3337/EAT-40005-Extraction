@@ -633,12 +633,17 @@ def evaluate_with_model(
         acc = accumulated[name]
         scores = acc["scores"]
 
-        # Same accumulation style as the original framework:
-        # keep the strongest evidence found across successful chunks.
-        score = max(scores) if scores else 0
+        # Aggregate evidence across successful chunks using the mean
+        # rather than keeping only the highest chunk score.
+        score = round(sum(scores) / len(scores)) if scores else 0
 
         if scores:
-            best_idx = scores.index(max(scores))
+            # Use the justification from the chunk whose score is
+            # closest to the final averaged score.
+            best_idx = min(
+                range(len(scores)),
+                key=lambda i: abs(scores[i] - score)
+            )
             justification = (
                 acc["justifications"][best_idx]
                 if best_idx < len(acc["justifications"])
