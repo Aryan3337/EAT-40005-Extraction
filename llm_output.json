@@ -1,0 +1,13 @@
+[
+    {
+        "subject": "Garo Community",
+        "relation": "located_in",
+        "object": "Bangladesh"
+    },
+
+    {
+        "subject": "Wangala Festival",
+        "relation": "celebrated_by",
+        "object": "Garo Community"
+    }
+]

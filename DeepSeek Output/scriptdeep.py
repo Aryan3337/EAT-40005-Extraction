@@ -4,7 +4,7 @@ Knowledge Graph Extraction – DeepSeek
 Uses custom prompt: extract triples with sentence references.
 Outputs CSV + JSON with timing.
 """
-import os
+
 import sys
 import json
 import csv
@@ -13,13 +13,8 @@ import time
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
 from datetime import datetime
-from dotenv import load_dotenv
 import requests
 import pdfplumber
-
-load_dotenv()
-
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 
 # ============================================================
 # 1. Text Extraction
@@ -139,6 +134,7 @@ def parse_triples_with_reference(output: str, page_num: int) -> List[Dict[str, A
 # ============================================================
 # 6. Ollama API call
 # ============================================================
+OLLAMA_URL = "http://localhost:11434/api/generate"
 
 def extract_chunk(chunk_text: str, page_num: int, model: str, retries: int = 2) -> Tuple[List[Dict], float]:
     prompt = make_prompt(chunk_text)
