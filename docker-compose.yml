@@ -1,0 +1,32 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: mandi_kg_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      # Named volume so the ~4.7GB model downloads once per machine and
+      # survives container rebuilds.
+      - ollama_models:/root/.ollama
+    restart: unless-stopped
+
+  app:
+    build: .
+    container_name: mandi_kg_app
+    depends_on:
+      - ollama
+    env_file:
+      - .env
+    environment:
+      # Inside Docker, "localhost" refers to the app container itself, not
+      # the ollama container. Use the service name instead — this requires
+      # the script.py OLLAMA_URL fix noted in the README.
+      - OLLAMA_URL=http://ollama:11434/api/generate
+    volumes:
+      - ./papers:/app/papers
+      - ./output:/app/output
+    stdin_open: true
+    tty: true
+
+volumes:
+  ollama_models:

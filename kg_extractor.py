@@ -4,6 +4,7 @@ Knowledge Graph Extraction from Academic Papers using Ollama
 Outputs CSV with columns: extraction_number, paper, subject, predicate, object, source_section, confidence, passage, sentence_ref
 """
 
+import os
 import sys
 import json
 import csv
@@ -11,8 +12,11 @@ import re
 import time
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
+from dotenv import load_dotenv
 import requests
 import pdfplumber
+
+load_dotenv()
 
 # ============================================================
 # 1. Text Extraction from PDF
@@ -57,7 +61,7 @@ def chunk_text(text: str, chunk_size: int = 1500, overlap: int = 200) -> List[Tu
 # ============================================================
 # 3. Ollama API call with custom prompt
 # ============================================================
-OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 
 def make_extraction_prompt(chunk_text: str) -> str:
     return f"""You are a knowledge graph extraction assistant. You will be provided with a passage from an academic research paper.
@@ -131,7 +135,7 @@ def extract_triples_from_chunk(chunk_text: str, page_num: int, model: str, retri
                     "stream": False,
                     "options": {"temperature": 0.1, "num_predict": 2048}
                 },
-                timeout=120
+                timeout=300
             )
             if response.status_code != 200:
                 print("OLLAMA STATUS ERROR:", response.status_code)
@@ -198,7 +202,7 @@ def save_triples_to_csv(triples: List[Dict], output_path: str, paper_name: str):
 # ============================================================
 # 6. Main Pipeline
 # ============================================================
-def run_kg_extraction(pdf_path: str, model: str = "mistral:7b"):
+def run_kg_extraction(pdf_path: str, model: str = "deepseek-r1:7b"):
     print(f"1. Extracting text from {pdf_path}...")
     full_text = extract_text_from_pdf(pdf_path)
 
@@ -227,11 +231,11 @@ def run_kg_extraction(pdf_path: str, model: str = "mistral:7b"):
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python script.py <path_to_pdf> [model_name]")
-        print("Example: python script.py paper.pdf mistral:7b")
+        print("Example: python script.py paper.pdf deepseek-r1:7b")
         sys.exit(1)
 
     pdf_file = sys.argv[1]
-    model = sys.argv[2] if len(sys.argv) > 2 else "mistral:7b"
+    model = sys.argv[2] if len(sys.argv) > 2 else "deepseek-r1:7b"
 
     if not Path(pdf_file).exists():
         print(f"File not found: {pdf_file}")

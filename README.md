@@ -1,21 +1,19 @@
 # Knowledge Graph Extraction Backend
 
-Automatically extract knowledge graph triples from academic PDF papers using a local LLM (Ollama + Mistral) and upload them directly into a Neo4j database.
+Extracts knowledge graph triples from academic PDF papers about the Mandi/Garo community using a local LLM (Ollama + DeepSeek R1 7B) and uploads them into a Neo4j AuraDB database.
 
 ## Overview
-
-This backend provides an end-to-end pipeline that converts unstructured academic papers into a structured knowledge graph.
 
 ### Pipeline
 
 ```text
 PDF Research Paper
         ↓
-Text Extraction
+Text Extraction (pdfplumber)
         ↓
 Text Chunking
         ↓
-LLM Triple Extraction (Ollama + Mistral)
+LLM Triple Extraction (Ollama + DeepSeek R1 7B)
         ↓
 Deduplication
         ↓
@@ -24,79 +22,119 @@ Neo4j Upload
 Knowledge Graph
 ```
 
-## Requirements
+## Running with Docker (recommended)
 
-- Windows / macOS / Linux
-- Python 3.10+
-- Ollama installed (https://ollama.com)
-- Neo4j Aura account and database instance
-- At least 8GB RAM (16GB recommended)
+You don't need Python, Ollama, or any dependencies installed locally — Docker handles all of it. This is the easiest way to get the pipeline running if you've never set any of this up before.
 
-## Installation
+### 1. Install Docker Desktop
+
+Download and install from https://www.docker.com/products/docker-desktop — this works on Windows, macOS, and Linux. Open Docker Desktop once after installing to make sure it's running (you'll see a whale icon in your system tray/menu bar).
+
+### 2. Clone the repo and set up your `.env` file
+
+```bash
+git clone <repo-url>
+cd EAT-40005-Extraction
+```
+
+Copy the example environment file:
+
+```bash
+cp .env.example .env
+```
+
+(On Windows PowerShell: `copy .env.example .env`)
+
+Open `.env` and fill in the real Neo4j credentials — ask a team member (Aidan has the AuraDB instance) for these. **Never commit `.env`** — it's already excluded via `.gitignore`.
+
+NEO4J_URI=neo4j+s://your-instance-id.databases.neo4j.io
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=your-password-here
+
+
+### 3. Build and start the containers
+
+```bash
+docker compose up --build
+```
+
+This starts two containers:
+- **`ollama`** — runs the local LLM server (DeepSeek R1 7B)
+- **`app`** — the Python environment with the extraction pipeline, connected to `ollama` internally
+
+First run will take a while as it builds the Python image and starts Ollama. Leave this running in its own terminal, or add `-d` to run it in the background (`docker compose up --build -d`).
+
+### 4. Pull the DeepSeek model (first time only)
+
+In a **new terminal window**, run:
+
+```bash
+docker compose exec ollama ollama pull deepseek-r1:7b
+```
+
+This downloads the model (~4.7GB) into a Docker volume, so you only need to do this once — it survives container rebuilds.
+
+### 5. Add a paper and run extraction
+
+Drop a PDF into the `papers/` folder in the project root, then run:
+
+```bash
+docker compose exec app python main.py papers/your_paper.pdf
+```
+
+Output triples are saved to `output/<paper_name>_kg.csv` and also uploaded directly to Neo4j.
+
+### 6. Stopping the containers
+
+```bash
+docker compose down
+```
+
+Your downloaded model and `.env` config are preserved — running `docker compose up` again won't require re-downloading the model.
+
+## Troubleshooting
+
+- **"Connection refused" to Ollama**: make sure `docker compose up` is still running in its terminal — the `app` container talks to `ollama` over the internal Docker network (`http://ollama:11434`), not `localhost`.
+- **Neo4j connection errors**: double check your `.env` values are correct and that the AuraDB instance hasn't auto-paused from inactivity (check the Aura console — Aidan can help resolve this).
+- **Slow extraction**: DeepSeek R1 7B runs on CPU inside the container by default, so expect each chunk to take a while, especially on laptops without a dedicated GPU passthrough set up.
+- **Model re-downloading every time**: this means the `ollama_models` volume isn't persisting — check you didn't run `docker compose down -v` (the `-v` flag deletes volumes).
+
+## Running without Docker (alternative)
+
+If you'd rather set things up natively:
 
 ### 1. Install Ollama
 
-Windows: Download from https://ollama.com
+Windows: download from https://ollama.com
+macOS/Linux: `curl -fsSL https://ollama.com/install.sh | sh`
 
-macOS/Linux:
-
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
-```
-
-### 2. Start the Ollama Server
+### 2. Start Ollama and pull the model
 
 ```bash
 ollama serve
+ollama pull deepseek-r1:7b
 ```
 
-### 3. Download the Mistral Model
-
-```bash
-ollama pull mistral:7b
-```
-
-### 4. Install Python Dependencies
+### 3. Install Python dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Or:
+### 4. Set up `.env` (same as Docker step 2 above)
+
+### 5. Run
 
 ```bash
-pip install neo4j python-dotenv pdfplumber requests
+python main.py papers/your_paper.pdf
 ```
-
-## Usage
-
-```bash
-python main.py your_paper.pdf mistral:7b
-```
-
-Example:
-
-```bash
-python main.py paper.pdf mistral:7b
-```
-
-## What Happens During Execution
-
-1. Extract text from the PDF.
-2. Split the text into chunks.
-3. Send chunks to Mistral via Ollama.
-4. Extract knowledge graph triples.
-5. Deduplicate triples.
-6. Upload nodes and relationships to Neo4j.
 
 ## Viewing the Knowledge Graph
 
-Go to: https://browser.neo4j.io/
- 
-Enter
-URI: neo4j+s://cf02815e.databases.neo4j.io
-user: cf02815e
-password: L9t6VQGnCr55FHipQQbVGP43vM_YPdR6HElfFlxVw-w
+Go to https://browser.neo4j.io/ and enter your connection details from `.env`:
+- URI: `NEO4J_URI`
+- User: `NEO4J_USERNAME`
+- Password: `NEO4J_PASSWORD`
 
 ```cypher
 MATCH (n)-[r]->(m)
@@ -110,4 +148,3 @@ Count relationships:
 MATCH ()-[r]->()
 RETURN count(r)
 ```
-

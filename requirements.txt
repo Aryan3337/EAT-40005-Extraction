@@ -1,2 +1,4 @@
+pdfplumber
+requests
 neo4j
 python-dotenv
