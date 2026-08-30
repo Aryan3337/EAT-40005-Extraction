@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Knowledge Graph Extraction – DeepSeek
-Uses custom prompt: extract triples with sentence references.
-Outputs CSV + JSON with timing.
+Knowledge Graph Extraction – DeepSeek (standalone extraction)
+With auto‑approval detection and interactive user choices.
 """
 
 import sys
@@ -10,6 +9,7 @@ import json
 import csv
 import re
 import time
+import subprocess
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
 from datetime import datetime
@@ -60,7 +60,6 @@ def chunk_text(text: str, chunk_size: int = 2500, overlap: int = 400) -> List[Tu
 # 3. Strip DeepSeek reasoning
 # ============================================================
 def strip_deepseek_reasoning(raw: str) -> str:
-    """Remove thinking prefixes."""
     for marker in ['(', '[', '{']:
         idx = raw.find(marker)
         if idx != -1:
@@ -93,30 +92,23 @@ Passage:
 """
 
 # ============================================================
-# 5. Parse triples and references
+# 5. Parse triples with reference
 # ============================================================
 def parse_triples_with_reference(output: str, page_num: int) -> List[Dict[str, Any]]:
-    """
-    Parse lines like:
-    (Subject)-[PREDICATE]->(Object) | Location: "sentence text" (Page 5)
-    """
     triples = []
     lines = output.split('\n')
     for line in lines:
         line = line.strip()
-        # Match triple part
         triple_match = re.search(r'\(([^)]+)\)\s*-\s*\[:?([^\]]+)\]\s*->\s*\(([^)]+)\)', line)
         if triple_match:
             subject = triple_match.group(1).strip()
             predicate = triple_match.group(2).strip().upper()
             obj = triple_match.group(3).strip()
-            # Extract location / sentence reference after '|'
             ref_match = re.search(r'\|\s*Location:\s*["]?(.*?)["]?(?:\s*\(Page\s*(\d+)\))?$', line, re.IGNORECASE)
             if ref_match:
                 sentence_ref = ref_match.group(1).strip()
                 ref_page = ref_match.group(2) if ref_match.group(2) else str(page_num)
             else:
-                # Fallback: use whole line after triple
                 parts = line.split('|', 1)
                 sentence_ref = parts[1].strip() if len(parts) > 1 else "NO_REFERENCE"
                 ref_page = str(page_num)
@@ -132,7 +124,7 @@ def parse_triples_with_reference(output: str, page_num: int) -> List[Dict[str, A
     return triples
 
 # ============================================================
-# 6. Ollama API call
+# 6. Ollama extraction call
 # ============================================================
 OLLAMA_URL = "http://localhost:11434/api/generate"
 
@@ -174,7 +166,6 @@ def deduplicate(triples: List[Dict]) -> List[Dict]:
         if key not in seen:
             seen[key] = t
         else:
-            # Keep longer sentence reference (more informative)
             if len(t.get('sentence_ref', '')) > len(seen[key].get('sentence_ref', '')):
                 seen[key] = t
     return list(seen.values())
@@ -229,88 +220,139 @@ def format_time(seconds: float) -> str:
     return f"{minutes}m {secs:.2f}s"
 
 # ============================================================
-# 10. Main pipeline
+# 10. Helper to get command line arguments
 # ============================================================
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: python kg_deepseek_final.py <pdf_path> [model_name]")
-        print("Example: python kg_deepseek_final.py paper.pdf deepseek-r1:7b")
-        sys.exit(1)
+def _get_arg(name: str, default=None):
+    if name in sys.argv:
+        idx = sys.argv.index(name)
+        if idx + 1 < len(sys.argv):
+            return sys.argv[idx+1]
+    return default
 
-    pdf_path = sys.argv[1]
-    model = sys.argv[2] if len(sys.argv) > 2 else "deepseek-r1:7b"
+# ============================================================
+# 11. Check if paper has been approved (looks in approved folder)
+# ============================================================
+def is_paper_approved(pdf_path: str) -> bool:
+    approved_dir = Path("confidence_logs/approved")
+    if not approved_dir.exists():
+        return False
+    paper_stem = Path(pdf_path).stem
+    pattern = f"*_approval_{paper_stem}.json"
+    matches = list(approved_dir.glob(pattern))
+    return len(matches) > 0
 
-    if not Path(pdf_path).exists():
-        print(f"File not found: {pdf_path}")
-        sys.exit(1)
+# ============================================================
+# 12. Run confidence check (external script)
+# ============================================================
+def run_confidence_check_external(pdf_path: str, metadata: Dict[str, Any]) -> int:
+    cmd = [
+        sys.executable, "confidence_framework.py",
+        pdf_path,
+        "--title", metadata.get("title", ""),
+        "--authors", metadata.get("authors", ""),
+        "--year", metadata.get("year", ""),
+        "--journal", metadata.get("journal", ""),
+        "--doi", metadata.get("doi", "")
+    ]
+    result = subprocess.run(cmd, capture_output=False, text=True)
+    return result.returncode
 
+# ============================================================
+# 13. Extraction routine (factored out)
+# ============================================================
+def run_extraction(pdf_path: str, model: str):
     total_start = time.time()
-
     print("=" * 70)
-    print(f"Knowledge Graph Extraction – DeepSeek (User Prompt)")
+    print(f"Knowledge Graph Extraction – DeepSeek")
     print(f"PDF: {pdf_path}")
     print(f"Model: {model}")
     print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 70)
 
-    # Step 1: Extract text
-    print("\n1. Extracting text from PDF...")
-    step_start = time.time()
     full_text = extract_text_from_pdf(pdf_path)
     if not full_text.strip():
         print("No text extracted.")
         return
     print(f"   Done in {format_time(time.time() - step_start)}")
 
-    # Step 2: Chunk
-    print("\n2. Chunking text...")
-    step_start = time.time()
     chunks = chunk_text(full_text, chunk_size=2500, overlap=400)
-    print(f"   Created {len(chunks)} chunks in {format_time(time.time() - step_start)}")
+    print(f"\nCreated {len(chunks)} chunks")
 
-    # Step 3: Extract triples
-    print(f"\n3. Extracting triples with {model}...")
     all_triples = []
-    chunk_times = []
-    extraction_start = time.time()
-
     for idx, (chunk, page) in enumerate(chunks, 1):
-        print(f"   Chunk {idx}/{len(chunks)} (page ~{page})...", end=" ", flush=True)
-        triples, chunk_time = extract_chunk(chunk, page, model)
+        print(f"Chunk {idx}/{len(chunks)} (page ~{page})...", end=" ", flush=True)
+        triples, _ = extract_chunk(chunk, page, model)
         all_triples.extend(triples)
-        chunk_times.append(chunk_time)
-        print(f"got {len(triples)} triples in {format_time(chunk_time)}")
+        print(f"got {len(triples)} triples")
         time.sleep(0.2)
 
-    total_extraction_time = time.time() - extraction_start
-    print(f"\n   Extraction Summary:")
-    print(f"   - Total raw triples: {len(all_triples)}")
-    print(f"   - Total extraction time: {format_time(total_extraction_time)}")
-
-    # Step 4: Deduplicate
-    print("\n4. Deduplicating...")
-    step_start = time.time()
     unique = deduplicate(all_triples)
-    print(f"   Kept {len(unique)} unique triples in {format_time(time.time() - step_start)}")
-
-    # Step 5: Save
-    print("\n5. Saving output files...")
-    step_start = time.time()
     base_name = Path(pdf_path).stem
-    csv_path = f"{base_name}_kg.csv"
-    json_path = f"{base_name}_kg.json"
-    save_csv(unique, csv_path, base_name)
-    save_json(unique, json_path, base_name)
-    print(f"   Saved to {csv_path} and {json_path} in {format_time(time.time() - step_start)}")
+    save_csv(unique, f"{base_name}_kg.csv", base_name)
+    save_json(unique, f"{base_name}_kg.json", base_name)
 
     total_time = time.time() - total_start
-    print("\n" + "=" * 70)
-    print(f"COMPLETED!")
-    print(f"Total time: {format_time(total_time)}")
-    print(f"Unique triples: {len(unique)}")
-    print(f"Extractions/sec: {len(unique) / total_time:.2f}")
-    print(f"Finished at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 70)
+    print(f"\nCOMPLETED! {len(unique)} unique triples in {format_time(total_time)}")
+
+# ============================================================
+# 14. Main
+# ============================================================
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: python script.py <pdf_path> [model_name] [--title ...]")
+        print("Example: python script.py paper.pdf deepseek-r1:7b --title 'Paper Title' --year 2023")
+        sys.exit(1)
+
+    pdf_path = sys.argv[1]
+    model = "deepseek-r1:7b"
+    if len(sys.argv) > 2 and not sys.argv[2].startswith('--'):
+        model = sys.argv[2]
+
+    metadata = {
+        "title":   _get_arg('--title', default=""),
+        "authors": _get_arg('--authors', default=""),
+        "year":    _get_arg('--year', default=""),
+        "journal": _get_arg('--journal', default=""),
+        "doi":     _get_arg('--doi', default="")
+    }
+
+    # Auto‑approval check
+    if is_paper_approved(pdf_path):
+        print("\n✅ Paper previously APPROVED by confidence framework. Running extraction automatically.")
+        run_extraction(pdf_path, model)
+        return
+
+    # Not approved – show menu
+    print("\n" + "="*70)
+    print("Paper has NOT been approved (or no prior confidence evaluation found).")
+    print("Options:")
+    print("  1) Run confidence check now (recommended)")
+    print("  2) Extract anyway (bypass confidence)")
+    print("  3) Exit")
+    choice = input("Enter choice (1/2/3): ").strip()
+
+    if choice == '1':
+        exit_code = run_confidence_check_external(pdf_path, metadata)
+        if exit_code == 1:
+            print("\n❌ PAPER REJECTED – extraction skipped.")
+            sys.exit(1)
+        elif exit_code == 2:
+            print("\n⚠️ PAPER NEEDS MANUAL REVIEW")
+            answer = input("Override and approve anyway? (y/N): ").strip().lower()
+            if answer != 'y':
+                print("Extraction skipped.")
+                sys.exit(2)
+            print("Manual override accepted – proceeding with extraction.")
+        print("\n✅ PAPER APPROVED – starting KG extraction")
+        run_extraction(pdf_path, model)
+
+    elif choice == '2':
+        print("\n⚠️ Bypassing confidence check – extraction may produce low‑quality results.")
+        run_extraction(pdf_path, model)
+
+    else:
+        print("Exiting.")
+        sys.exit(0)
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,92 @@
+{
+  "paper": "paper1.pdf",
+  "paper_name": "paper1",
+  "timestamp": "20260530_204341",
+  "outcome": "REJECTED",
+  "total_score": 62,
+  "max_possible": 100,
+  "score_pct": 62.0,
+  "thresholds": {
+    "reject_below": 60,
+    "manual_review_band": "60\u201375",
+    "auto_approve_above": 75
+  },
+  "rejection_reason": "Hard-fail gate(s) triggered: Ethical Source Handling (ICAT)",
+  "review_reason": null,
+  "icat_flags": [
+    "No signals for: Contemporary or community-aligned authorship",
+    "No signals for: Informed consent documented",
+    "No signals for: Indigenous knowledge centred",
+    "Harmful terminology detected: ['primitive']",
+    "HARD FAIL: Informed consent check failed \u2014 mandatory for Indigenous knowledge sources."
+  ],
+  "criteria": [
+    {
+      "name": "Structural Completeness",
+      "score": 20,
+      "max_score": 20,
+      "passed_minimum": true,
+      "hard_fail_gate": true,
+      "gate_triggered": false,
+      "details": "Sections found: ['abstract', 'introduction', 'conclusion', 'references'] (4/4). Word count: 8351 (min: 1500).",
+      "flags": []
+    },
+    {
+      "name": "Peer-Review Signals",
+      "score": 18,
+      "max_score": 25,
+      "passed_minimum": true,
+      "hard_fail_gate": false,
+      "gate_triggered": false,
+      "details": "DOI: no | Vol/issue/page: yes (+4) | Publisher 'springer': yes (+4) | Academic signals (10): +8 | Institutional email: yes (+2)",
+      "flags": []
+    },
+    {
+      "name": "Climate / Domain Relevance",
+      "score": 15,
+      "max_score": 15,
+      "passed_minimum": true,
+      "hard_fail_gate": true,
+      "gate_triggered": false,
+      "details": "Unique keywords matched: 8 (min gate: 3). Top: ['mandi', 'garo', 'community', 'bangladesh', 'land', 'indigenous'].",
+      "flags": []
+    },
+    {
+      "name": "Ethical Source Handling (ICAT)",
+      "score": 7,
+      "max_score": 25,
+      "passed_minimum": false,
+      "hard_fail_gate": true,
+      "gate_triggered": true,
+      "details": "[PASS] Respectful terminology | [FAIL] Contemporary or community-aligned authorship | [FAIL] Informed consent documented | [FAIL] Indigenous knowledge centred | [PASS] Author positionality stated",
+      "flags": [
+        "No signals for: Contemporary or community-aligned authorship",
+        "No signals for: Informed consent documented",
+        "No signals for: Indigenous knowledge centred",
+        "Harmful terminology detected: ['primitive']",
+        "HARD FAIL: Informed consent check failed \u2014 mandatory for Indigenous knowledge sources."
+      ]
+    },
+    {
+      "name": "Metadata Completeness",
+      "score": 0,
+      "max_score": 10,
+      "passed_minimum": false,
+      "hard_fail_gate": false,
+      "gate_triggered": false,
+      "details": "Present: []. Missing: ['title', 'authors', 'year', 'journal', 'doi'].",
+      "flags": []
+    },
+    {
+      "name": "Red-Flag Absence",
+      "score": 2,
+      "max_score": 5,
+      "passed_minimum": true,
+      "hard_fail_gate": false,
+      "gate_triggered": false,
+      "details": "Red-flag phrases found: ['social media'].",
+      "flags": []
+    }
+  ],
+  "next_steps": "REJECTED \u2014 paper skipped. Review criteria breakdown. Do NOT bypass ICAT hard-fails without documented justification."
+}
