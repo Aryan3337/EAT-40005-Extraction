@@ -1,0 +1,47 @@
+name: Automated KG Extraction Pipeline
+
+on:
+  push:
+    branches:
+      - github-actions
+      - complete
+  workflow_dispatch:
+
+jobs:
+  validate-kg-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pdfplumber
+
+      - name: Check Python script syntax
+        run: |
+          python -m py_compile script.py
+
+      - name: List repository files
+        run: |
+          echo "Repository files:"
+          find . -type f
+
+      - name: Verify extraction CSV outputs exist
+        run: |
+          echo "Checking for KG extraction CSV files..."
+          ls *_kg_extractions.csv
+
+      - name: Upload all extraction outputs as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kg-extraction-results
+          path: |
+            *_kg_extractions.csv
