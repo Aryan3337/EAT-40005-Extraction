@@ -13,10 +13,13 @@ def insert_triple(tx, triple):
     MERGE (o:Entity {{name: $object}})
     MERGE (s)-[r:{relation}]->(o)
     SET r.source_file = $source_file,
-        r.source_section = $source_section,
-        r.confidence = $confidence,
-        r.passage = $passage,
-        r.sentence_ref = $sentence_ref
+    r.source_title = $source_title,
+    r.source_authors = $source_authors,
+    r.source_publication = $source_publication,
+    r.source_section = $source_section,
+    r.confidence = $confidence,
+    r.passage = $passage,
+    r.sentence_ref = $sentence_ref
     """
 
     tx.run(
@@ -24,6 +27,9 @@ def insert_triple(tx, triple):
         subject=subject,
         object=obj,
         source_file=triple.get("source_file", ""),
+        source_title=triple.get("source_title", ""),
+ 	source_authors=triple.get("source_authors", ""),
+	source_publication=triple.get("source_publication", ""),
         source_section=triple.get("source_section", ""),
         confidence=triple.get("confidence", ""),
         passage=triple.get("passage", ""),
@@ -31,23 +37,9 @@ def insert_triple(tx, triple):
     )
 
 def add_triples(triples):
-    inserted = 0
-    skipped = 0
-
     with driver.session() as session:
         for triple in triples:
             if triple["subject"] != "UNKNOWN":
                 session.execute_write(insert_triple, triple)
-                inserted += 1
-            else:
-                skipped += 1
 
-    if inserted > 0:
-        print(f"Uploaded {inserted} triples to Neo4j.")
-    else:
-        print("No triples uploaded to Neo4j — all candidates were UNKNOWN or invalid.")
-
-    if skipped > 0:
-        print(f"Skipped {skipped} UNKNOWN/invalid triples.")
-
-    return inserted, skipped
+    print("Triples uploaded to Neo4j.")

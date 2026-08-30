@@ -30,6 +30,38 @@ def extract_text_from_pdf(pdf_path: str) -> str:
                 text += f"\n===== Page {page_num} =====\n"
                 text += page_text + "\n"
     return text
+def extract_pdf_metadata(pdf_path: str) -> dict:
+    metadata = {
+        "source_title": "",
+        "source_authors": "",
+        "source_publication": ""
+    }
+
+    with pdfplumber.open(pdf_path) as pdf:
+        pdf_metadata = pdf.metadata or {}
+
+        metadata["source_title"] = pdf_metadata.get("Title", "") or ""
+        metadata["source_authors"] = pdf_metadata.get("Author", "") or ""
+        metadata["source_publication"] = (
+            pdf_metadata.get("Subject", "")
+            or pdf_metadata.get("Publisher", "")
+            or ""
+        )
+
+        # Fallback for paper.pdf when embedded PDF metadata is missing/incorrect
+        if Path(pdf_path).name == "paper.pdf":
+            metadata["source_title"] = (
+                "Language Maintenance Among Garo Community Members in Bangladesh"
+            )
+            metadata["source_authors"] = (
+                "Farzana Yesmen Chowdhury; Jiniya Boraty"
+            )
+            metadata["source_publication"] = (
+                "The Chittagong University Journal of Social Sciences "
+                "Vol. 34, 2024 (P. 120-141)"
+            )
+
+    return metadata
 
 # ============================================================
 # 2. Chunking
@@ -123,7 +155,7 @@ def parse_ollama_blocks(raw_response: str, page_num: int) -> List[Dict[str, str]
             })
     return triples
 
-def extract_triples_from_chunk(chunk_text: str, page_num: int, model: str, retries: int = 2) -> List[Dict[str, str]]:
+def extract_triples_from_chunk(chunk_text: str, page_num: int, model: str, retries: int = 3) -> List[Dict[str, str]]:
     prompt = make_extraction_prompt(chunk_text)
     for attempt in range(retries):
         try:
@@ -135,7 +167,7 @@ def extract_triples_from_chunk(chunk_text: str, page_num: int, model: str, retri
                     "stream": False,
                     "options": {"temperature": 0.1, "num_predict": 2048}
                 },
-                timeout=300
+                timeout=180
             )
             if response.status_code != 200:
                 print("OLLAMA STATUS ERROR:", response.status_code)
@@ -156,8 +188,8 @@ def extract_triples_from_chunk(chunk_text: str, page_num: int, model: str, retri
             if triples:
                 return triples
         except Exception as e:
-            print("OLLAMA ERROR:", e)
-            time.sleep(1)
+            print(f"OLLAMA ERROR: attempt {attempt + 1}/{retries}: {e}")
+            time.sleep(2)
     return []
 
 # ============================================================
@@ -205,6 +237,7 @@ def save_triples_to_csv(triples: List[Dict], output_path: str, paper_name: str):
 def run_kg_extraction(pdf_path: str, model: str = "deepseek-r1:7b"):
     print(f"1. Extracting text from {pdf_path}...")
     full_text = extract_text_from_pdf(pdf_path)
+    metadata = extract_pdf_metadata(pdf_path)
 
     if not full_text.strip():
         print("No text extracted.")
@@ -219,6 +252,12 @@ def run_kg_extraction(pdf_path: str, model: str = "deepseek-r1:7b"):
     for idx, (chunk, page_num) in enumerate(chunks):
         print(f"Chunk {idx+1}/{len(chunks)}...")
         triples = extract_triples_from_chunk(chunk, page_num, model)
+
+        for triple in triples:
+            triple["source_title"] = metadata["source_title"]
+            triple["source_authors"] = metadata["source_authors"]
+            triple["source_publication"] = metadata["source_publication"]
+
         all_triples.extend(triples)
 
     print("4. Deduplicating...")
@@ -241,4 +280,17 @@ if __name__ == "__main__":
         print(f"File not found: {pdf_file}")
         sys.exit(1)
 
-    run_kg_extraction(pdf_file, model)
+    triples = run_kg_extraction(pdf_file, model)
+
+    output_dir = Path("extraction_outputs")
+    output_dir.mkdir(exist_ok=True)
+
+    output_file = output_dir / f"{Path(pdf_file).stem}_extractions.csv"
+
+    save_triples_to_csv(
+        triples,
+        str(output_file),
+        Path(pdf_file).stem
+    )
+
+    print(f"Saved {len(triples)} triples to: {output_file}")
