@@ -3,43 +3,33 @@ from neo4j_loader.cleaner import clean_relation
 
 driver = get_driver()
 
-def insert_triple(tx, triple):
-    subject = triple["subject"]
-    relation = clean_relation(triple.get("predicate", triple.get("relation", "RELATED_TO")))
-    obj = triple["object"]
+def insert_triple(tx, subject, relation, obj):
+
+    relation = clean_relation(relation)
 
     query = f"""
     MERGE (s:Entity {{name: $subject}})
     MERGE (o:Entity {{name: $object}})
-    MERGE (s)-[r:{relation}]->(o)
-    SET r.source_file = $source_file,
-    r.source_title = $source_title,
-    r.source_authors = $source_authors,
-    r.source_publication = $source_publication,
-    r.source_section = $source_section,
-    r.confidence = $confidence,
-    r.passage = $passage,
-    r.sentence_ref = $sentence_ref
+    MERGE (s)-[:{relation}]->(o)
     """
 
     tx.run(
         query,
         subject=subject,
-        object=obj,
-        source_file=triple.get("source_file", ""),
-        source_title=triple.get("source_title", ""),
- 	source_authors=triple.get("source_authors", ""),
-	source_publication=triple.get("source_publication", ""),
-        source_section=triple.get("source_section", ""),
-        confidence=triple.get("confidence", ""),
-        passage=triple.get("passage", ""),
-        sentence_ref=triple.get("sentence_ref", "")
+        object=obj
     )
 
 def add_triples(triples):
-    with driver.session() as session:
-        for triple in triples:
-            if triple["subject"] != "UNKNOWN":
-                session.execute_write(insert_triple, triple)
 
-    print("Triples uploaded to Neo4j.")
+    with driver.session() as session:
+
+        for triple in triples:
+
+            session.execute_write(
+                insert_triple,
+                triple["subject"],
+                triple["relation"],
+                triple["object"]
+            )
+
+    print("All triples inserted.")
