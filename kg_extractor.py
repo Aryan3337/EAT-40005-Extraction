@@ -78,10 +78,15 @@ Strict rules for the PASSAGE line:
 - It MUST be written ONLY as (Subject)-[PREDICATE]->(Object). Never write a full sentence, paraphrase, or description on the PASSAGE line — that line is a structured triple, not prose.
 - Subject and Object must be short noun phrases (1-4 words) in CamelCase with no spaces, e.g. (MandiLanguage), (GaroCommunity).
 - Predicate must be UPPER_CASE_WITH_UNDERSCORES, e.g. IS_SPOKEN_BY, MAINTAINS, IS_LOCATED_IN.
-- Do not decide in advance what topics or domains to look for — extract everything factual the passage contains about the Garo/Mandi community.
-- Each PASSAGE line must be traceable to a specific sentence, quoted exactly in SENTENCE REF.
-- Skip bibliographic references, author citations, journal titles, page numbers, and keyword lists entirely — do not output a block for these, they contain no factual claim about the community.
-- Output only the formatted comment blocks. No explanation, no prose, no extra text.
+- If a sentence lists multiple values for the same relationship (e.g. multiple professions, multiple locations, multiple languages), output ONE SEPARATE triple per value. Never combine multiple values into a single comma-separated Object — e.g. write (GaroCommunity)-[HAS_PROFESSION]->(Teacher) and (GaroCommunity)-[HAS_PROFESSION]->(Farmer) as two blocks, not one block with (Teacher, Farmer).
+- Do not decide in advance what topics or domains to look for — extract everything factual the passage contains about the Garo/Mandi community's culture, language, history, practices, and lived experience.
+- Each PASSAGE line must be traceable to a specific sentence, quoted exactly in SENTENCE REF. If you cannot find an exact sentence, do not output a block for that content at all.
+
+Skip entirely — do not output a block for any of the following:
+- Bibliographic references, author citations, journal titles, page numbers, or keyword lists.
+- Descriptions of the research study itself: sample sizes, participant counts or demographics (age, gender), interview or data collection methods, data analysis or coding procedures, or any statement about what "the researchers" or "the study" did. Only extract facts about the Garo/Mandi community, never facts about how the paper studied them.
+
+Output only the formatted comment blocks. No explanation, no prose, no extra text.
 
 Passage:
 {chunk_text}

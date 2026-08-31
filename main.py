@@ -28,7 +28,7 @@ if triples:
         triple["source_file"] = source_file
 
     # ------------------------------------------------------------
-    # Validation gate: structural checks + artifact flagging,
+    # Validation gate: structural checks + artifact filtering,
     # run before anything reaches Neo4j.
     # ------------------------------------------------------------
     print("\nRunning validation gate...")
@@ -45,15 +45,20 @@ if triples:
 
     print(f"Validation: {len(valid_triples)} passed, {rejected_count} rejected.")
 
+    # Artifact filtering: exclude research-methodology triples entirely
+    # rather than just warning, since they aren't real community knowledge.
     flagged = flag_artifact_triples(valid_triples)
     if flagged:
-        print(f"\n[WARN] {len(flagged)} triples may contain research-methodology artifacts (not blocked, review manually):")
+        flagged_indices = {item['index'] for item in flagged}
+        print(f"\n[FILTERED] Excluding {len(flagged)} triples that matched research-methodology artifacts:")
         for item in flagged:
             t = item['triple']
             print(f"  - ({t['subject']})-[{t['predicate']}]->({t['object']})  [matched: '{item['matched_keyword']}']")
+        valid_triples = [t for i, t in enumerate(valid_triples) if i not in flagged_indices]
+        print(f"Remaining after artifact filtering: {len(valid_triples)}")
 
     if not valid_triples:
-        print("\nNo valid triples remained after validation. Skipping save and upload.")
+        print("\nNo valid triples remained after validation and filtering. Skipping save and upload.")
         sys.exit(0)
 
     # Local backup CSV, written before the Neo4j upload so results are on
