@@ -3,6 +3,7 @@ from pathlib import Path
 
 from kg_extractor import run_kg_extraction, save_triples_to_csv
 from neo4j_loader.insert import add_triples
+from Extraction_Check import validate_triple_format, flag_artifact_triples
 
 if len(sys.argv) < 2:
     print("Usage: python main.py <path_to_pdf> [model_name]")
@@ -26,15 +27,44 @@ if triples:
     for triple in triples:
         triple["source_file"] = source_file
 
+    # ------------------------------------------------------------
+    # Validation gate: structural checks + artifact flagging,
+    # run before anything reaches Neo4j.
+    # ------------------------------------------------------------
+    print("\nRunning validation gate...")
+    valid_triples = []
+    rejected_count = 0
+
+    for triple in triples:
+        try:
+            validate_triple_format(triple)
+            valid_triples.append(triple)
+        except AssertionError as e:
+            rejected_count += 1
+            print(f"  [REJECTED] {triple.get('subject', '?')}: {e}")
+
+    print(f"Validation: {len(valid_triples)} passed, {rejected_count} rejected.")
+
+    flagged = flag_artifact_triples(valid_triples)
+    if flagged:
+        print(f"\n[WARN] {len(flagged)} triples may contain research-methodology artifacts (not blocked, review manually):")
+        for item in flagged:
+            t = item['triple']
+            print(f"  - ({t['subject']})-[{t['predicate']}]->({t['object']})  [matched: '{item['matched_keyword']}']")
+
+    if not valid_triples:
+        print("\nNo valid triples remained after validation. Skipping save and upload.")
+        sys.exit(0)
+
     # Local backup CSV, written before the Neo4j upload so results are on
     # disk even if the upload fails partway through.
     output_dir = Path("output")
     output_dir.mkdir(exist_ok=True)
     paper_name = Path(pdf_path).stem
     csv_path = output_dir / f"{paper_name}_kg.csv"
-    save_triples_to_csv(triples, str(csv_path), paper_name)
+    save_triples_to_csv(valid_triples, str(csv_path), paper_name)
     print(f"Saved local backup to {csv_path}")
 
-    add_triples(triples)
+    add_triples(valid_triples)
 else:
     print("No triples extracted.")
