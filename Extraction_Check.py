@@ -83,7 +83,8 @@ ARTIFACT_KEYWORDS = [
     "audio-recorded", "transcribed", "coded", "questionnaire",
     "researcher", "researchers", "we analyzed", "we conducted",
     "sample size", "n=", "n =", "age range", "male", "female", 
-    "semi-structured", "thematic analysis", "data collection"
+    "semi-structured", "thematic analysis", "data collection",
+    "key words", "keywords"
 ]
 
 def flag_artifact_triples(triples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

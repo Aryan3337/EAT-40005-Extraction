@@ -70,14 +70,18 @@ Read the passage. Identify every factual claim, relationship, practice, observat
 
 For each meaningful piece, output a Cypher comment block in this exact format:
 
-// PASSAGE: <paraphrased passage — retain all factual content, remove filler words, following this format (GaroWomen)-[ARE_KNOWN_AS]->(SkilledBeauticians)>
+// PASSAGE: (Subject)-[PREDICATE]->(Object)
 // SENTENCE REF: <exact sentence from the paper this was drawn from>
 // SOURCE: <paper title placeholder>
 
-Rules:
-- Do not decide in advance what topics or domains to look for — extract everything factual the passage contains.
-- Each passage must be traceable to a specific sentence.
-- Output only the formatted comment blocks. No explanation or prose.
+Strict rules for the PASSAGE line:
+- It MUST be written ONLY as (Subject)-[PREDICATE]->(Object). Never write a full sentence, paraphrase, or description on the PASSAGE line — that line is a structured triple, not prose.
+- Subject and Object must be short noun phrases (1-4 words) in CamelCase with no spaces, e.g. (MandiLanguage), (GaroCommunity).
+- Predicate must be UPPER_CASE_WITH_UNDERSCORES, e.g. IS_SPOKEN_BY, MAINTAINS, IS_LOCATED_IN.
+- Do not decide in advance what topics or domains to look for — extract everything factual the passage contains about the Garo/Mandi community.
+- Each PASSAGE line must be traceable to a specific sentence, quoted exactly in SENTENCE REF.
+- Skip bibliographic references, author citations, journal titles, page numbers, and keyword lists entirely — do not output a block for these, they contain no factual claim about the community.
+- Output only the formatted comment blocks. No explanation, no prose, no extra text.
 
 Passage:
 {chunk_text}
