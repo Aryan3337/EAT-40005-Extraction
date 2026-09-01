@@ -1,0 +1,120 @@
+{
+  "paper": "paper2.pdf",
+  "paper_name": "paper2",
+  "timestamp": "20260901_083740",
+  "model_used": "deepseek-r1:7b",
+  "outcome": "REJECTED",
+  "accumulated_score": 61,
+  "total_score": 61,
+  "max_possible": 100,
+  "score_pct": 61.0,
+  "hard_fail_count": 1,
+  "hard_fail_criteria": [
+    "Ethical Source Handling & Consent"
+  ],
+  "thresholds": {
+    "reject_below": 60,
+    "manual_review_band": "60-75",
+    "auto_approve_above": 75
+  },
+  "rejection_reason": "Hard-fail criterion triggered: Ethical Source Handling & Consent — The paper discusses cultural practices and lacks explicit mention of ethical processes or informed consent, failing to address ethical source handling.",
+  "review_reason": null,
+  "criteria": [
+    {
+      "name": "Structural Completeness",
+      "score": 20,
+      "max_score": 20,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "model",
+      "justification": "Detected a complete academic structure in the extracted text, including an abstract, introduction, conclusion, and references.",
+      "flags": []
+    },
+    {
+      "name": "Peer Review Signals",
+      "score": 6,
+      "max_score": 20,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "model",
+      "justification": "The paper has a journal name, which is a positive indicator of academic rigor. However, it lacks peer review indicators such as formal formatting, volume/issue numbers, and an ISBN.",
+      "flags": []
+    },
+    {
+      "name": "Authorship & Community Alignment (IKAT)",
+      "score": 18,
+      "max_score": 25,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "model",
+      "justification": "The paper acknowledges the Garo community and discusses their cultural practices, showing respect for the community. However, it does not mention any consultation or collaboration with the community beyond the interviews.",
+      "flags": []
+    },
+    {
+      "name": "Ethical Source Handling & Consent",
+      "score": 6,
+      "max_score": 15,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": true,
+      "evaluated_by": "model",
+      "justification": "The paper discusses cultural practices and lacks explicit mention of ethical processes or informed consent, failing to address ethical source handling.",
+      "flags": [
+        "no_ethics"
+      ]
+    },
+    {
+      "name": "Metadata Completeness",
+      "score": 6,
+      "max_score": 10,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Metadata present: ['title', 'authors', 'year']. Missing: ['journal', 'doi'].",
+      "flags": [
+        "Missing: journal",
+        "Missing: doi"
+      ]
+    },
+    {
+      "name": "Red Flag Absence",
+      "score": 5,
+      "max_score": 5,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "No red-flag phrases detected.",
+      "flags": []
+    },
+    {
+      "name": "Experience Report Identification",
+      "score": 0,
+      "max_score": 5,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Paper appears to be a conventional data-driven research paper rather than an experience report.",
+      "flags": [
+        "Data-driven signals: ['in-depth interview', 'purposive sampling', 'qualitative', 'methodology', 'respondents', 'case study', 'interviews', 'procedure']"
+      ]
+    },
+    {
+      "name": "Domain Relevance",
+      "score": 0,
+      "max_score": 0,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Community/domain-related keywords were detected: ['garo', 'mandi', 'indigenous', 'indigenous community'].",
+      "flags": []
+    }
+  ],
+  "next_steps": "REJECTED — paper skipped. Review the hard-fail criteria and criterion justifications before reconsidering this source."
+}

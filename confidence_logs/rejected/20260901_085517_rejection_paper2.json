@@ -1,0 +1,121 @@
+{
+  "paper": "paper2.pdf",
+  "paper_name": "paper2",
+  "timestamp": "20260901_085517",
+  "model_used": "deepseek-r1:7b",
+  "outcome": "REJECTED",
+  "accumulated_score": 61,
+  "total_score": 61,
+  "max_possible": 100,
+  "score_pct": 61.0,
+  "hard_fail_count": 1,
+  "hard_fail_criteria": [
+    "Authorship & Community Alignment (IKAT)"
+  ],
+  "thresholds": {
+    "reject_below": 60,
+    "manual_review_band": "60-75",
+    "auto_approve_above": 75
+  },
+  "rejection_reason": "Hard-fail criterion triggered: Authorship & Community Alignment (IKAT) — The paper acknowledges the Garo community and discusses their cultural practices, but lacks explicit community collaboration or perspective.",
+  "review_reason": null,
+  "criteria": [
+    {
+      "name": "Structural Completeness",
+      "score": 20,
+      "max_score": 20,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "model",
+      "justification": "Detected a complete academic structure in the extracted text, including an abstract, introduction, conclusion, and references.",
+      "flags": []
+    },
+    {
+      "name": "Peer Review Signals",
+      "score": 4,
+      "max_score": 20,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": true,
+      "evaluated_by": "model",
+      "justification": "The paper lacks necessary peer review indicators such as DOI, journal name, publisher, volume, issue, or ISSN.",
+      "flags": []
+    },
+    {
+      "name": "Authorship & Community Alignment (IKAT)",
+      "score": 18,
+      "max_score": 25,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": true,
+      "evaluated_by": "model",
+      "justification": "The paper acknowledges the Garo community and discusses their cultural practices, but lacks explicit community collaboration or perspective.",
+      "flags": []
+    },
+    {
+      "name": "Ethical Source Handling & Consent",
+      "score": 8,
+      "max_score": 15,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "model",
+      "justification": "The paper shows contextual ethical handling such as consent, cultural sensitivity, or community-based interviews; no harmful generalisation or clear misuse of source material was detected.",
+      "flags": [
+        "misrepresentation",
+        "ethics"
+      ]
+    },
+    {
+      "name": "Metadata Completeness",
+      "score": 6,
+      "max_score": 10,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Metadata present: ['title', 'authors', 'year']. Missing: ['journal', 'doi'].",
+      "flags": [
+        "Missing: journal",
+        "Missing: doi"
+      ]
+    },
+    {
+      "name": "Red Flag Absence",
+      "score": 5,
+      "max_score": 5,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "No red-flag phrases detected.",
+      "flags": []
+    },
+    {
+      "name": "Experience Report Identification",
+      "score": 0,
+      "max_score": 5,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Paper appears to be a conventional data-driven research paper rather than an experience report.",
+      "flags": [
+        "Data-driven signals: ['in-depth interview', 'purposive sampling', 'respondents', 'methodology', 'qualitative', 'case study', 'interviews', 'procedure']"
+      ]
+    },
+    {
+      "name": "Domain Relevance",
+      "score": 0,
+      "max_score": 0,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Community/domain-related keywords were detected: ['garo', 'mandi', 'indigenous', 'indigenous community'].",
+      "flags": []
+    }
+  ],
+  "next_steps": "REJECTED — paper skipped. Review the hard-fail criteria and criterion justifications before reconsidering this source."
+}

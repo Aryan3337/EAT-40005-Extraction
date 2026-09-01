@@ -1,0 +1,119 @@
+{
+  "paper": "paper2.pdf",
+  "paper_name": "paper2",
+  "timestamp": "20260831_235513",
+  "model_used": "deepseek-r1:7b",
+  "outcome": "MANUAL_REVIEW",
+  "accumulated_score": 62,
+  "total_score": 62,
+  "max_possible": 100,
+  "score_pct": 62.0,
+  "hard_fail_count": 0,
+  "hard_fail_criteria": [],
+  "thresholds": {
+    "reject_below": 60,
+    "manual_review_band": "60-75",
+    "auto_approve_above": 75
+  },
+  "rejection_reason": null,
+  "review_reason": "Accumulated score 62/100 (62.0%) is in the manual review band (60-75).",
+  "criteria": [
+    {
+      "name": "Structural Completeness",
+      "score": 14,
+      "max_score": 20,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "model",
+      "justification": "The paper has a clear structure with an abstract, introduction, findings, discussion, and conclusion sections. It also includes references, making it structurally complete.",
+      "flags": []
+    },
+    {
+      "name": "Peer Review Signals",
+      "score": 12,
+      "max_score": 20,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "model",
+      "justification": "The paper has a DOI and is published in a reputable journal, International Journal of Education, Humanities, and Social Science. However, there are no formal peer review indicators provided.",
+      "flags": []
+    },
+    {
+      "name": "Authorship & Community Alignment (IKAT)",
+      "score": 21,
+      "max_score": 25,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "model",
+      "justification": "The paper acknowledges the Garo community and discusses their customs and practices, showing respect and collaboration.",
+      "flags": []
+    },
+    {
+      "name": "Ethical Source Handling & Consent",
+      "score": 10,
+      "max_score": 15,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "model",
+      "justification": "The paper discusses ethical considerations, such as cultural sensitivity and collaboration with NGOs and government services.",
+      "flags": []
+    },
+    {
+      "name": "Metadata Completeness",
+      "score": 0,
+      "max_score": 10,
+      "passed": false,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Metadata present: []. Missing: ['title', 'authors', 'year', 'journal', 'doi'].",
+      "flags": [
+        "Missing: title",
+        "Missing: authors",
+        "Missing: year",
+        "Missing: journal",
+        "Missing: doi"
+      ]
+    },
+    {
+      "name": "Red Flag Absence",
+      "score": 5,
+      "max_score": 5,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "No red-flag phrases detected.",
+      "flags": []
+    },
+    {
+      "name": "Experience Report Identification",
+      "score": 0,
+      "max_score": 5,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Paper appears to be a conventional data-driven research paper rather than an experience report.",
+      "flags": [
+        "Data-driven signals: ['purposive sampling', 'in-depth interview', 'respondents', 'qualitative', 'methodology', 'interviews', 'case study', 'procedure']"
+      ]
+    },
+    {
+      "name": "Domain Relevance",
+      "score": 0,
+      "max_score": 0,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Community/domain-related keywords were detected: ['garo', 'mandi', 'indigenous', 'indigenous community'].",
+      "flags": []
+    }
+  ],
+  "next_steps": "MANUAL REVIEW — extraction is held pending human review."
+}

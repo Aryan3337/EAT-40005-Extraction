@@ -1,0 +1,109 @@
+{
+  "paper": "paper1.pdf",
+  "paper_name": "paper1",
+  "timestamp": "20260831_223549",
+  "model_used": "deepseek-r1:7b",
+  "outcome": "APPROVED",
+  "accumulated_score": 80,
+  "total_score": 80,
+  "max_possible": 100,
+  "score_pct": 80.0,
+  "criteria": [
+    {
+      "name": "Structural Completeness",
+      "score": 20,
+      "max_score": 20,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "model",
+      "justification": "The paper has the basic report-style structure expected by the rubric.",
+      "flags": []
+    },
+    {
+      "name": "Peer Review Signals",
+      "score": 20,
+      "max_score": 20,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "model",
+      "justification": "The excerpt references multiple credible sources, such as Ahmed et al. (2010), Cavallaro & Rahman (2009), and others, indicating that the research has been reviewed and published in academic journals, which is a strong peer review signal.",
+      "flags": []
+    },
+    {
+      "name": "Authorship & Community Alignment (IKAT)",
+      "score": 20,
+      "max_score": 25,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "model",
+      "justification": "The authors are likely from the academic community, given the context of a qualitative study with interviews. The topic of Garo language maintenance is a niche but valid area of linguistic study, aligning with the expertise of the authors.",
+      "flags": []
+    },
+    {
+      "name": "Ethical Source Handling & Consent",
+      "score": 15,
+      "max_score": 15,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "model",
+      "justification": "The excerpt mentions the use of interviews, which is an ethical method, and acknowledges the limitations of the sample size, indicating responsible handling of ethical considerations.",
+      "flags": []
+    },
+    {
+      "name": "Metadata Completeness",
+      "score": 0,
+      "max_score": 10,
+      "passed": false,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Metadata present: []. Missing: ['title', 'authors', 'year', 'journal', 'doi'].",
+      "flags": [
+        "Missing: title",
+        "Missing: authors",
+        "Missing: year",
+        "Missing: journal",
+        "Missing: doi"
+      ]
+    },
+    {
+      "name": "Red Flag Absence",
+      "score": 5,
+      "max_score": 5,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "No red-flag phrases detected.",
+      "flags": []
+    },
+    {
+      "name": "Experience Report Identification",
+      "score": 0,
+      "max_score": 5,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Paper appears to be a conventional data-driven research paper.",
+      "flags": [
+        "Data-driven signals: ['semi-structured interview', 'thematic analysis', 'data collection', 'questionnaire', 'participants', 'sample size', 'qualitative', 'respondents']"
+      ]
+    },
+    {
+      "name": "Domain Relevance",
+      "score": 0,
+      "max_score": 0,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Keywords detected: ['garo', 'mandi', 'achik', 'indigenous'].",
+      "flags": []
+    }
+  ]
+}

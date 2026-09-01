@@ -1,0 +1,128 @@
+{
+  "paper": "paper2.pdf",
+  "paper_name": "paper2",
+  "timestamp": "20260901_072217",
+  "model_used": "deepseek-r1:7b",
+  "outcome": "REJECTED",
+  "accumulated_score": 49,
+  "total_score": 49,
+  "max_possible": 100,
+  "score_pct": 49.0,
+  "hard_fail_count": 3,
+  "hard_fail_criteria": [
+    "Structural Completeness",
+    "Authorship & Community Alignment (IKAT)",
+    "Ethical Source Handling & Consent"
+  ],
+  "thresholds": {
+    "reject_below": 60,
+    "manual_review_band": "60-75",
+    "auto_approve_above": 75
+  },
+  "rejection_reason": "Hard-fail criterion triggered: Structural Completeness — The paper appears to have a basic academic structure, with sections including abstract, introduction, findings, discussion, and conclusion. However, it lacks a references section, which may be considered a structural weakness.; Authorship & Community Alignment (IKAT) — The paper mentions the Garo community but does not deeply acknowledge their cultural aspects.; Ethical Source Handling & Consent — The paper discusses ethical considerations, such as informed consent and cultural sensitivity, but does not mention obtaining ethical approval or undergoing a formal IRB process.",
+  "review_reason": null,
+  "criteria": [
+    {
+      "name": "Structural Completeness",
+      "score": 10,
+      "max_score": 20,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": true,
+      "evaluated_by": "model",
+      "justification": "The paper appears to have a basic academic structure, with sections including abstract, introduction, findings, discussion, and conclusion. However, it lacks a references section, which may be considered a structural weakness.",
+      "flags": []
+    },
+    {
+      "name": "Peer Review Signals",
+      "score": 11,
+      "max_score": 20,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": true,
+      "evaluated_by": "model",
+      "justification": "The paper includes a DOI, journal name, volume, issue, and year, indicating peer review signals.",
+      "flags": []
+    },
+    {
+      "name": "Authorship & Community Alignment (IKAT)",
+      "score": 16,
+      "max_score": 25,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": true,
+      "evaluated_by": "model",
+      "justification": "The paper mentions the Garo community but does not deeply acknowledge their cultural aspects.",
+      "flags": [
+        "IKAT_HR_0001",
+        "IKAT_HR_0002"
+      ]
+    },
+    {
+      "name": "Ethical Source Handling & Consent",
+      "score": 7,
+      "max_score": 15,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": true,
+      "evaluated_by": "model",
+      "justification": "The paper discusses ethical considerations, such as informed consent and cultural sensitivity, but does not mention obtaining ethical approval or undergoing a formal IRB process.",
+      "flags": [
+        "ES_HR_0001"
+      ]
+    },
+    {
+      "name": "Metadata Completeness",
+      "score": 0,
+      "max_score": 10,
+      "passed": false,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Metadata present: []. Missing: ['title', 'authors', 'year', 'journal', 'doi'].",
+      "flags": [
+        "Missing: title",
+        "Missing: authors",
+        "Missing: year",
+        "Missing: journal",
+        "Missing: doi"
+      ]
+    },
+    {
+      "name": "Red Flag Absence",
+      "score": 5,
+      "max_score": 5,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "No red-flag phrases detected.",
+      "flags": []
+    },
+    {
+      "name": "Experience Report Identification",
+      "score": 0,
+      "max_score": 5,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Paper appears to be a conventional data-driven research paper rather than an experience report.",
+      "flags": [
+        "Data-driven signals: ['in-depth interview', 'purposive sampling', 'qualitative', 'respondents', 'methodology', 'case study', 'interviews', 'procedure']"
+      ]
+    },
+    {
+      "name": "Domain Relevance",
+      "score": 0,
+      "max_score": 0,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Community/domain-related keywords were detected: ['garo', 'mandi', 'indigenous', 'indigenous community'].",
+      "flags": []
+    }
+  ],
+  "next_steps": "REJECTED — paper skipped. Review the hard-fail criteria and criterion justifications before reconsidering this source."
+}

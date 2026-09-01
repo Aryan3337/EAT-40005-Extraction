@@ -1,0 +1,124 @@
+{
+  "paper": "paper2.pdf",
+  "paper_name": "paper2",
+  "timestamp": "20260901_091056",
+  "model_used": "deepseek-r1:7b",
+  "outcome": "MANUAL_REVIEW",
+  "accumulated_score": 64,
+  "total_score": 64,
+  "max_possible": 100,
+  "score_pct": 64.0,
+  "hard_fail_count": 0,
+  "hard_fail_criteria": [],
+  "thresholds": {
+    "reject_below": 60,
+    "manual_review_band": "60-75",
+    "auto_approve_above": 75
+  },
+  "rejection_reason": null,
+  "review_reason": "Accumulated score 64/100 (64.0%) is in the manual review band (60-75).",
+  "criteria": [
+    {
+      "name": "Structural Completeness",
+      "score": 20,
+      "max_score": 20,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "model",
+      "justification": "Detected a complete academic structure in the extracted text, including an abstract, introduction, conclusion, and references.",
+      "flags": [
+        "hard_fail_triggered"
+      ]
+    },
+    {
+      "name": "Peer Review Signals",
+      "score": 7,
+      "max_score": 20,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": true,
+      "evaluated_by": "model",
+      "justification": "The paper does not mention any peer review indicators such as a journal name, DOI, or volume. It also lacks formal academic formatting, which affects its credibility.",
+      "flags": [
+        "hard_fail_triggered"
+      ]
+    },
+    {
+      "name": "Authorship & Community Alignment (IKAT)",
+      "score": 18,
+      "max_score": 25,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "model",
+      "justification": "The paper acknowledges the Garo/Mandi community and discusses their cultural context in a respectful, community-aware way without clear extractive or harmful framing.",
+      "flags": [
+        "hard_fail_triggered"
+      ]
+    },
+    {
+      "name": "Ethical Source Handling & Consent",
+      "score": 8,
+      "max_score": 15,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "model",
+      "justification": "The paper shows contextual ethical handling such as consent, cultural sensitivity, or community-based interviews; no harmful generalisation or clear misuse of source material was detected.",
+      "flags": [
+        "hard_fail_triggered"
+      ]
+    },
+    {
+      "name": "Metadata Completeness",
+      "score": 6,
+      "max_score": 10,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Metadata present: ['title', 'authors', 'year']. Missing: ['journal', 'doi'].",
+      "flags": [
+        "Missing: journal",
+        "Missing: doi"
+      ]
+    },
+    {
+      "name": "Red Flag Absence",
+      "score": 5,
+      "max_score": 5,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "No red-flag phrases detected.",
+      "flags": []
+    },
+    {
+      "name": "Experience Report Identification",
+      "score": 0,
+      "max_score": 5,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Paper appears to be a conventional data-driven research paper rather than an experience report.",
+      "flags": [
+        "Data-driven signals: ['purposive sampling', 'in-depth interview', 'respondents', 'qualitative', 'methodology', 'case study', 'interviews', 'procedure']"
+      ]
+    },
+    {
+      "name": "Domain Relevance",
+      "score": 0,
+      "max_score": 0,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Community/domain-related keywords were detected: ['garo', 'mandi', 'indigenous', 'indigenous community'].",
+      "flags": []
+    }
+  ],
+  "next_steps": "MANUAL REVIEW — extraction is held pending human review."
+}

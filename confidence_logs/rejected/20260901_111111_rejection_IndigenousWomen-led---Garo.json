@@ -1,0 +1,124 @@
+{
+  "paper": "IndigenousWomen-led---Garo.pdf",
+  "paper_name": "IndigenousWomen-led---Garo",
+  "timestamp": "20260901_111111",
+  "model_used": "deepseek-r1:7b",
+  "outcome": "REJECTED",
+  "accumulated_score": 33,
+  "total_score": 33,
+  "max_possible": 100,
+  "score_pct": 33.0,
+  "hard_fail_count": 0,
+  "hard_fail_criteria": [],
+  "thresholds": {
+    "reject_below": 60,
+    "manual_review_band": "60-75",
+    "auto_approve_above": 75
+  },
+  "rejection_reason": "Accumulated score 33/100 (33.0%) is below the reject threshold of 60.",
+  "review_reason": null,
+  "criteria": [
+    {
+      "name": "Structural Completeness",
+      "score": 20,
+      "max_score": 20,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "fallback",
+      "justification": "Detected a complete academic structure in the extracted text, including an abstract, introduction, conclusion, and references.",
+      "flags": [
+        "Model unavailable"
+      ]
+    },
+    {
+      "name": "Peer Review Signals",
+      "score": 0,
+      "max_score": 20,
+      "passed": false,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "fallback",
+      "justification": "Peer-review evidence is scored only when positive indicators are present (DOI, journal/conference name, publisher information, volume/issue/ISSN, or formal academic formatting). No hard fail is applied to this criterion.",
+      "flags": [
+        "Model unavailable"
+      ]
+    },
+    {
+      "name": "Authorship & Community Alignment (IKAT)",
+      "score": 0,
+      "max_score": 25,
+      "passed": false,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "fallback",
+      "justification": "Model evaluation failed — could not connect to Ollama or parse the response.",
+      "flags": [
+        "Model unavailable"
+      ]
+    },
+    {
+      "name": "Ethical Source Handling & Consent",
+      "score": 0,
+      "max_score": 15,
+      "passed": false,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "fallback",
+      "justification": "Model evaluation failed — could not connect to Ollama or parse the response.",
+      "flags": [
+        "Model unavailable"
+      ]
+    },
+    {
+      "name": "Metadata Completeness",
+      "score": 8,
+      "max_score": 10,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Metadata present: ['title', 'authors', 'year', 'journal']. Missing: ['doi'].",
+      "flags": [
+        "Missing: doi"
+      ]
+    },
+    {
+      "name": "Red Flag Absence",
+      "score": 5,
+      "max_score": 5,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "No red-flag phrases detected.",
+      "flags": []
+    },
+    {
+      "name": "Experience Report Identification",
+      "score": 0,
+      "max_score": 5,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Paper appears to be a conventional data-driven research paper rather than an experience report.",
+      "flags": [
+        "Experience signals: ['personal reflection']",
+        "Data-driven signals: ['participants', 'respondents', 'methodology', 'qualitative', 'interview', 'methods']"
+      ]
+    },
+    {
+      "name": "Domain Relevance",
+      "score": 0,
+      "max_score": 0,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Community/domain-related keywords were detected: ['garo', 'indigenous', 'indigenous knowledge', 'indigenous community'].",
+      "flags": []
+    }
+  ],
+  "next_steps": "REJECTED — paper skipped. Review the hard-fail criteria and criterion justifications before reconsidering this source."
+}

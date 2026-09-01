@@ -1,0 +1,117 @@
+{
+  "paper": "paper.pdf",
+  "paper_name": "paper",
+  "timestamp": "20260901_063822",
+  "model_used": "deepseek-r1:7b",
+  "outcome": "REJECTED",
+  "accumulated_score": 5,
+  "total_score": 5,
+  "max_possible": 100,
+  "score_pct": 5.0,
+  "criteria": [
+    {
+      "name": "Structural Completeness",
+      "score": 0,
+      "max_score": 20,
+      "passed": false,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "fallback",
+      "justification": "The paper has the basic report-style structure expected by the rubric.",
+      "flags": [
+        "Model unavailable"
+      ]
+    },
+    {
+      "name": "Peer Review Signals",
+      "score": 0,
+      "max_score": 20,
+      "passed": false,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "fallback",
+      "justification": "Model evaluation failed — connection/parsing error.",
+      "flags": [
+        "Model unavailable"
+      ]
+    },
+    {
+      "name": "Authorship & Community Alignment (IKAT)",
+      "score": 0,
+      "max_score": 25,
+      "passed": false,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "fallback",
+      "justification": "Model evaluation failed — connection/parsing error.",
+      "flags": [
+        "Model unavailable"
+      ]
+    },
+    {
+      "name": "Ethical Source Handling & Consent",
+      "score": 0,
+      "max_score": 15,
+      "passed": false,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "fallback",
+      "justification": "Model evaluation failed — connection/parsing error.",
+      "flags": [
+        "Model unavailable"
+      ]
+    },
+    {
+      "name": "Metadata Completeness",
+      "score": 0,
+      "max_score": 10,
+      "passed": false,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Metadata present: []. Missing: ['title', 'authors', 'year', 'journal', 'doi'].",
+      "flags": [
+        "Missing: title",
+        "Missing: authors",
+        "Missing: year",
+        "Missing: journal",
+        "Missing: doi"
+      ]
+    },
+    {
+      "name": "Red Flag Absence",
+      "score": 5,
+      "max_score": 5,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "No red-flag phrases detected.",
+      "flags": []
+    },
+    {
+      "name": "Experience Report Identification",
+      "score": 0,
+      "max_score": 5,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Paper appears to be a conventional data-driven research paper.",
+      "flags": [
+        "Data-driven signals: ['semi-structured interview', 'thematic analysis', 'data collection', 'questionnaire', 'participants', 'sample size', 'qualitative', 'respondents']"
+      ]
+    },
+    {
+      "name": "Domain Relevance",
+      "score": 0,
+      "max_score": 0,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Keywords detected: ['garo', 'mandi', 'achik', 'indigenous'].",
+      "flags": []
+    }
+  ]
+}

@@ -1,0 +1,125 @@
+{
+  "paper": "paper1.pdf",
+  "paper_name": "paper1",
+  "timestamp": "20260901_065638",
+  "model_used": "deepseek-r1:7b",
+  "outcome": "REJECTED",
+  "accumulated_score": 37,
+  "total_score": 37,
+  "max_possible": 100,
+  "score_pct": 37.0,
+  "hard_fail_count": 3,
+  "hard_fail_criteria": [
+    "Structural Completeness",
+    "Authorship & Community Alignment (IKAT)",
+    "Ethical Source Handling & Consent"
+  ],
+  "thresholds": {
+    "reject_below": 60,
+    "manual_review_band": "60-75",
+    "auto_approve_above": 75
+  },
+  "rejection_reason": "Hard-fail criterion triggered: Structural Completeness — The paper has an abstract, introduction, findings, discussion, and conclusion, as well as references and an appendix with tables. The structure is appropriate for an academic paper.; Authorship & Community Alignment (IKAT) — The paper does not acknowledge the Garo community specifically and does not involve them in the analysis. The authors do not provide reciprocal framing or evidence of community participation.; Ethical Source Handling & Consent — The paper lacks information on ethical approvals or informed consent processes, which are required for proper handling of sources.",
+  "review_reason": null,
+  "criteria": [
+    {
+      "name": "Structural Completeness",
+      "score": 10,
+      "max_score": 20,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": true,
+      "evaluated_by": "model",
+      "justification": "The paper has an abstract, introduction, findings, discussion, and conclusion, as well as references and an appendix with tables. The structure is appropriate for an academic paper.",
+      "flags": []
+    },
+    {
+      "name": "Peer Review Signals",
+      "score": 4,
+      "max_score": 20,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": true,
+      "evaluated_by": "model",
+      "justification": "The paper lacks peer review indicators such as DOI, journal name, or publisher information.",
+      "flags": []
+    },
+    {
+      "name": "Authorship & Community Alignment (IKAT)",
+      "score": 16,
+      "max_score": 25,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": true,
+      "evaluated_by": "model",
+      "justification": "The paper does not acknowledge the Garo community specifically and does not involve them in the analysis. The authors do not provide reciprocal framing or evidence of community participation.",
+      "flags": [
+        "IKAT"
+      ]
+    },
+    {
+      "name": "Ethical Source Handling & Consent",
+      "score": 2,
+      "max_score": 15,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": true,
+      "evaluated_by": "model",
+      "justification": "The paper lacks information on ethical approvals or informed consent processes, which are required for proper handling of sources.",
+      "flags": []
+    },
+    {
+      "name": "Metadata Completeness",
+      "score": 0,
+      "max_score": 10,
+      "passed": false,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Metadata present: []. Missing: ['title', 'authors', 'year', 'journal', 'doi'].",
+      "flags": [
+        "Missing: title",
+        "Missing: authors",
+        "Missing: year",
+        "Missing: journal",
+        "Missing: doi"
+      ]
+    },
+    {
+      "name": "Red Flag Absence",
+      "score": 5,
+      "max_score": 5,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "No red-flag phrases detected.",
+      "flags": []
+    },
+    {
+      "name": "Experience Report Identification",
+      "score": 0,
+      "max_score": 5,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Paper appears to be a conventional data-driven research paper rather than an experience report.",
+      "flags": [
+        "Data-driven signals: ['semi-structured interview', 'thematic analysis', 'data collection', 'questionnaire', 'participants', 'sample size', 'qualitative', 'methodology']"
+      ]
+    },
+    {
+      "name": "Domain Relevance",
+      "score": 0,
+      "max_score": 0,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Community/domain-related keywords were detected: ['garo', 'mandi', 'achik', 'indigenous'].",
+      "flags": []
+    }
+  ],
+  "next_steps": "REJECTED — paper skipped. Review the hard-fail criteria and criterion justifications before reconsidering this source."
+}

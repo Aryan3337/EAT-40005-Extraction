@@ -1,0 +1,109 @@
+{
+  "paper": "paper1.pdf",
+  "paper_name": "paper1",
+  "timestamp": "20260831_223538",
+  "model_used": "deepseek-r1:7b",
+  "outcome": "APPROVED",
+  "accumulated_score": 80,
+  "total_score": 80,
+  "max_possible": 100,
+  "score_pct": 80.0,
+  "criteria": [
+    {
+      "name": "Structural Completeness",
+      "score": 20,
+      "max_score": 20,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "model",
+      "justification": "The paper has the basic report-style structure expected by the rubric.",
+      "flags": []
+    },
+    {
+      "name": "Peer Review Signals",
+      "score": 15,
+      "max_score": 20,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "model",
+      "justification": "The paper references previous studies and discusses language maintenance in a qualitative manner, indicating peer review signals. However, it does not explicitly state any peer review processes or signals. The score is 15/20.",
+      "flags": []
+    },
+    {
+      "name": "Authorship & Community Alignment (IKAT)",
+      "score": 25,
+      "max_score": 25,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "model",
+      "justification": "The authors are Farzana Yesmen Chowdhury and Jiniya Boraty, with Farzana affiliated with Chittagong University, which is appropriate given the paper's focus on the Chittagong University Journal. However, Jiniya Boraty's affiliation is not mentioned, which is slightly unusual.",
+      "flags": []
+    },
+    {
+      "name": "Ethical Source Handling & Consent",
+      "score": 15,
+      "max_score": 15,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "model",
+      "justification": "The paper does not mention anything about ethical considerations, data sources, or consent processes, which are essential elements for ensuring ethical research handling.",
+      "flags": []
+    },
+    {
+      "name": "Metadata Completeness",
+      "score": 0,
+      "max_score": 10,
+      "passed": false,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Metadata present: []. Missing: ['title', 'authors', 'year', 'journal', 'doi'].",
+      "flags": [
+        "Missing: title",
+        "Missing: authors",
+        "Missing: year",
+        "Missing: journal",
+        "Missing: doi"
+      ]
+    },
+    {
+      "name": "Red Flag Absence",
+      "score": 5,
+      "max_score": 5,
+      "passed": true,
+      "hard_fail": true,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "No red-flag phrases detected.",
+      "flags": []
+    },
+    {
+      "name": "Experience Report Identification",
+      "score": 0,
+      "max_score": 5,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Paper appears to be a conventional data-driven research paper.",
+      "flags": [
+        "Data-driven signals: ['semi-structured interview', 'thematic analysis', 'data collection', 'questionnaire', 'participants', 'methodology', 'respondents', 'sample size']"
+      ]
+    },
+    {
+      "name": "Domain Relevance",
+      "score": 0,
+      "max_score": 0,
+      "passed": true,
+      "hard_fail": false,
+      "hard_fail_triggered": false,
+      "evaluated_by": "code",
+      "justification": "Keywords detected: ['garo', 'mandi', 'achik', 'indigenous'].",
+      "flags": []
+    }
+  ]
+}

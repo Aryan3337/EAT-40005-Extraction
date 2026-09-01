@@ -1,0 +1,5 @@
+timestamp,paper_name,paper_path,model_used,accumulated_score,max_possible,score_pct,hard_fail_criteria,review_reason,status,override_by,override_note
+20260831_235513,paper2,paper2.pdf,deepseek-r1:7b,62,100,62.0,,Accumulated score 62/100 (62.0%) is in the manual review band (60-75).,PENDING,,
+20260901_091056,paper2,paper2.pdf,deepseek-r1:7b,64,100,64.0,,Accumulated score 64/100 (64.0%) is in the manual review band (60-75).,PENDING,,
+20260901_102839,paper2,paper2.pdf,deepseek-r1:7b,61,100,61.0,,Accumulated score 61/100 (61.0%) is in the manual review band (60-75).,PENDING,,
+20260901_104432,paper1,paper1.pdf,deepseek-r1:7b,63,100,63.0,,Accumulated score 63/100 (63.0%) is in the manual review band (60-75).,PENDING,,
