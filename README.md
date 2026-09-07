@@ -145,6 +145,43 @@ Add `--strict` to enforce strict `UPPER_SNAKE_CASE` predicates instead of the re
 
 ---
 
+## Testing prompt changes without touching Neo4j
+
+Two standalone scripts let you test the extraction step in isolation, on a single page of a PDF, without running the full pipeline and without touching Neo4j at all. Both import `chunk_text`, `extract_triples_from_chunk`, and `deduplicate_triples` directly from `kg_extractor.py` — the prompt, the Ollama call, the chunking, and the parser are exactly what `main.py` uses, never reimplemented. Neither script imports `neo4j_loader` or `config.py`, and neither ever calls `add_triples()`.
+
+### `test_extraction.py` — test the current baseline prompt
+
+Runs the pipeline's current extraction prompt (no changes) against one page and writes a CSV.
+
+```bash
+docker compose exec app python test_extraction.py papers/garo_1.pdf 3
+```
+
+- First argument: PDF path. Second argument: 1-indexed page number.
+- `--model` — Ollama model name (default `deepseek-r1:7b`)
+- `--out-dir` — where to write the CSV (default `output/`, which is the Docker-mounted volume — anything written elsewhere won't be visible on your host machine)
+
+Output: `output/<pdf_name>_page<N>_test.csv` with columns `page_number, subject, predicate, object, confidence_score`.
+
+### `test_extraction_variants.py` — A/B test a prompt variant
+
+Same idea, but lets you swap in one of a few prompt variants instead of the baseline, so you can compare a specific instruction change without editing `kg_extractor.py`. Each variant is the baseline prompt plus exactly one added instruction, so any difference in output is attributable to that one change:
+
+- `baseline` — the current PR007 prompt, unchanged
+- `A` — adds an instruction to prefer the most specific subject entity available (e.g. `GaroMen`, `GaroWomen`, `AttireStyles`) instead of defaulting to a broad subject like `GaroCommunity`
+- `B` — adds an instruction to keep predicate naming consistent for the same kind of relationship, instead of inventing a new predicate each time
+- `C` — both `A` and `B` combined
+
+```bash
+docker compose exec app python test_extraction_variants.py papers/garo_1.pdf 3 --variant A
+```
+
+`--variant` is required (`baseline`, `A`, `B`, or `C`). `--model` and `--out-dir` work the same as above. Output: `output/<pdf_name>_page<N>_variant<X>.csv`, same columns as above.
+
+`kg_extractor.py` is never modified on disk — the variant is swapped in only for the lifetime of that one process.
+
+---
+
 ## Known Issues
 
 - **Low/zero triple counts after validation:** DeepSeek R1 7B doesn't always follow the requested `(Subject)-[PREDICATE]->(Object)` output format — sometimes it writes plain prose instead. When this happens, the parser can't extract a real triple and falls back to a placeholder, which the validation gate now correctly rejects. This shows up as most or all chunks getting rejected in Step 6. **This is a known, pre-existing bug, not something a fresh checkout or your setup is doing wrong.** If you hit this consistently, flag it in the group chat rather than trying to fix it solo — it's being tracked.
