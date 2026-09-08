@@ -79,8 +79,23 @@ Strict rules for the PASSAGE line:
 - Subject and Object must be short noun phrases (1-4 words) in CamelCase with no spaces, e.g. (MandiLanguage), (GaroCommunity).
 - Predicate must be UPPER_CASE_WITH_UNDERSCORES, e.g. IS_SPOKEN_BY, MAINTAINS, IS_LOCATED_IN.
 - If a sentence lists multiple values for the same relationship (e.g. multiple professions, multiple locations, multiple languages), output ONE SEPARATE triple per value. Never combine multiple values into a single comma-separated Object — e.g. write (GaroCommunity)-[HAS_PROFESSION]->(Teacher) and (GaroCommunity)-[HAS_PROFESSION]->(Farmer) as two blocks, not one block with (Teacher, Farmer).
+- NEVER place more than one Object on the same PASSAGE line. If a sentence supports multiple Objects, repeat the FULL comment block separately for each Object, including its own PASSAGE, SENTENCE REF, and SOURCE lines.
+- Invalid example: (GaroCommunity)-[MIGRATED_FROM]->(Tibet), (Burma)
+- Correct example:
+  // PASSAGE: (GaroCommunity)-[MIGRATED_FROM]->(Tibet)
+  // SENTENCE REF: <exact supporting sentence>
+  // SOURCE: <paper title placeholder>
+
+  // PASSAGE: (GaroCommunity)-[MIGRATED_FROM]->(Burma)
+  // SENTENCE REF: <exact supporting sentence>
+  // SOURCE: <paper title placeholder>
 - Do not decide in advance what topics or domains to look for — extract everything factual the passage contains about the Garo/Mandi community's culture, language, history, practices, and lived experience.
 - Each PASSAGE line must be traceable to a specific sentence, quoted exactly in SENTENCE REF. If you cannot find an exact sentence, do not output a block for that content at all.
+- The SENTENCE REF must be the exact sentence that directly supports that specific Subject-Predicate-Object triple. Never attach a triple to a different sentence, even if that sentence discusses the same community or topic.
+- Before outputting each block, verify that both the relationship and the Object are explicitly supported by its SENTENCE REF. Do not infer a relationship from another sentence in the passage.
+- The predicate must express the relationship stated in the SENTENCE REF. Do not choose a predicate just because it is commonly associated with the Subject or Object.
+- If the sentence says a community "is one of the largest minority tribes in Bangladesh", the predicate must represent classification or identity, not language, location, or any unrelated relationship.
+- Before outputting a block, mentally restate it as a simple sentence: "Subject PREDICATE Object". If that statement does not preserve the meaning of the SENTENCE REF, do not output it.
 
 Skip entirely — do not output a block for any of the following:
 - Bibliographic references, author citations, journal titles, page numbers, or keyword lists.

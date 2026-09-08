@@ -1,0 +1,27 @@
+Paper: The Transformation of Livelihood Practices among the Garo Community - A Study on Tangail District
+Section: Page 1, selected sentences S1-S5
+Model: deepseek-r1:7b
+Prompt version: VARIANT C
+
+Changes from Variant B:
+- Added stricter predicate-to-sentence semantic matching.
+- Added classification/identity guidance.
+- Added a semantic self-check before output.
+
+Generation test:
+- num_predict: 768
+- Time: 519.1 seconds
+- Done reason: length
+- Eval count: 768
+- Raw response length: 1323
+- Parsed triples: 6
+
+OBSERVATION:
+Variant C fixed the unsupported predicate problem seen in Variant B.
+The first triple now represents classification/identity instead of an unrelated language predicate.
+Sentence grounding remains improved.
+
+However, the model still reaches the token limit before completing all S1-S5 facts, so this run is incomplete.
+
+CONCLUSION:
+Variant C improves semantic predicate accuracy and sentence grounding, but performance and incomplete generation remain unresolved.

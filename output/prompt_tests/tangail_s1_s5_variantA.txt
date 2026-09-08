@@ -1,0 +1,33 @@
+Paper: The Transformation of Livelihood Practices among the Garo Community - A Study on Tangail District
+Section: Page 1, selected sentences S1-S5
+Model: deepseek-r1:7b
+Prompt version: VARIANT A
+
+Changes from baseline:
+- Added strict SENTENCE REF matching rule.
+- Added explicit verification that relationship and object are supported by SENTENCE REF.
+
+Total parsed triples: 6
+
+=== AUTOMATIC EXTRACTION ===
+
+1. (GaroCommunity)-[IS_LARGEST_MINORITY_TRIBE]->(Bangladesh)
+Ref: The Garo community is one of the largest minority tribes in Bangladesh.
+
+2. (GaroCommunity)-[IS_LOCATED_IN]->(Mymensingh)
+Ref: They reside in several districts including Mymensingh, Netrakona, Jamalpur, Sherpur, Tangail, and Sunamganj.
+
+3. (GaroCommunity)-[MIGRATED_FROM]->(Tibet)
+Ref: They migrated to Bangladesh from Tibet and Burma and refer to themselves as Mandi or Achchik depending on whether they live in the mountains or plains.
+
+4. (GaroCommunity)-[REFERS_TO]->(Mandi)
+Ref: They migrated to Bangladesh from Tibet and Burma and refer to themselves as Mandi or Achchik depending on whether they live in the mountains or plains.
+
+5. (GaroCommunity)-[IS_AGRICULTURAL]->(Community)
+Ref: The Garo community in Bangladesh are primarily an agricultural community.
+
+6. (MajorityGaroPeople)-[ARE_BILINGUAL]->(Bengali)
+Ref: The majority of Garo people are bilingual as they need to communicate in both Bengali and their native Garo language.
+
+OBSERVATION:
+Variant A improved sentence-reference accuracy, but the model combined multiple objects into single PASSAGE lines. The parser therefore retained only the first object from those lines, reducing the parsed output from 14 baseline triples to 6.

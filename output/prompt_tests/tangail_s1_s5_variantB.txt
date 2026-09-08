@@ -1,0 +1,28 @@
+Paper: The Transformation of Livelihood Practices among the Garo Community - A Study on Tangail District
+Section: Page 1, selected sentences S1-S5
+Model: deepseek-r1:7b
+Prompt version: VARIANT B
+
+Changes from Variant A:
+- Retained strict SENTENCE REF grounding rules.
+- Added rule requiring one Object per PASSAGE line.
+- Added explicit invalid/correct multi-object examples.
+
+Generation test:
+- num_predict: 768
+- Time: 518.4 seconds
+- Done reason: length
+- Eval count: 768
+- Parsed triples: 6
+
+OBSERVATION:
+Variant B successfully separated several location objects into individual triples.
+However, the generation reached the 768-token limit before completing all S1-S5 facts.
+One incorrect predicate was produced:
+(GaroCommunity)-[IS_SPOKEN_BY]->(Bangladesh)
+
+The response also ended with an UNKNOWN triple because generation was truncated.
+
+CONCLUSION:
+Variant B improves multi-object separation, but this run cannot be treated as a complete
+accuracy comparison because the model hit the generation limit. It also remains very slow.
