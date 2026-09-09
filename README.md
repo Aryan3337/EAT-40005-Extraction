@@ -145,6 +145,82 @@ The Flutter app sends `POST http://localhost:8000/query` with `{"query":"your qu
 
 The `answer` field is synthesized from the retrieved graph evidence using the local Ollama model configured by `OLLAMA_MODEL`. If Ollama is unavailable, the API uses a deterministic human-readable summary of the graph facts instead. Raw formatted graph evidence is also returned in the `evidence` field.
 
+### Run the Flutter app locally
+
+The complete Flutter project is in `flutter_application/`. Use that directory, not `flutter_application_1/` (the latter is an incomplete generated Android project without a `pubspec.yaml`).
+
+#### Prerequisites
+
+- Flutter SDK installed and available as `flutter` in PowerShell.
+- Python dependencies installed with `pip install -r requirements.txt`.
+- A `.env` file containing valid Neo4j credentials.
+- Ollama running locally with a model installed:
+
+```powershell
+ollama list
+```
+
+If no model is installed, pull one first:
+
+```powershell
+ollama pull deepseek-r1:7b
+```
+
+#### Terminal 1: start the RAG API
+
+From the repository root, run:
+
+```powershell
+python rag.py --neo4j --serve --approach concept
+```
+
+Leave this terminal running. A successful start prints:
+
+```text
+RAG API listening on http://127.0.0.1:8000
+```
+
+If `deepseek-r1:7b` takes too long to answer, test with the smaller installed model:
+
+```powershell
+$env:OLLAMA_MODEL = "mistral:7b"
+python rag.py --neo4j --serve --approach concept
+```
+
+#### Terminal 2: run Flutter
+
+Open a second terminal and run:
+
+```powershell
+cd flutter_application
+flutter pub get
+flutter run
+```
+
+Choose an available device when Flutter asks. For Windows, Chrome, or another desktop target, the app connects to `http://127.0.0.1:8000/query`. For the Android emulator, the app automatically uses `http://10.0.2.2:8000/query` to reach the host computer.
+
+#### Test the API without Flutter
+
+You can ask a question directly from a second PowerShell terminal:
+
+```powershell
+$body = @{ query = 'What is Garo?' } | ConvertTo-Json; (Invoke-RestMethod -Uri 'http://127.0.0.1:8000/query' -Method Post -ContentType 'application/json' -Body $body).answer
+```
+
+To ask another question, replace the text inside `query`:
+
+```powershell
+$body = @{ query = 'Where do the Garo people live?' } | ConvertTo-Json; (Invoke-RestMethod -Uri 'http://127.0.0.1:8000/query' -Method Post -ContentType 'application/json' -Body $body).answer
+```
+
+Check that the API is running:
+
+```powershell
+Invoke-RestMethod 'http://127.0.0.1:8000/health'
+```
+
+If PowerShell displays `>>`, press `Ctrl+C` and rerun the one-line command. This means PowerShell received an incomplete command, often because of an unmatched quote or trailing backtick. Stop the RAG API with `Ctrl+C` in Terminal 1.
+
 Drop `--query` and it starts an interactive session where you can type multiple questions in a row:
 
 ```bash
