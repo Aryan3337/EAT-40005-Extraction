@@ -1,0 +1,21 @@
+TEAM AGREED GROUND TRUTH
+Source: Final Triples sheet - KG_extraction_Marcus & sangeetha.xlsx
+Scope: S1-S5
+
+S1
+(GaroCommunity)-[IS_ONE_OF]->(LargestMinorityTribes)
+
+S2
+(GaroCommunity)-[LIVES_IN]->(MadhupurTangailBangladesh)
+
+S3
+(GaroCommunity)-[MIGRATED_FROM]->(Tibet)
+(GaroCommunity)-[MIGRATED_FROM]->(Burma)
+
+S4
+(GaroCommunity)-[IS_PRIMARILY]->(Agricultural)
+(GaroCommunity)-[DEPENDS_ON]->(Agriculture)
+
+S5
+(GaroPeople)-[SPEAKS]->(Bengali)
+(GaroPeople)-[ARE]->(Bilingual)

@@ -1,0 +1,74 @@
+TANGAIL S1-S5 PROMPT COMPARISON
+Ground truth: Team Final Triples
+Total agreed triples: 8
+
+BASELINE
+- Parsed triples: 14
+- Exact matches:
+  - (GaroCommunity)-[MIGRATED_FROM]->(Tibet)
+  - (GaroCommunity)-[MIGRATED_FROM]->(Burma)
+- Partial/semantic matches:
+  - minority tribe classification
+  - agricultural community
+  - bilingual/language facts
+- Main issues:
+  - Different ontology/predicate structure from agreed triples
+  - Wrong SENTENCE REF for agricultural triple
+  - Extra location/self-identification triples
+- Overall:
+  More complete, but noisier and less aligned to the agreed ontology.
+
+VARIANT A
+- Parsed triples: 6
+- Improvements:
+  - Better SENTENCE REF grounding
+  - Agricultural triple linked to correct sentence
+- Main issues:
+  - Combined multiple objects into one PASSAGE line
+  - Parser retained only first object
+  - Lost several expected triples
+- Overall:
+  Better grounding, but incomplete parsed output.
+
+VARIANT B
+- Normal run:
+  - Timed out at 600 seconds
+- 768-token test:
+  - Parsed triples: 6
+  - Done reason: length
+- Improvements:
+  - Better one-object-per-block behaviour
+- Main issues:
+  - Incorrect predicate:
+    (GaroCommunity)-[IS_SPOKEN_BY]->(Bangladesh)
+  - Truncated output
+  - UNKNOWN triple due to incomplete generation
+- Overall:
+  Better structural separation, but poor semantic reliability and performance.
+
+VARIANT C
+- 768-token test:
+  - Parsed triples: 6
+  - Done reason: length
+- Improvements:
+  - Fixed unsupported predicate problem
+  - Preserved correct sentence grounding
+- Main issues:
+  - Still truncated before completing all facts
+  - Still differs from team-agreed ontology
+  - Example:
+    Model: (GaroCommunity)-[IS_LARGEST_MINORITY]->(BangladeshTribes)
+    Ground truth: (GaroCommunity)-[IS_ONE_OF]->(LargestMinorityTribes)
+- Overall:
+  Best semantic grounding of tested variants, but still incomplete and not fully aligned to the team's agreed triple structure.
+
+SUMMARY
+- Baseline: best completeness
+- Variant A: better grounding
+- Variant B: better object separation
+- Variant C: best semantic predicate grounding
+- Remaining major issues:
+  1. DeepSeek R1 generation speed
+  2. Token-limit truncation
+  3. Inconsistent ontology/predicate naming compared with manual ground truth
+  4. Need for a more constrained canonical predicate/node vocabulary
