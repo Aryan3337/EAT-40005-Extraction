@@ -127,6 +127,24 @@ docker compose exec app python rag.py --kg output/your_paper_kg.csv --query "Whe
 
 Use `--approach concept` (recommended, fast, no LLM needed) rather than `--approach cypher` — the Cypher approach currently has a known issue (see below) and returns empty results.
 
+### Connect the Flutter frontend
+
+Start the RAG HTTP bridge from the extraction project root. To query the triples already uploaded to Neo4j, use:
+
+```bash
+python rag.py --neo4j --serve --approach concept
+```
+
+The command reads `NEO4J_URI`, `NEO4J_USERNAME`, and `NEO4J_PASSWORD` from `.env`. Alternatively, use the CSV backup created by the extraction step:
+
+```bash
+python rag.py --kg output/your_paper_kg.csv --serve --approach concept
+```
+
+The Flutter app sends `POST http://localhost:8000/query` with `{"query":"your question"}`. The bridge returns the formatted triples as `answer` and their source sections as `sources`.
+
+The `answer` field is synthesized from the retrieved graph evidence using the local Ollama model configured by `OLLAMA_MODEL`. If Ollama is unavailable, the API uses a deterministic human-readable summary of the graph facts instead. Raw formatted graph evidence is also returned in the `evidence` field.
+
 Drop `--query` and it starts an interactive session where you can type multiple questions in a row:
 
 ```bash
