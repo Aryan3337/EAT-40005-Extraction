@@ -24,11 +24,17 @@ import csv
 import re
 import sys
 import argparse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import List, Dict, Any, Set, Tuple
+from typing import List, Dict, Any, Set, Tuple, Optional, Protocol
 from collections import defaultdict
 from dotenv import load_dotenv
 import requests
+
+try:
+    from neo4j import GraphDatabase  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - optional dependency for Neo4j mode
+    GraphDatabase = None
 
 load_dotenv()
 
@@ -76,7 +82,7 @@ class KnowledgeGraph:
         Create an index: entity (lowercased) → list of triple indices.
         This makes retrieving triples by entity O(1) instead of scanning the whole list.
         """
-        self.entity_index = defaultdict(list)
+        self.entity_index = defaultdict(lambda: [])
         self.all_entities = set()
         for idx, t in enumerate(self.triples):
             subj = t['subject'].lower()
@@ -132,7 +138,7 @@ class CypherRetriever:
     and is slower and less reliable than Concept Matching.
     """
 
-    def __init__(self, kg: KnowledgeGraph, ollama_url: str = None):
+    def __init__(self, kg: KnowledgeGraph, ollama_url: Optional[str] = None):
         self.kg = kg
         # Reads from the environment so this works correctly inside Docker, where
         # docker-compose.yml overrides OLLAMA_URL to point at the ollama service
@@ -510,6 +516,329 @@ class RAGSkeleton:
             lines.append("")  # blank line between triples
         return "\n".join(lines)
 
+    # Releases any resources held by the CSV-backed implementation.
+    # This is a no-op for local file-based retrieval, but it matches the
+    # shutdown contract used by the HTTP server.
+    def close(self) -> None:
+        pass
+
+
+# Queries Entity nodes and their relationships directly from Neo4j.
+class Neo4jRAGSkeleton:
+    # Opens a Neo4j driver using the project's environment configuration.
+    def __init__(self):
+        from config import PASSWORD, URI, USERNAME
+
+        if GraphDatabase is None:
+            raise ImportError("The 'neo4j' package is required to use Neo4jRAGSkeleton. Install it with 'pip install neo4j'.")
+
+        uri = str(URI or "")
+        username = str(USERNAME or "")
+        password = str(PASSWORD or "")
+
+        if not uri or not username or not password:
+            raise ValueError("Neo4j configuration is incomplete. Set URI, USERNAME, and PASSWORD in config or environment.")
+
+        self.driver = GraphDatabase.driver(uri, auth=(username, password))
+
+    # Finds graph relationships whose entities or source text match the question.
+    def query(self, question: str, top_k: int = 10) -> List[Dict]:
+        keywords = [word.lower() for word in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", question)]
+        if not keywords:
+            return []
+        
+        question_lower = question.lower()
+        relationship_terms = []
+        if re.search(r"\b(where|live|lives|located|location|reside|resides|home)\b", question_lower):
+            relationship_terms.extend(["live", "locat", "resid", "home", "place"])
+        if re.search(r"\b(language|speak|speaks|dialect)\b", question_lower):
+            relationship_terms.extend(["speak", "language", "dialect"])
+        if re.search(r"\b(population|many|number)\b", question_lower):
+            relationship_terms.extend(["population", "number", "count"])
+        if re.search(r"\b(what is|who is|what are|who are)\b", question_lower):
+            relationship_terms.extend(["is_a", "type", "identity", "about"])
+
+        cypher = """
+        MATCH (s:Entity)-[r]->(o:Entity)
+        WHERE any(keyword IN $keywords WHERE
+            toLower(coalesce(s.name, '')) CONTAINS keyword OR
+            toLower(coalesce(o.name, '')) CONTAINS keyword OR
+            toLower(coalesce(r.passage, '')) CONTAINS keyword OR
+            toLower(coalesce(r.sentence_ref, '')) CONTAINS keyword)
+        WITH s, r, o, keywords,
+             reduce(score = 0, term IN $relationship_terms |
+                 score + CASE
+                     WHEN toLower(type(r)) CONTAINS term THEN 10
+                     WHEN toLower(coalesce(r.passage, '')) CONTAINS term THEN 5
+                     ELSE 0
+                 END) AS relevance
+        RETURN s.name AS subject,
+               type(r) AS predicate,
+               o.name AS object,
+               coalesce(r.sentence_ref, '') AS sentence_ref,
+               coalesce(r.source_section, '') AS source_section,
+               coalesce(r.passage, '') AS passage,
+               coalesce(r.confidence, '') AS confidence
+        ORDER BY relevance DESC
+        LIMIT $top_k
+        """
+
+        with self.driver.session() as session:
+            result = session.run(
+                cypher,
+                keywords=keywords,
+                relationship_terms=relationship_terms,
+                top_k=top_k,
+            )
+            return [dict(record) for record in result]
+
+    # Formats Neo4j triples for the Flutter assistant response.
+    def format_output(self, triples: List[Dict]) -> str:
+        if not triples:
+            return "No triples found. Try rephrasing your question or ask about a different topic."
+
+        lines = []
+        for triple in triples:
+            lines.append(
+                f"({triple['subject']}) -[{triple['predicate']}]-> ({triple['object']})"
+            )
+            if triple.get('sentence_ref'):
+                lines.append(f"  // Source: {triple['sentence_ref']}")
+            if triple.get('source_section'):
+                lines.append(f"  // Page: {triple['source_section']}")
+            lines.append('')
+        return '\n'.join(lines)
+
+    # Closes the Neo4j network resources when the API stops.
+    def close(self) -> None:
+        self.driver.close()
+
+    # Converts retrieved graph evidence into a concise, grounded answer.
+class AnswerSynthesizer:
+    def __init__(self, ollama_url: Optional[str] = None, model: Optional[str] = None):
+        self.ollama_url = ollama_url or os.getenv(
+            "OLLAMA_URL", "http://localhost:11434/api/generate"
+        )
+        self.model = model or os.getenv("OLLAMA_MODEL", "deepseek-r1:7b")
+
+    # Writes a natural-language answer while keeping every claim tied to evidence.
+    def answer(self, question: str, triples: List[Dict[str, Any]]) -> str:
+        if not triples:
+            return "I could not find enough connected evidence to answer that question. Try naming a specific person, place, event, or relationship."
+
+        prompt = self._build_prompt(question, triples)
+        try:
+            response = requests.post(
+                self.ollama_url,
+                json={
+                    "model": self.model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.2, "num_predict": 400},
+                },
+                timeout=30,
+            )
+            if response.status_code == 200:
+                text = response.json().get("response", "").strip()
+                if text:
+                    return self._clean_response(text)
+        except (requests.RequestException, ValueError, KeyError) as error:
+            print(f"Answer synthesis unavailable: {error}")
+
+        return self._fallback_answer(triples)
+
+    # Builds a small evidence-only prompt for the local language model.
+    def _build_prompt(self, question: str, triples: List[Dict[str, Any]]) -> str:
+        evidence = []
+        for triple in triples:
+            evidence.append({
+                "subject": triple.get("subject", ""),
+                "relationship": triple.get("predicate", ""),
+                "object": triple.get("object", ""),
+                "source_context": triple.get("sentence_ref", ""),
+                "source_section": triple.get("source_section", ""),
+            })
+
+        return f"""You are a careful knowledge-graph research assistant.
+Answer the user's question using only the evidence below.
+Do not invent facts, names, dates, or explanations that are not supported.
+    If the question asks what an entity is, begin with a direct definition and then add
+    one or two supported details such as location, language, or community identity.
+    Translate graph identifiers such as GaroCommunity into natural language such as
+    "the Garo community". Write 1-3 natural paragraphs. Do not mention prompts,
+    models, retrieval, graph triples, or JSON.
+    Answer the specific question first and omit evidence that does not help answer it.
+    If the evidence is incomplete, say what is known and briefly acknowledge the limitation.
+
+User question:
+{question}
+
+Evidence:
+{json.dumps(evidence, ensure_ascii=False, indent=2)}
+
+Answer:"""
+
+    # Removes model-style prefixes that do not belong in the chat response.
+    def _clean_response(self, text: str) -> str:
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r"^\s*(answer|response)\s*:\s*", "", text, flags=re.IGNORECASE)
+        return text.strip()
+
+    # Produces a readable answer when Ollama is offline or unavailable.
+    def _fallback_answer(self, triples: List[Dict[str, Any]]) -> str:
+        statements = [self._format_triple(triple) for triple in triples[:6]]
+        statements = [statement for statement in statements if statement]
+        if not statements:
+            return "I could not find enough connected evidence to answer that question."
+        return "Based on the available knowledge, " + " ".join(statements)
+
+    # Converts one graph triple into a readable, grounded sentence.
+    def _format_triple(self, triple: Dict[str, Any]) -> str:
+        subject = self._humanize_entity(triple.get("subject", "This entity"))
+        predicate = str(triple.get("predicate", "")).upper().replace(" ", "_")
+        obj = self._humanize_entity(triple.get("object", "another entity"))
+        subject_lower = subject.lower()
+
+        templates = {
+            "IS_A": f"{subject} is {self._article(obj)}",
+            "TYPE": f"{subject} is {self._article(obj)}",
+            "LOCATED_IN": f"{subject} is located in {obj}",
+            "LIVE_IN": f"{subject} live in {obj}" if subject_lower.endswith("people") else f"{subject} lives in {obj}",
+            "SPEAK_LANGUAGE": f"{subject} speak {obj}" if subject_lower.endswith("people") or subject_lower.endswith("community") else f"{subject} speaks {obj}",
+            "BELONG_TO": f"{subject} belong to {obj}" if subject_lower.endswith("people") or subject_lower.endswith("community") else f"{subject} belongs to {obj}",
+            "HAS_LANGUAGE": f"{subject} use the {obj} language",
+            "HAS_A_POPULATION": f"{subject} have an estimated population of {obj}",
+        }
+        sentence = templates.get(predicate)
+        if sentence:
+            return f"{sentence}."
+        readable_predicate = self._humanize_predicate(predicate)
+        return f"{subject} {readable_predicate} {obj}."
+
+    # Makes CamelCase graph identifiers readable in a response.
+    def _humanize_entity(self, entity: Any) -> str:
+        raw_text = str(entity or "").strip()
+        text = raw_text.replace("_", " ")
+        text = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text)
+        text = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", text)
+        if re.fullmatch(r"[A-Za-z0-9_]+", raw_text):
+            text = re.sub(r"\s+Community$", "", text, flags=re.IGNORECASE)
+        return text[:1].upper() + text[1:] if text else "another entity"
+
+    def _article(self, noun: str) -> str:
+        readable_noun = noun[:1].lower() + noun[1:]
+        return f"an {readable_noun}" if noun[:1].lower() in "aeiou" else f"a {readable_noun}"
+
+    # Turns graph labels such as LIVE_IN into readable sentence fragments.
+    def _humanize_predicate(self, predicate: str) -> str:
+        normalized = predicate.lower().replace("_", " ").strip()
+        replacements = {
+            "live in": "lives in",
+            "located in": "is located in",
+            "born in": "was born in",
+            "part of": "is part of",
+            "related to": "is related to",
+            "is a": "is a",
+            "role": "have the role of",
+            "recognize": "recognize",
+            "speak language": "speak",
+        }
+        return replacements.get(normalized, normalized or "is related to")
+
+
+class RAGQuerySkeleton(Protocol):
+    """Shared interface for local and Neo4j-backed retrieval skeletons."""
+    def query(self, question: str, top_k: int = 10) -> List[Dict[str, Any]]: ...
+    def format_output(self, triples: List[Dict[str, Any]]) -> str: ...
+    def close(self) -> None: ...
+
+
+# Creates an HTTP handler backed by the selected RAG retriever.
+def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesizer):
+    class QueryHandler(BaseHTTPRequestHandler):
+        # Allows Flutter web to preflight cross-origin API requests.
+        def do_OPTIONS(self) -> None:
+            self.send_response(204)
+            self._send_cors_headers()
+            self.end_headers()
+
+        # Handles browser health checks and API requests.
+        def do_GET(self) -> None:
+            if self.path == "/health":
+                self._send_json(200, {"status": "ok"})
+                return
+            self._send_json(404, {"error": "Not found"})
+
+        # Handles questions sent by the Flutter client.
+        def do_POST(self) -> None:
+            if self.path != "/query":
+                self._send_json(404, {"error": "Not found"})
+                return
+
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length))
+                question = str(payload.get("query", "")).strip()
+                if not question:
+                    self._send_json(400, {"error": "query is required"})
+                    return
+
+                triples = skeleton.query(question)
+                sources = sorted({
+                    t.get("source_section", "Unknown")
+                    for t in triples
+                    if t.get("source_section")
+                })
+                self._send_json(200, {
+                    "answer": synthesizer.answer(question, triples),
+                    "evidence": skeleton.format_output(triples),
+                    "sources": sources,
+                    "triples": triples,
+                })
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                self._send_json(400, {"error": f"Invalid request: {error}"})
+
+        # Writes a JSON response with CORS enabled for local Flutter clients.
+        def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self._send_cors_headers()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        # Adds the headers required by Flutter web and browser clients.
+        def _send_cors_headers(self) -> None:
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+        # Keeps routine request logs concise during local development.
+        def log_message(self, format: str, *args: Any) -> None:
+            print(f"RAG API: {format % args}")
+
+    return QueryHandler
+
+
+# Starts the local HTTP bridge used by the Flutter frontend.
+def serve_api(kg_path: str, host: str, port: int, approach: str, use_neo4j: bool) -> None:
+    skeleton: RAGQuerySkeleton = Neo4jRAGSkeleton() if use_neo4j else RAGSkeleton(kg_path, approach=approach)
+    server = ThreadingHTTPServer(
+        (host, port),
+        create_query_handler(skeleton, AnswerSynthesizer()),
+    )
+    print(f"RAG API listening on http://{host}:{port}")
+    print("POST /query with {\"query\": \"your question\"}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\\nStopping RAG API")
+    finally:
+        server.server_close()
+        if use_neo4j:
+            skeleton.close()
+
 
 # ============================================================================
 # 6. Command‑Line Interface
@@ -523,10 +852,18 @@ def main() -> None:
         - (no flags)       : start an interactive session.
     """
     parser = argparse.ArgumentParser(description="RAG Retrieval Comparison")
-    parser.add_argument("--kg", required=True, help="Path to KG CSV file")
+    parser.add_argument("--kg", help="Path to KG CSV file")
     parser.add_argument("--test-questions", action="store_true",
                         help="Run comparison with built-in test questions")
     parser.add_argument("--query", help="Single question to test")
+    parser.add_argument("--serve", action="store_true",
+                        help="Start the HTTP API used by the Flutter frontend")
+    parser.add_argument("--neo4j", action="store_true",
+                        help="Read Entity relationships directly from Neo4j")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="API host (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8000,
+                        help="API port (default: 8000)")
     parser.add_argument("--approach", choices=["concept", "cypher"], default="concept",
                         help="Retrieval approach (default: concept)")
     parser.add_argument("--top-k", type=int, default=10,
@@ -534,9 +871,19 @@ def main() -> None:
     args = parser.parse_args()
 
     # Verify that the KG file exists.
-    if not Path(args.kg).exists():
+    if args.neo4j and not args.serve:
+        parser.error("--neo4j can only be used with --serve")
+
+    if not args.kg and not args.neo4j:
+        parser.error("--kg is required unless --neo4j --serve is used")
+
+    if args.kg and not Path(args.kg).exists():
         print(f"File not found: {args.kg}")
         sys.exit(1)
+
+    if args.serve:
+        serve_api(args.kg, args.host, args.port, args.approach, args.neo4j)
+        return
 
     # Load the knowledge graph once.
     kg = KnowledgeGraph(args.kg)
