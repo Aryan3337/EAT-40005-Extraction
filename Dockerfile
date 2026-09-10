@@ -4,6 +4,9 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+# Small English model for check_subject_specificity.py's dependency-parse
+# subject audit (~12MB download, ~50MB installed).
+RUN python -m spacy download en_core_web_sm
 
 COPY . .
 

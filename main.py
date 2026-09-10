@@ -4,6 +4,7 @@ from pathlib import Path
 from kg_extractor import run_kg_extraction, save_triples_to_csv
 from neo4j_loader.insert import add_triples
 from Extraction_Check import validate_triple_format, flag_artifact_triples
+from subject_specificity import apply_subject_corrections, write_corrections_log
 
 if len(sys.argv) < 2:
     print("Usage: python main.py <path_to_pdf> [model_name]")
@@ -61,6 +62,24 @@ if triples:
         print("\nNo valid triples remained after validation and filtering. Skipping save and upload.")
         sys.exit(0)
 
+    # ------------------------------------------------------------
+    # Subject-specificity correction: automatically rewrites a triple's
+    # Subject away from the generic GaroCommunity/GaroPeople node when its
+    # source sentence names something more specific (a house, a household,
+    # a diet...), using a deterministic dependency-parse check rather than
+    # relying on the model to follow that rule itself -- see
+    # subject_specificity.py for the full rationale and the guards that
+    # keep this conservative (attribution phrases and meta/abstract
+    # candidates like "the passage" are never auto-applied). Fully
+    # automatic, no manual review step -- every correction actually made is
+    # logged to output/{paper}_subject_corrections.csv for auditability.
+    # ------------------------------------------------------------
+    valid_triples, subject_corrections = apply_subject_corrections(valid_triples)
+    if subject_corrections:
+        print(f"\n[SUBJECT CORRECTION] Auto-corrected {len(subject_corrections)} triples away from the generic community subject:")
+        for c in subject_corrections:
+            print(f"  - {c['old_subject']} -> {c['new_subject']}   [{c['predicate']}]->({c['object']})")
+
     # Local backup CSV, written before the Neo4j upload so results are on
     # disk even if the upload fails partway through.
     output_dir = Path("output")
@@ -69,6 +88,11 @@ if triples:
     csv_path = output_dir / f"{paper_name}_kg.csv"
     save_triples_to_csv(valid_triples, str(csv_path), paper_name)
     print(f"Saved local backup to {csv_path}")
+
+    if subject_corrections:
+        corrections_path = output_dir / f"{paper_name}_subject_corrections.csv"
+        write_corrections_log(subject_corrections, str(corrections_path))
+        print(f"Saved subject-correction log to {corrections_path}")
 
     add_triples(valid_triples)
 else:

@@ -64,29 +64,60 @@ def chunk_text(text: str, chunk_size: int = 1500, overlap: int = 200) -> List[Tu
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 
 def make_extraction_prompt(chunk_text: str) -> str:
+    # ------------------------------------------------------------------
+    # PR008 / "Variant A" (round 4, refined) -- promoted to the pipeline
+    # default on 2026-09-09 after page-3 A/B testing (4 rounds, logged in
+    # Prompt_Iteration_Log.xlsx) and a full-paper trial run
+    # (output/garo_1_fullpaper_variantA.csv). Selected over the original
+    # PR007 wording below (kept for reference / rollback):
+    #
+    #   - Explicit bad-vs-good predicate-format examples, and an
+    #     anti-reasoning/"nothing before the first // PASSAGE:" instruction
+    #     to close the parse_ollama_blocks() UNKNOWN-placeholder bug.
+    #   - A generalized methodology-leak skip-list (targets the PATTERN of
+    #     "what respondents were asked/classified", not just the literal
+    #     word "Respondents", which the model had started working around).
+    #   - Subject specificity keyed to what the sentence itself supports,
+    #     rather than a blanket rule -- checked against the full 148-triple
+    #     manual ground truth, where GaroPeople/GaroCommunity is the
+    #     correct subject 61% of the time, so "always prefer specific" was
+    #     itself a source of error outside the Attire section.
+    #
+    # Known open issues at time of promotion (see Prompt_Iteration_Log.xlsx
+    # and the full-paper trial notes for detail): on the full 8-page paper,
+    # subject specificity still collapsed to GaroCommunity ~93% of the
+    # time (worse than the 61% ground-truth rate), ~32% of predicates
+    # still broke the UPPER_SNAKE_CASE rule, and predicate fragmentation
+    # (multiple near-synonym predicates for the same relationship type,
+    # e.g. HAS_CONCERN / HAS_CHALLENGE / HAS_REQUEST / HAS_ISSUE) was
+    # common in list-heavy sections. Variant B/C's type-level predicate-
+    # consistency rule was NOT included here and may be worth a follow-up
+    # trial if fragmentation turns out to matter for downstream use.
+    # ------------------------------------------------------------------
     return f"""You are a knowledge graph extraction assistant. You will be provided with a passage from an academic research paper.
 
-Read the passage. Identify every factual claim, relationship, practice, observation, or piece of knowledge about the Garo / Mandi community discussed in the passage.
+Read the passage. Identify every factual claim, relationship, practice, belief, observation, or piece of knowledge about the Garo / Mandi community discussed in the passage. This passage may come from any part of the paper -- introduction, demographics, attire, food, religion, festivals, health, household life, occupation, or any other section -- so do not assume in advance which topic it covers.
 
-For each meaningful piece, output a Cypher comment block in this exact format:
+Output your answer immediately as a sequence of Cypher comment blocks. Do not include any reasoning, planning, or <think> content, and do not write anything before the first block -- your entire response must consist only of comment blocks in this exact format:
 
 // PASSAGE: (Subject)-[PREDICATE]->(Object)
 // SENTENCE REF: <exact sentence from the paper this was drawn from>
 // SOURCE: <paper title placeholder>
 
 Strict rules for the PASSAGE line:
-- It MUST be written ONLY as (Subject)-[PREDICATE]->(Object). Never write a full sentence, paraphrase, or description on the PASSAGE line — that line is a structured triple, not prose.
+- It MUST be written ONLY as (Subject)-[PREDICATE]->(Object). Never write a full sentence, paraphrase, or description on the PASSAGE line -- that line is a structured triple, not prose.
 - Subject and Object must be short noun phrases (1-4 words) in CamelCase with no spaces, e.g. (MandiLanguage), (GaroCommunity).
-- Predicate must be UPPER_CASE_WITH_UNDERSCORES, e.g. IS_SPOKEN_BY, MAINTAINS, IS_LOCATED_IN.
-- If a sentence lists multiple values for the same relationship (e.g. multiple professions, multiple locations, multiple languages), output ONE SEPARATE triple per value. Never combine multiple values into a single comma-separated Object — e.g. write (GaroCommunity)-[HAS_PROFESSION]->(Teacher) and (GaroCommunity)-[HAS_PROFESSION]->(Farmer) as two blocks, not one block with (Teacher, Farmer).
-- Do not decide in advance what topics or domains to look for — extract everything factual the passage contains about the Garo/Mandi community's culture, language, history, practices, and lived experience.
+- Predicate must be UPPER_CASE_WITH_UNDERSCORES ONLY -- no lowercase letters, no spaces, no mixed case. For example, write IS_USED_IN, never "IS USED IN"; write WEARS, never "WE WEAR"; write HAS_FAMILY_STRUCTURE, never "HAS_FamilyStructure". A predicate containing a space or a lowercase word is always wrong -- rewrite it before outputting the block.
+- Choose the Subject at the level of specificity the sentence itself actually supports -- neither more nor less. If the sentence names a specific subgroup, item, individual, organization, ritual, or role, use that specific entity as the Subject. If the sentence instead makes a general statement about the community as a whole, GaroPeople or GaroCommunity IS the correct Subject -- do not force a narrower entity onto a general statement, and do not default to a broad community-level noun when the sentence clearly names something narrower.
+- If a sentence lists multiple values for the same relationship (e.g. multiple professions, locations, languages, foods, or beliefs), output ONE SEPARATE triple per value. Never combine multiple values into a single comma-separated Object -- e.g. write (GaroCommunity)-[HAS_PROFESSION]->(Teacher) and (GaroCommunity)-[HAS_PROFESSION]->(Farmer) as two blocks, not one block with (Teacher, Farmer). If you decide not to extract something because it is a duplicate, simply skip it -- never bundle it into another block instead.
+- Do not decide in advance what topics or domains to look for -- extract everything factual the passage contains about the Garo/Mandi community's culture, language, history, beliefs, practices, and lived experience, whatever section of the paper it comes from.
 - Each PASSAGE line must be traceable to a specific sentence, quoted exactly in SENTENCE REF. If you cannot find an exact sentence, do not output a block for that content at all.
 
-Skip entirely — do not output a block for any of the following:
+Skip entirely -- do not output a block for any of the following:
 - Bibliographic references, author citations, journal titles, page numbers, or keyword lists.
-- Descriptions of the research study itself: sample sizes, participant counts or demographics (age, gender), interview or data collection methods, data analysis or coding procedures, or any statement about what "the researchers" or "the study" did. Only extract facts about the Garo/Mandi community, never facts about how the paper studied them.
+- Anything describing the research process itself rather than the community: sample sizes, participant/respondent counts or demographics, what participants or respondents were asked, told, or observed to say, how they were classified or coded (e.g. classification schemes, occupational codes), interview or data collection methods, data analysis procedures, or any subjective assessment the researchers made about participants (e.g. calling them vulnerable, hesitant, willing, or reluctant). "Respondents" or "participants" must never appear as a Subject or Object. Only extract facts about the Garo/Mandi community itself, never facts about how the paper studied them or who was surveyed.
 
-Output only the formatted comment blocks. No explanation, no prose, no extra text.
+Output only the formatted comment blocks. No explanation, no prose, no extra text, and nothing before the first "// PASSAGE:" line.
 
 Passage:
 {chunk_text}
@@ -144,7 +175,7 @@ def extract_triples_from_chunk(chunk_text: str, page_num: int, model: str, retri
                     "stream": False,
                     "options": {"temperature": 0.1, "num_predict": 2048}
                 },
-                timeout=300
+                timeout=900
             )
             if response.status_code != 200:
                 print("OLLAMA STATUS ERROR:", response.status_code)
