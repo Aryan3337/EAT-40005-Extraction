@@ -565,7 +565,7 @@ class Neo4jRAGSkeleton:
             toLower(coalesce(o.name, '')) CONTAINS keyword OR
             toLower(coalesce(r.passage, '')) CONTAINS keyword OR
             toLower(coalesce(r.sentence_ref, '')) CONTAINS keyword)
-        WITH s, r, o, keywords,
+        WITH s, r, o,
              reduce(score = 0, term IN $relationship_terms |
                  score + CASE
                      WHEN toLower(type(r)) CONTAINS term THEN 10
@@ -695,7 +695,8 @@ Answer:"""
     # Converts one graph triple into a readable, grounded sentence.
     def _format_triple(self, triple: Dict[str, Any]) -> str:
         subject = self._humanize_entity(triple.get("subject", "This entity"))
-        predicate = str(triple.get("predicate", "")).upper().replace(" ", "_")
+        raw_predicate = str(triple.get("predicate", ""))
+        predicate_key = raw_predicate.upper().replace(" ", "_")
         obj = self._humanize_entity(triple.get("object", "another entity"))
         subject_lower = subject.lower()
 
@@ -709,13 +710,17 @@ Answer:"""
             "HAS_LANGUAGE": f"{subject} use the {obj} language",
             "HAS_A_POPULATION": f"{subject} have an estimated population of {obj}",
         }
-        sentence = templates.get(predicate)
+        sentence = templates.get(predicate_key)
         if sentence:
             return f"{sentence}."
-        readable_predicate = self._humanize_predicate(predicate)
+        # Pass the ORIGINAL predicate text (not the upper-cased key) so any
+        # camelCase word boundaries it still has are available to humanize.
+        readable_predicate = self._humanize_predicate(raw_predicate)
         return f"{subject} {readable_predicate} {obj}."
 
-    # Makes CamelCase graph identifiers readable in a response.
+    # Makes CamelCase graph identifiers readable in a response, and refers
+    # to the Garo people by their full, respectful name rather than just
+    # the bare entity label.
     def _humanize_entity(self, entity: Any) -> str:
         raw_text = str(entity or "").strip()
         text = raw_text.replace("_", " ")
@@ -723,6 +728,8 @@ Answer:"""
         text = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", text)
         if re.fullmatch(r"[A-Za-z0-9_]+", raw_text):
             text = re.sub(r"\s+Community$", "", text, flags=re.IGNORECASE)
+        if text.strip().lower() == "garo":
+            text = "the Garo people"
         return text[:1].upper() + text[1:] if text else "another entity"
 
     def _article(self, noun: str) -> str:
@@ -730,6 +737,12 @@ Answer:"""
         return f"an {readable_noun}" if noun[:1].lower() in "aeiou" else f"a {readable_noun}"
 
     # Turns graph labels such as LIVE_IN into readable sentence fragments.
+    # Some relation names were upper-cased before being stored in Neo4j,
+    # which destroys any camelCase word boundaries they had (e.g. "relyingOn"
+    # became "RELYINGON" with no way to tell where one word ends and the
+    # next begins). For those, fall back to dictionary-based word
+    # segmentation so the answer still reads as real words instead of one
+    # run-together blob.
     def _humanize_predicate(self, predicate: str) -> str:
         normalized = predicate.lower().replace("_", " ").strip()
         replacements = {
@@ -743,7 +756,32 @@ Answer:"""
             "recognize": "recognize",
             "speak language": "speak",
         }
-        return replacements.get(normalized, normalized or "is related to")
+        if normalized in replacements:
+            return replacements[normalized]
+
+        segmented = [
+            word
+            for token in normalized.split(" ")
+            if token
+            for word in self._split_concatenated_word(token)
+        ]
+        readable = " ".join(segmented)
+        return readable or "is related to"
+
+    # Splits a run of letters with no remaining word boundaries (e.g.
+    # "relyingon") back into likely English words. Short tokens are left
+    # alone since they're either already a real word or too short to
+    # segment reliably. Degrades gracefully (returns the token unchanged)
+    # if the word-segmentation library isn't installed.
+    def _split_concatenated_word(self, token: str) -> List[str]:
+        if len(token) <= 7 or not token.isalpha():
+            return [token]
+        try:
+            import wordninja
+        except ImportError:
+            return [token]
+        segments = wordninja.split(token)
+        return segments if segments else [token]
 
 
 class RAGQuerySkeleton(Protocol):

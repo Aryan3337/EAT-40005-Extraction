@@ -4,3 +4,4 @@ neo4j
 python-dotenv
 rapidfuzz
 spacy
+wordninja
