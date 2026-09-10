@@ -25,3 +25,17 @@ However, the model still reaches the token limit before completing all S1-S5 fac
 
 CONCLUSION:
 Variant C improves semantic predicate accuracy and sentence grounding, but performance and incomplete generation remain unresolved.
+
+=== ACTUAL PARSED OUTPUT ===
+
+1. (GaroCommunity)-[IS_LARGEST_MINORITY]->(BangladeshTribes)
+
+2. (GaroCommunity)-[IS_LOCATED_IN]->(Mymensingh)
+
+3. (GaroCommunity)-[MIGRATED_FROM]->(Tibet)
+
+4. (GaroCommunity)-[REFERS_TO]->(Mandi)
+
+5. (GaroCommunity)-[IS_AGRICULTURAL]->(Community)
+
+6. (MajorityGaroPeople)-[ARE_BILINGUAL]->(Bengali)

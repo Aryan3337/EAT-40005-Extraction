@@ -26,3 +26,17 @@ The response also ended with an UNKNOWN triple because generation was truncated.
 CONCLUSION:
 Variant B improves multi-object separation, but this run cannot be treated as a complete
 accuracy comparison because the model hit the generation limit. It also remains very slow.
+
+=== ACTUAL PARSED OUTPUT ===
+
+1. (GaroCommunity)-[IS_SPOKEN_BY]->(Bangladesh)
+
+2. (GaroCommunity)-[IS_LOCATED_IN]->(Mymensingh)
+
+3. (GaroCommunity)-[IS_LOCATED_IN]->(Netrakona)
+
+4. (GaroCommunity)-[IS_LOCATED_IN]->(Jamalpur)
+
+5. (GaroCommunity)-[IS_LOCATED_IN]->(Sherpur)
+
+6. (UNKNOWN)-[UNKNOWN]->(UNKNOWN)

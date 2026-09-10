@@ -1,0 +1,22 @@
+Paper: The Transformation of Livelihood Practices among the Garo Community - A Study on Tangail District
+Section: Page 1, selected sentences S1-S5
+Model: deepseek-r1:7b
+Prompt version: BASELINE
+Total triples: 14
+
+=== AUTOMATIC EXTRACTION ===
+
+1. (GaroCommunity)-[IS_LARGEST_MINORITY_TRIBE]->(Bangladesh)
+2. (GaroCommunity)-[IS_RESIDENT_IN]->(Mymensingh)
+3. (GaroCommunity)-[IS_RESIDENT_IN]->(Netrakona)
+4. (GaroCommunity)-[IS_RESIDENT_IN]->(Jamalpur)
+5. (GaroCommunity)-[IS_RESIDENT_IN]->(Sherpur)
+6. (GaroCommunity)-[IS_RESIDENT_IN]->(Tangail)
+7. (GaroCommunity)-[IS_RESIDENT_IN]->(Sunamganj)
+8. (GaroCommunity)-[MIGRATED_FROM]->(Tibet)
+9. (GaroCommunity)-[MIGRATED_FROM]->(Burma)
+10. (GaroCommunity)-[THEMSELVES_REF_TO_AS]->(Mandi)
+11. (GaroCommunity)-[THEMSELVES_REF_TO_AS]->(Achchik)
+12. (GaroCommunity)-[IS_AGRICULTURAL]->(Community)
+13. (GaroCommunity)-[IS_BILINGUAL]->(Bengali)
+14. (GaroCommunity)-[IS_BILINGUAL]->(GaroLanguage)

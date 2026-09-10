@@ -1,0 +1,133 @@
+======================================================================
+TANGAIL S1-S5 PROMPT EVALUATION
+======================================================================
+Ground-truth triples: 8
+
+======================================================================
+Baseline
+======================================================================
+Predicted: 14
+Exact matches: 2
+Missing: 6
+Extra: 12
+Precision: 0.143
+Recall:    0.250
+F1:        0.182
+
+Exact matches:
+   ('GaroCommunity', 'MIGRATED_FROM', 'Burma')
+   ('GaroCommunity', 'MIGRATED_FROM', 'Tibet')
+
+Missing ground-truth triples:
+   ('GaroCommunity', 'DEPENDS_ON', 'Agriculture')
+   ('GaroCommunity', 'IS_ONE_OF', 'LargestMinorityTribes')
+   ('GaroCommunity', 'IS_PRIMARILY', 'Agricultural')
+   ('GaroCommunity', 'LIVES_IN', 'MadhupurTangailBangladesh')
+   ('GaroPeople', 'ARE', 'Bilingual')
+   ('GaroPeople', 'SPEAKS', 'Bengali')
+
+Extra triples:
+   ('GaroCommunity', 'IS_AGRICULTURAL', 'Community')
+   ('GaroCommunity', 'IS_BILINGUAL', 'Bengali')
+   ('GaroCommunity', 'IS_BILINGUAL', 'GaroLanguage')
+   ('GaroCommunity', 'IS_LARGEST_MINORITY_TRIBE', 'Bangladesh')
+   ('GaroCommunity', 'IS_RESIDENT_IN', 'Jamalpur')
+   ('GaroCommunity', 'IS_RESIDENT_IN', 'Mymensingh')
+   ('GaroCommunity', 'IS_RESIDENT_IN', 'Netrakona')
+   ('GaroCommunity', 'IS_RESIDENT_IN', 'Sherpur')
+   ('GaroCommunity', 'IS_RESIDENT_IN', 'Sunamganj')
+   ('GaroCommunity', 'IS_RESIDENT_IN', 'Tangail')
+   ('GaroCommunity', 'THEMSELVES_REF_TO_AS', 'Achchik')
+   ('GaroCommunity', 'THEMSELVES_REF_TO_AS', 'Mandi')
+
+======================================================================
+Variant A
+======================================================================
+Predicted: 6
+Exact matches: 1
+Missing: 7
+Extra: 5
+Precision: 0.167
+Recall:    0.125
+F1:        0.143
+
+Exact matches:
+   ('GaroCommunity', 'MIGRATED_FROM', 'Tibet')
+
+Missing ground-truth triples:
+   ('GaroCommunity', 'DEPENDS_ON', 'Agriculture')
+   ('GaroCommunity', 'IS_ONE_OF', 'LargestMinorityTribes')
+   ('GaroCommunity', 'IS_PRIMARILY', 'Agricultural')
+   ('GaroCommunity', 'LIVES_IN', 'MadhupurTangailBangladesh')
+   ('GaroCommunity', 'MIGRATED_FROM', 'Burma')
+   ('GaroPeople', 'ARE', 'Bilingual')
+   ('GaroPeople', 'SPEAKS', 'Bengali')
+
+Extra triples:
+   ('GaroCommunity', 'IS_AGRICULTURAL', 'Community')
+   ('GaroCommunity', 'IS_LARGEST_MINORITY_TRIBE', 'Bangladesh')
+   ('GaroCommunity', 'IS_LOCATED_IN', 'Mymensingh')
+   ('GaroCommunity', 'REFERS_TO', 'Mandi')
+   ('MajorityGaroPeople', 'ARE_BILINGUAL', 'Bengali')
+
+======================================================================
+Variant B
+======================================================================
+Predicted: 6
+Exact matches: 0
+Missing: 8
+Extra: 6
+Precision: 0.000
+Recall:    0.000
+F1:        0.000
+
+Exact matches:
+
+Missing ground-truth triples:
+   ('GaroCommunity', 'DEPENDS_ON', 'Agriculture')
+   ('GaroCommunity', 'IS_ONE_OF', 'LargestMinorityTribes')
+   ('GaroCommunity', 'IS_PRIMARILY', 'Agricultural')
+   ('GaroCommunity', 'LIVES_IN', 'MadhupurTangailBangladesh')
+   ('GaroCommunity', 'MIGRATED_FROM', 'Burma')
+   ('GaroCommunity', 'MIGRATED_FROM', 'Tibet')
+   ('GaroPeople', 'ARE', 'Bilingual')
+   ('GaroPeople', 'SPEAKS', 'Bengali')
+
+Extra triples:
+   ('GaroCommunity', 'IS_LOCATED_IN', 'Jamalpur')
+   ('GaroCommunity', 'IS_LOCATED_IN', 'Mymensingh')
+   ('GaroCommunity', 'IS_LOCATED_IN', 'Netrakona')
+   ('GaroCommunity', 'IS_LOCATED_IN', 'Sherpur')
+   ('GaroCommunity', 'IS_SPOKEN_BY', 'Bangladesh')
+   ('UNKNOWN', 'UNKNOWN', 'UNKNOWN')
+
+======================================================================
+Variant C
+======================================================================
+Predicted: 6
+Exact matches: 1
+Missing: 7
+Extra: 5
+Precision: 0.167
+Recall:    0.125
+F1:        0.143
+
+Exact matches:
+   ('GaroCommunity', 'MIGRATED_FROM', 'Tibet')
+
+Missing ground-truth triples:
+   ('GaroCommunity', 'DEPENDS_ON', 'Agriculture')
+   ('GaroCommunity', 'IS_ONE_OF', 'LargestMinorityTribes')
+   ('GaroCommunity', 'IS_PRIMARILY', 'Agricultural')
+   ('GaroCommunity', 'LIVES_IN', 'MadhupurTangailBangladesh')
+   ('GaroCommunity', 'MIGRATED_FROM', 'Burma')
+   ('GaroPeople', 'ARE', 'Bilingual')
+   ('GaroPeople', 'SPEAKS', 'Bengali')
+
+Extra triples:
+   ('GaroCommunity', 'IS_AGRICULTURAL', 'Community')
+   ('GaroCommunity', 'IS_LARGEST_MINORITY', 'BangladeshTribes')
+   ('GaroCommunity', 'IS_LOCATED_IN', 'Mymensingh')
+   ('GaroCommunity', 'REFERS_TO', 'Mandi')
+   ('MajorityGaroPeople', 'ARE_BILINGUAL', 'Bengali')
+
