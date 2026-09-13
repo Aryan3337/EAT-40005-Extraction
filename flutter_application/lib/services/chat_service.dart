@@ -36,7 +36,7 @@ class ChatService {
         return ChatMessage(
           text: payload['answer'] as String? ?? 'The graph returned no answer.',
           author: MessageAuthor.assistant,
-          sources: _readSources(payload['sources']),
+          //sources: _readSources(payload['sources']),
         );
       }
 
@@ -61,7 +61,7 @@ class ChatService {
     return ChatMessage(
       author: MessageAuthor.assistant,
       text: text,
-      sources: const ['RAG.py connection'],
+      //sources: const ['RAG.py connection'],
     );
   }
 }

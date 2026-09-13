@@ -228,33 +228,13 @@ class _MessageBubble extends StatelessWidget {
           ),
           border: isUser ? null : Border.all(color: const Color(0xFFE0E7E3)),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              message.text,
-              style: TextStyle(
-                color: isUser ? Colors.white : const Color(0xFF26343D),
-                height: 1.45,
-                fontSize: 15,
-              ),
-            ),
-            if (message.sources.isNotEmpty) ...[
-              const SizedBox(height: 14),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: message.sources
-                    .map(
-                      (source) => Chip(
-                        label: Text(source),
-                        visualDensity: VisualDensity.compact,
-                      ),
-                    )
-                    .toList(),
-              ),
-            ],
-          ],
+        child: Text(
+          message.text,
+          style: TextStyle(
+            color: isUser ? Colors.white : const Color(0xFF26343D),
+            height: 1.45,
+            fontSize: 15,
+          ),
         ),
       ),
     );

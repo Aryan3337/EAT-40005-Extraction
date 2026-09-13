@@ -5,10 +5,10 @@ class ChatMessage {
   const ChatMessage({
     required this.text,
     required this.author,
-    this.sources = const [],
+    //this.sources = const [],
   });
 
   final String text;
   final MessageAuthor author;
-  final List<String> sources;
+  //final List<String> sources;
 }

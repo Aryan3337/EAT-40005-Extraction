@@ -449,11 +449,11 @@ class RetrieverComparator:
 
         print("\nDecision:")
         if total_concept >= total_cypher and concept_nonzero >= cypher_nonzero:
-            print("  ✅ Select Concept Matching as the primary retrieval approach.")
+            print("  Select Concept Matching as the primary retrieval approach.")
             print(f"     It retrieved {total_concept - total_cypher} more triples overall and returned something for {concept_nonzero - cypher_nonzero} more questions.")
             print("     For the current KG (simple triples, single‑hop facts), this is the most reliable and efficient choice.")
         else:
-            print("  ⚠️ Consider Cypher Translation if complex queries become frequent.")
+            print("  Consider Cypher Translation if complex queries become frequent.")
 
         print("\nFuture Enhancement:")
         print("  - Keep Cypher Translation as an optional route for advanced queries (e.g., multi‑hop).")
