@@ -1,0 +1,217 @@
+{
+  "results": [
+    {
+      "id": "C-001",
+      "category": "certain",
+      "question": "Is the Garo community located in Bangladesh?",
+      "source_paper": "paper1",
+      "is_gap": false,
+      "num_triples_returned": 10,
+      "expected_entities": [
+        "bangladesh"
+      ],
+      "entities_found": [
+        "bangladesh"
+      ],
+      "entities_missing": [],
+      "response_preview": "(GaroCommunity) -[EXIST_IN]-> (Bangladesh)\n  // Source: It was Tolemi who first mentioned the name Garo in 200 A.D. while collecting information from ",
+      "passed": true,
+      "notes": "Based on: (GaroCommunity)-[IS_LOCATED_IN]->(Bangladesh), Page 5."
+    },
+    {
+      "id": "C-002",
+      "category": "certain",
+      "question": "Do Garo people live in Modhupur?",
+      "source_paper": "paper1",
+      "is_gap": false,
+      "num_triples_returned": 10,
+      "expected_entities": [
+        "modhupur"
+      ],
+      "entities_found": [
+        "modhupur"
+      ],
+      "entities_missing": [],
+      "response_preview": "(GaroLocation) -[LIVES_IN]-> (Modhupur)\n  // Source: The highest number of Garo of Mymensingh is noticeable in Haluaghat, Modhupur\n  // Page: Page 3\n\n",
+      "passed": true,
+      "notes": "Based on: (GaroLocation)-[LIVES_IN]->(Modhupur), Page 3."
+    },
+    {
+      "id": "C-003",
+      "category": "certain",
+      "question": "What is Chibok?",
+      "source_paper": "paper1",
+      "is_gap": false,
+      "num_triples_returned": 1,
+      "expected_entities": [
+        "chibok"
+      ],
+      "entities_found": [
+        "chibok"
+      ],
+      "entities_missing": [],
+      "response_preview": "(GaroDialect) -[IS_KNOWN_AS]-> (Chibok)\n  // Source: Though most of the Garo people of plain land speak A’beng, they understand other dialects as well",
+      "passed": true,
+      "notes": "Based on: (GaroDialect)-[IS_KNOWN_AS]->(Chibok), Page 3."
+    },
+    {
+      "id": "C-004",
+      "category": "certain",
+      "question": "Does Christianity relate to Garo religion?",
+      "source_paper": "paper1",
+      "is_gap": false,
+      "num_triples_returned": 10,
+      "expected_entities": [
+        "christianity"
+      ],
+      "entities_found": [
+        "christianity"
+      ],
+      "entities_missing": [],
+      "response_preview": "(GaroReligion) -[IS_PRACTICED_BY]-> (Christianity)\n  // Source: In Bangladesh, the Garo population is nearly 150000, and most of them follow the Chris",
+      "passed": true,
+      "notes": "Based on: (GaroReligion)-[IS_PRACTICED_BY]->(Christianity), Page 3."
+    },
+    {
+      "id": "C-005",
+      "category": "certain",
+      "question": "Are the Garo also known as Garoini?",
+      "source_paper": "paper1",
+      "is_gap": false,
+      "num_triples_returned": 10,
+      "expected_entities": [
+        "garoini"
+      ],
+      "entities_found": [
+        "garoini"
+      ],
+      "entities_missing": [],
+      "response_preview": "(Garo) -[ARE_KNOWN_AS]-> (Garoini)\n  // Source: The Gara or Ganching subtribe first received their appellation of ‘Gara’\n  // Page: Page 3\n\n(Garo) -[H",
+      "passed": true,
+      "notes": "Based on: (Garo)-[ARE_KNOWN_AS]->(Garoini), Page 3."
+    },
+    {
+      "id": "A-001",
+      "category": "ambiguous",
+      "question": "What language do the Mandi people speak at home?",
+      "source_paper": "paper1",
+      "is_gap": false,
+      "num_triples_returned": 5,
+      "expected_entities": [],
+      "entities_found": [],
+      "entities_missing": [],
+      "response_preview": "(HomeLanguagePreferenceOlderPeople) -[IS_HIGH]-> (Mandi)\n  // Source: A high preference for using Mandi was found at home among people aged 35 or abov",
+      "passed": null,
+      "notes": "Real topic but phrased with spaces, so entity substring match likely misses it entirely."
+    },
+    {
+      "id": "A-002",
+      "category": "ambiguous",
+      "question": "Tell me about religious practices in the Garo community",
+      "source_paper": "paper1",
+      "is_gap": false,
+      "num_triples_returned": 10,
+      "expected_entities": [],
+      "entities_found": [],
+      "entities_missing": [],
+      "response_preview": "(Garo Community) -[IS_STUDIED_IN]-> (Sociolinguistic Survey)\n  // Source: Ahmed et al., 2010\n  // Page: Page 19\n\n(Garo Community) -[HAS_ETHNICITY_REFE",
+      "passed": null,
+      "notes": "The word 'practices' contains predicate 'practice', so this is likely to hit the low confidence predicate fallback rather than a real entity match worth checking is_gap here."
+    },
+    {
+      "id": "A-003",
+      "category": "ambiguous",
+      "question": "How is the Mandi language maintained across generations?",
+      "source_paper": "paper1",
+      "is_gap": false,
+      "num_triples_returned": 6,
+      "expected_entities": [],
+      "entities_found": [],
+      "entities_missing": [],
+      "response_preview": "(HomeLanguagePreferenceOlderPeople) -[IS_HIGH]-> (Mandi)\n  // Source: A high preference for using Mandi was found at home among people aged 35 or abov",
+      "passed": null,
+      "notes": "Real topic in the paper but phrased generically."
+    },
+    {
+      "id": "O-001",
+      "category": "out_of_bound",
+      "question": "What suburb is Swinburne located? ",
+      "source_paper": null,
+      "is_gap": true,
+      "num_triples_returned": 4,
+      "expected_entities": [],
+      "entities_found": [],
+      "entities_missing": [],
+      "response_preview": "I don't have information on that.",
+      "passed": true,
+      "notes": ""
+    },
+    {
+      "id": "O-002",
+      "category": "out_of_bound",
+      "question": "How do I come up with this test suite? ",
+      "source_paper": null,
+      "is_gap": true,
+      "num_triples_returned": 4,
+      "expected_entities": [],
+      "entities_found": [],
+      "entities_missing": [],
+      "response_preview": "I don't have information on that.",
+      "passed": true,
+      "notes": ""
+    },
+    {
+      "id": "O-003",
+      "category": "out_of_bound",
+      "question": "What's today's weather going to be? ",
+      "source_paper": null,
+      "is_gap": true,
+      "num_triples_returned": 0,
+      "expected_entities": [],
+      "entities_found": [],
+      "entities_missing": [],
+      "response_preview": "I don't have information on that.",
+      "passed": true,
+      "notes": ""
+    },
+    {
+      "id": "O-004",
+      "category": "out_of_bound",
+      "question": "How old was I in 2019? ",
+      "source_paper": null,
+      "is_gap": false,
+      "num_triples_returned": 1,
+      "expected_entities": [],
+      "entities_found": [],
+      "entities_missing": [],
+      "response_preview": "(GaroCommunity) -[HAS_NUMBER_OF_PARTICIPANTS]-> (19)\n  // Source: \"Respondents of all Haluaghat Phulpur ... 19 female M=3)\"\n  // Page: Page 21\n",
+      "passed": false,
+      "notes": ""
+    }
+  ],
+  "audit": {
+    "total_triples": 370,
+    "total_entities": 460,
+    "triples_per_paper": {
+      "paper1": 370
+    },
+    "duplicate_entity_groups": {
+      "garochildren": [
+        "garochildren",
+        "(garochildren"
+      ],
+      "garocommunity": [
+        "garo community",
+        "garocommunity"
+      ],
+      "clyne1991": [
+        "clyne, 1991",
+        "clyne1991"
+      ],
+      "garopeople": [
+        "garo_people",
+        "garopeople"
+      ]
+    }
+  }
+}

@@ -1,0 +1,33 @@
+id,category,question,source_paper,is_gap,num_triples_returned,expected_entities,entities_found,entities_missing,response_preview,passed,notes
+C-001,certain,Is the Garo community located in Bangladesh?,paper1,False,10,bangladesh,bangladesh,,"(GaroCommunity) -[EXIST_IN]-> (Bangladesh)
+  // Source: It was Tolemi who first mentioned the name Garo in 200 A.D. while collecting information from ",True,"Based on: (GaroCommunity)-[IS_LOCATED_IN]->(Bangladesh), Page 5."
+C-002,certain,Do Garo people live in Modhupur?,paper1,False,10,modhupur,modhupur,,"(GaroLocation) -[LIVES_IN]-> (Modhupur)
+  // Source: The highest number of Garo of Mymensingh is noticeable in Haluaghat, Modhupur
+  // Page: Page 3
+
+",True,"Based on: (GaroLocation)-[LIVES_IN]->(Modhupur), Page 3."
+C-003,certain,What is Chibok?,paper1,False,1,chibok,chibok,,"(GaroDialect) -[IS_KNOWN_AS]-> (Chibok)
+  // Source: Though most of the Garo people of plain land speak A’beng, they understand other dialects as well",True,"Based on: (GaroDialect)-[IS_KNOWN_AS]->(Chibok), Page 3."
+C-004,certain,Does Christianity relate to Garo religion?,paper1,False,10,christianity,christianity,,"(GaroReligion) -[IS_PRACTICED_BY]-> (Christianity)
+  // Source: In Bangladesh, the Garo population is nearly 150000, and most of them follow the Chris",True,"Based on: (GaroReligion)-[IS_PRACTICED_BY]->(Christianity), Page 3."
+C-005,certain,Are the Garo also known as Garoini?,paper1,False,10,garoini,garoini,,"(Garo) -[ARE_KNOWN_AS]-> (Garoini)
+  // Source: The Gara or Ganching subtribe first received their appellation of ‘Gara’
+  // Page: Page 3
+
+(Garo) -[H",True,"Based on: (Garo)-[ARE_KNOWN_AS]->(Garoini), Page 3."
+A-001,ambiguous,What language do the Mandi people speak at home?,paper1,False,5,,,,"(HomeLanguagePreferenceOlderPeople) -[IS_HIGH]-> (Mandi)
+  // Source: A high preference for using Mandi was found at home among people aged 35 or abov",,"Real topic but phrased with spaces, so entity substring match likely misses it entirely."
+A-002,ambiguous,Tell me about religious practices in the Garo community,paper1,False,10,,,,"(Garo Community) -[IS_STUDIED_IN]-> (Sociolinguistic Survey)
+  // Source: Ahmed et al., 2010
+  // Page: Page 19
+
+(Garo Community) -[HAS_ETHNICITY_REFE",,"The word 'practices' contains predicate 'practice', so this is likely to hit the low confidence predicate fallback rather than a real entity match worth checking is_gap here."
+A-003,ambiguous,How is the Mandi language maintained across generations?,paper1,False,6,,,,"(HomeLanguagePreferenceOlderPeople) -[IS_HIGH]-> (Mandi)
+  // Source: A high preference for using Mandi was found at home among people aged 35 or abov",,Real topic in the paper but phrased generically.
+O-001,out_of_bound,What suburb is Swinburne located? ,,True,4,,,,I don't have information on that.,True,
+O-002,out_of_bound,How do I come up with this test suite? ,,True,4,,,,I don't have information on that.,True,
+O-003,out_of_bound,What's today's weather going to be? ,,True,0,,,,I don't have information on that.,True,
+O-004,out_of_bound,How old was I in 2019? ,,False,1,,,,"(GaroCommunity) -[HAS_NUMBER_OF_PARTICIPANTS]-> (19)
+  // Source: ""Respondents of all Haluaghat Phulpur ... 19 female M=3)""
+  // Page: Page 21
+",False,
