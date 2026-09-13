@@ -18,15 +18,59 @@ the prompt builder for the duration of this process only. kg_extractor.py
 itself is never edited on disk, and main.py / neo4j_loader / config.py are
 never imported or touched — this script cannot reach Neo4j.
 
-Each variant is a full copy of the PR007 baseline prompt with exactly ONE
-addition (see PROMPT_VARIANTS below), so any score difference is
-attributable to that one change.
+Each variant is a full copy of a shared base prompt with exactly ONE
+addition on top (see PROMPT_VARIANTS below), so any score difference between
+baseline/A/B/C is attributable to that one change.
+
+--- REVISION HISTORY ---
+Round 1-3: baseline/A/B/C used kg_extractor.py's original PR007 wording as
+the shared base (A added a "prefer specific subject" bullet, B added a
+"consistent predicate" bullet, C added both).
+
+Round 4 (this revision): baseline/A/B/C were all rewritten, based on what
+every prompt -- not just one variant -- kept failing on across all 3 rounds:
+  1. Format non-compliance: baseline's own real output routinely broke its
+     own "UPPER_CASE_WITH_UNDERSCORES" rule ("WE WEAR", "IS USED IN",
+     "HAS_FamilyStructure") -- the rule existed but wasn't landing. Added
+     explicit bad-vs-good examples to make it unambiguous, in all 4.
+  2. The parse_ollama_blocks() UNKNOWN-placeholder bug (reasoning/<think>
+     text before the first "// PASSAGE:" marker) hit every variant at least
+     once. Added an explicit "no reasoning, nothing before the first block"
+     instruction to all 4.
+  3. The study-methodology leak evolved past a literal "Respondents" keyword
+     into paraphrases (ASKED_ABOUT_X, HAVE-demographic information,
+     ISCO_YIELDED-style classification jargon) in every round, for every
+     variant. The skip-list was generalized to the underlying PATTERN
+     (anything describing what was asked/classified/subjectively assessed
+     about participants) rather than specific instances, in all 4.
+  4. Variant A's "always prefer specific subject, avoid GaroCommunity"
+     instruction was re-examined against the full 148-triple manual ground
+     truth (not just page 3's 23) -- GaroPeople/GaroCommunity is the human
+     team's own subject 61% of the time. The instruction was too strong and
+     risked hurting accuracy outside page 3's Attire section. Refined to
+     "match the sentence's own scope" instead of a blanket preference.
+  5. Variant B's "check if this Subject-Object pair was already extracted"
+     instruction only caught pair-level duplicates, not the TYPE-level
+     inconsistency actually observed (3 different predicates for the same
+     wearing-relationship across DIFFERENT subjects/objects in round 3).
+     Refined to a type-level rule: one predicate name per relationship type,
+     reused regardless of which specific subject/object is involved.
+
+None of these changes reference page-3-specific vocabulary (no "attire",
+"Gando/Katib/Salchak", etc as instruction targets) -- they target the
+failure patterns themselves, so they should hold up on any page.
 
 USAGE:
     python test_extraction_variants.py papers/garo_1.pdf 3 --variant baseline
     python test_extraction_variants.py papers/garo_1.pdf 3 --variant A
     python test_extraction_variants.py papers/garo_1.pdf 3 --variant B
     python test_extraction_variants.py papers/garo_1.pdf 3 --variant C
+    python test_extraction_variants.py papers/garo_1.pdf 3 --variant D
+
+Variant D (see _variant_d_prompt below) was built one turn before this
+revision and already incorporates most of the same fixes independently --
+it remains a separate, single "best guess" synthesis prompt, distinct from
+the baseline/A/B/C isolated-variable comparison.
 """
 
 import argparse
@@ -52,27 +96,27 @@ except ImportError:
 def _baseline_prompt(chunk_text: str) -> str:
     return f"""You are a knowledge graph extraction assistant. You will be provided with a passage from an academic research paper.
 
-Read the passage. Identify every factual claim, relationship, practice, observation, or piece of knowledge about the Garo / Mandi community discussed in the passage.
+Read the passage. Identify every factual claim, relationship, practice, belief, observation, or piece of knowledge about the Garo / Mandi community discussed in the passage. This passage may come from any part of the paper -- introduction, demographics, attire, food, religion, festivals, health, household life, occupation, or any other section -- so do not assume in advance which topic it covers.
 
-For each meaningful piece, output a Cypher comment block in this exact format:
+Output your answer immediately as a sequence of Cypher comment blocks. Do not include any reasoning, planning, or <think> content, and do not write anything before the first block -- your entire response must consist only of comment blocks in this exact format:
 
 // PASSAGE: (Subject)-[PREDICATE]->(Object)
 // SENTENCE REF: <exact sentence from the paper this was drawn from>
 // SOURCE: <paper title placeholder>
 
 Strict rules for the PASSAGE line:
-- It MUST be written ONLY as (Subject)-[PREDICATE]->(Object). Never write a full sentence, paraphrase, or description on the PASSAGE line — that line is a structured triple, not prose.
+- It MUST be written ONLY as (Subject)-[PREDICATE]->(Object). Never write a full sentence, paraphrase, or description on the PASSAGE line -- that line is a structured triple, not prose.
 - Subject and Object must be short noun phrases (1-4 words) in CamelCase with no spaces, e.g. (MandiLanguage), (GaroCommunity).
-- Predicate must be UPPER_CASE_WITH_UNDERSCORES, e.g. IS_SPOKEN_BY, MAINTAINS, IS_LOCATED_IN.
-- If a sentence lists multiple values for the same relationship (e.g. multiple professions, multiple locations, multiple languages), output ONE SEPARATE triple per value. Never combine multiple values into a single comma-separated Object — e.g. write (GaroCommunity)-[HAS_PROFESSION]->(Teacher) and (GaroCommunity)-[HAS_PROFESSION]->(Farmer) as two blocks, not one block with (Teacher, Farmer).
-- Do not decide in advance what topics or domains to look for — extract everything factual the passage contains about the Garo/Mandi community's culture, language, history, practices, and lived experience.
+- Predicate must be UPPER_CASE_WITH_UNDERSCORES ONLY -- no lowercase letters, no spaces, no mixed case. For example, write IS_USED_IN, never "IS USED IN"; write WEARS, never "WE WEAR"; write HAS_FAMILY_STRUCTURE, never "HAS_FamilyStructure". A predicate containing a space or a lowercase word is always wrong -- rewrite it before outputting the block.
+- If a sentence lists multiple values for the same relationship (e.g. multiple professions, locations, languages, foods, or beliefs), output ONE SEPARATE triple per value. Never combine multiple values into a single comma-separated Object -- e.g. write (GaroCommunity)-[HAS_PROFESSION]->(Teacher) and (GaroCommunity)-[HAS_PROFESSION]->(Farmer) as two blocks, not one block with (Teacher, Farmer). If you decide not to extract something because it is a duplicate, simply skip it -- never bundle it into another block instead.
+- Do not decide in advance what topics or domains to look for -- extract everything factual the passage contains about the Garo/Mandi community's culture, language, history, beliefs, practices, and lived experience, whatever section of the paper it comes from.
 - Each PASSAGE line must be traceable to a specific sentence, quoted exactly in SENTENCE REF. If you cannot find an exact sentence, do not output a block for that content at all.
 
-Skip entirely — do not output a block for any of the following:
+Skip entirely -- do not output a block for any of the following:
 - Bibliographic references, author citations, journal titles, page numbers, or keyword lists.
-- Descriptions of the research study itself: sample sizes, participant counts or demographics (age, gender), interview or data collection methods, data analysis or coding procedures, or any statement about what "the researchers" or "the study" did. Only extract facts about the Garo/Mandi community, never facts about how the paper studied them.
+- Anything describing the research process itself rather than the community: sample sizes, participant/respondent counts or demographics, what participants or respondents were asked, told, or observed to say, how they were classified or coded (e.g. classification schemes, occupational codes), interview or data collection methods, data analysis procedures, or any subjective assessment the researchers made about participants (e.g. calling them vulnerable, hesitant, willing, or reluctant). "Respondents" or "participants" must never appear as a Subject or Object. Only extract facts about the Garo/Mandi community itself, never facts about how the paper studied them or who was surveyed.
 
-Output only the formatted comment blocks. No explanation, no prose, no extra text.
+Output only the formatted comment blocks. No explanation, no prose, no extra text, and nothing before the first "// PASSAGE:" line.
 
 Passage:
 {chunk_text}
@@ -82,28 +126,28 @@ Passage:
 def _variant_a_prompt(chunk_text: str) -> str:
     return f"""You are a knowledge graph extraction assistant. You will be provided with a passage from an academic research paper.
 
-Read the passage. Identify every factual claim, relationship, practice, observation, or piece of knowledge about the Garo / Mandi community discussed in the passage.
+Read the passage. Identify every factual claim, relationship, practice, belief, observation, or piece of knowledge about the Garo / Mandi community discussed in the passage. This passage may come from any part of the paper -- introduction, demographics, attire, food, religion, festivals, health, household life, occupation, or any other section -- so do not assume in advance which topic it covers.
 
-For each meaningful piece, output a Cypher comment block in this exact format:
+Output your answer immediately as a sequence of Cypher comment blocks. Do not include any reasoning, planning, or <think> content, and do not write anything before the first block -- your entire response must consist only of comment blocks in this exact format:
 
 // PASSAGE: (Subject)-[PREDICATE]->(Object)
 // SENTENCE REF: <exact sentence from the paper this was drawn from>
 // SOURCE: <paper title placeholder>
 
 Strict rules for the PASSAGE line:
-- It MUST be written ONLY as (Subject)-[PREDICATE]->(Object). Never write a full sentence, paraphrase, or description on the PASSAGE line — that line is a structured triple, not prose.
+- It MUST be written ONLY as (Subject)-[PREDICATE]->(Object). Never write a full sentence, paraphrase, or description on the PASSAGE line -- that line is a structured triple, not prose.
 - Subject and Object must be short noun phrases (1-4 words) in CamelCase with no spaces, e.g. (MandiLanguage), (GaroCommunity).
-- Always use the MOST SPECIFIC subject entity available in the sentence. If the sentence is about a specific subgroup, item, or role (e.g. GaroMen, GaroWomen, AttireStyles, GaroEducation), use that specific entity as the Subject — do not default to a broad community-level noun like GaroCommunity or MandiCommunity when a more specific one is stated or clearly implied.
-- Predicate must be UPPER_CASE_WITH_UNDERSCORES, e.g. IS_SPOKEN_BY, MAINTAINS, IS_LOCATED_IN.
-- If a sentence lists multiple values for the same relationship (e.g. multiple professions, multiple locations, multiple languages), output ONE SEPARATE triple per value. Never combine multiple values into a single comma-separated Object — e.g. write (GaroCommunity)-[HAS_PROFESSION]->(Teacher) and (GaroCommunity)-[HAS_PROFESSION]->(Farmer) as two blocks, not one block with (Teacher, Farmer).
-- Do not decide in advance what topics or domains to look for — extract everything factual the passage contains about the Garo/Mandi community's culture, language, history, practices, and lived experience.
+- Predicate must be UPPER_CASE_WITH_UNDERSCORES ONLY -- no lowercase letters, no spaces, no mixed case. For example, write IS_USED_IN, never "IS USED IN"; write WEARS, never "WE WEAR"; write HAS_FAMILY_STRUCTURE, never "HAS_FamilyStructure". A predicate containing a space or a lowercase word is always wrong -- rewrite it before outputting the block.
+- Choose the Subject at the level of specificity the sentence itself actually supports -- neither more nor less. If the sentence names a specific subgroup, item, individual, organization, ritual, or role, use that specific entity as the Subject. If the sentence instead makes a general statement about the community as a whole, GaroPeople or GaroCommunity IS the correct Subject -- do not force a narrower entity onto a general statement, and do not default to a broad community-level noun when the sentence clearly names something narrower.
+- If a sentence lists multiple values for the same relationship (e.g. multiple professions, locations, languages, foods, or beliefs), output ONE SEPARATE triple per value. Never combine multiple values into a single comma-separated Object -- e.g. write (GaroCommunity)-[HAS_PROFESSION]->(Teacher) and (GaroCommunity)-[HAS_PROFESSION]->(Farmer) as two blocks, not one block with (Teacher, Farmer). If you decide not to extract something because it is a duplicate, simply skip it -- never bundle it into another block instead.
+- Do not decide in advance what topics or domains to look for -- extract everything factual the passage contains about the Garo/Mandi community's culture, language, history, beliefs, practices, and lived experience, whatever section of the paper it comes from.
 - Each PASSAGE line must be traceable to a specific sentence, quoted exactly in SENTENCE REF. If you cannot find an exact sentence, do not output a block for that content at all.
 
-Skip entirely — do not output a block for any of the following:
+Skip entirely -- do not output a block for any of the following:
 - Bibliographic references, author citations, journal titles, page numbers, or keyword lists.
-- Descriptions of the research study itself: sample sizes, participant counts or demographics (age, gender), interview or data collection methods, data analysis or coding procedures, or any statement about what "the researchers" or "the study" did. Only extract facts about the Garo/Mandi community, never facts about how the paper studied them.
+- Anything describing the research process itself rather than the community: sample sizes, participant/respondent counts or demographics, what participants or respondents were asked, told, or observed to say, how they were classified or coded (e.g. classification schemes, occupational codes), interview or data collection methods, data analysis procedures, or any subjective assessment the researchers made about participants (e.g. calling them vulnerable, hesitant, willing, or reluctant). "Respondents" or "participants" must never appear as a Subject or Object. Only extract facts about the Garo/Mandi community itself, never facts about how the paper studied them or who was surveyed.
 
-Output only the formatted comment blocks. No explanation, no prose, no extra text.
+Output only the formatted comment blocks. No explanation, no prose, no extra text, and nothing before the first "// PASSAGE:" line.
 
 Passage:
 {chunk_text}
@@ -113,28 +157,28 @@ Passage:
 def _variant_b_prompt(chunk_text: str) -> str:
     return f"""You are a knowledge graph extraction assistant. You will be provided with a passage from an academic research paper.
 
-Read the passage. Identify every factual claim, relationship, practice, observation, or piece of knowledge about the Garo / Mandi community discussed in the passage.
+Read the passage. Identify every factual claim, relationship, practice, belief, observation, or piece of knowledge about the Garo / Mandi community discussed in the passage. This passage may come from any part of the paper -- introduction, demographics, attire, food, religion, festivals, health, household life, occupation, or any other section -- so do not assume in advance which topic it covers.
 
-For each meaningful piece, output a Cypher comment block in this exact format:
+Output your answer immediately as a sequence of Cypher comment blocks. Do not include any reasoning, planning, or <think> content, and do not write anything before the first block -- your entire response must consist only of comment blocks in this exact format:
 
 // PASSAGE: (Subject)-[PREDICATE]->(Object)
 // SENTENCE REF: <exact sentence from the paper this was drawn from>
 // SOURCE: <paper title placeholder>
 
 Strict rules for the PASSAGE line:
-- It MUST be written ONLY as (Subject)-[PREDICATE]->(Object). Never write a full sentence, paraphrase, or description on the PASSAGE line — that line is a structured triple, not prose.
+- It MUST be written ONLY as (Subject)-[PREDICATE]->(Object). Never write a full sentence, paraphrase, or description on the PASSAGE line -- that line is a structured triple, not prose.
 - Subject and Object must be short noun phrases (1-4 words) in CamelCase with no spaces, e.g. (MandiLanguage), (GaroCommunity).
-- Predicate must be UPPER_CASE_WITH_UNDERSCORES, e.g. IS_SPOKEN_BY, MAINTAINS, IS_LOCATED_IN.
-- Reuse a single consistent predicate for a given relationship type across the whole passage (e.g. always WEARS for clothing — never invent variants like WEAR_MENS_ATTIRE or WEAR_WOMENS_ATTIRE for the same relationship). Before outputting a block, check whether the same Subject-Object pair or fact has already been extracted under a different predicate wording in this passage; if so, do not extract it again.
-- If a sentence lists multiple values for the same relationship (e.g. multiple professions, multiple locations, multiple languages), output ONE SEPARATE triple per value. Never combine multiple values into a single comma-separated Object — e.g. write (GaroCommunity)-[HAS_PROFESSION]->(Teacher) and (GaroCommunity)-[HAS_PROFESSION]->(Farmer) as two blocks, not one block with (Teacher, Farmer).
-- Do not decide in advance what topics or domains to look for — extract everything factual the passage contains about the Garo/Mandi community's culture, language, history, practices, and lived experience.
+- Predicate must be UPPER_CASE_WITH_UNDERSCORES ONLY -- no lowercase letters, no spaces, no mixed case. For example, write IS_USED_IN, never "IS USED IN"; write WEARS, never "WE WEAR"; write HAS_FAMILY_STRUCTURE, never "HAS_FamilyStructure". A predicate containing a space or a lowercase word is always wrong -- rewrite it before outputting the block.
+- Identify the underlying relationship TYPE each fact expresses (e.g. wearing an item of clothing, practicing a belief, migrating from a place, working in an occupation) and use exactly ONE predicate name for that type everywhere it appears in this passage, regardless of which specific subject or object is involved -- e.g. if you extract (GaroMen)-[WEARS]->(Lungis), also use WEARS for (GaroWomen)-[WEARS]->(Sarees), never a different word like WEAR or WORE for the same relationship type elsewhere in this passage. Before outputting a block, check whether this relationship type already has a predicate name used earlier in this passage; if so, reuse it exactly rather than inventing a new one.
+- If a sentence lists multiple values for the same relationship (e.g. multiple professions, locations, languages, foods, or beliefs), output ONE SEPARATE triple per value. Never combine multiple values into a single comma-separated Object -- e.g. write (GaroCommunity)-[HAS_PROFESSION]->(Teacher) and (GaroCommunity)-[HAS_PROFESSION]->(Farmer) as two blocks, not one block with (Teacher, Farmer). If you decide not to extract something because it is a duplicate, simply skip it -- never bundle it into another block instead.
+- Do not decide in advance what topics or domains to look for -- extract everything factual the passage contains about the Garo/Mandi community's culture, language, history, beliefs, practices, and lived experience, whatever section of the paper it comes from.
 - Each PASSAGE line must be traceable to a specific sentence, quoted exactly in SENTENCE REF. If you cannot find an exact sentence, do not output a block for that content at all.
 
-Skip entirely — do not output a block for any of the following:
+Skip entirely -- do not output a block for any of the following:
 - Bibliographic references, author citations, journal titles, page numbers, or keyword lists.
-- Descriptions of the research study itself: sample sizes, participant counts or demographics (age, gender), interview or data collection methods, data analysis or coding procedures, or any statement about what "the researchers" or "the study" did. Only extract facts about the Garo/Mandi community, never facts about how the paper studied them.
+- Anything describing the research process itself rather than the community: sample sizes, participant/respondent counts or demographics, what participants or respondents were asked, told, or observed to say, how they were classified or coded (e.g. classification schemes, occupational codes), interview or data collection methods, data analysis procedures, or any subjective assessment the researchers made about participants (e.g. calling them vulnerable, hesitant, willing, or reluctant). "Respondents" or "participants" must never appear as a Subject or Object. Only extract facts about the Garo/Mandi community itself, never facts about how the paper studied them or who was surveyed.
 
-Output only the formatted comment blocks. No explanation, no prose, no extra text.
+Output only the formatted comment blocks. No explanation, no prose, no extra text, and nothing before the first "// PASSAGE:" line.
 
 Passage:
 {chunk_text}
@@ -144,29 +188,96 @@ Passage:
 def _variant_c_prompt(chunk_text: str) -> str:
     return f"""You are a knowledge graph extraction assistant. You will be provided with a passage from an academic research paper.
 
-Read the passage. Identify every factual claim, relationship, practice, observation, or piece of knowledge about the Garo / Mandi community discussed in the passage.
+Read the passage. Identify every factual claim, relationship, practice, belief, observation, or piece of knowledge about the Garo / Mandi community discussed in the passage. This passage may come from any part of the paper -- introduction, demographics, attire, food, religion, festivals, health, household life, occupation, or any other section -- so do not assume in advance which topic it covers.
 
-For each meaningful piece, output a Cypher comment block in this exact format:
+Output your answer immediately as a sequence of Cypher comment blocks. Do not include any reasoning, planning, or <think> content, and do not write anything before the first block -- your entire response must consist only of comment blocks in this exact format:
 
 // PASSAGE: (Subject)-[PREDICATE]->(Object)
 // SENTENCE REF: <exact sentence from the paper this was drawn from>
 // SOURCE: <paper title placeholder>
 
 Strict rules for the PASSAGE line:
-- It MUST be written ONLY as (Subject)-[PREDICATE]->(Object). Never write a full sentence, paraphrase, or description on the PASSAGE line — that line is a structured triple, not prose.
+- It MUST be written ONLY as (Subject)-[PREDICATE]->(Object). Never write a full sentence, paraphrase, or description on the PASSAGE line -- that line is a structured triple, not prose.
 - Subject and Object must be short noun phrases (1-4 words) in CamelCase with no spaces, e.g. (MandiLanguage), (GaroCommunity).
-- Always use the MOST SPECIFIC subject entity available in the sentence. If the sentence is about a specific subgroup, item, or role (e.g. GaroMen, GaroWomen, AttireStyles, GaroEducation), use that specific entity as the Subject — do not default to a broad community-level noun like GaroCommunity or MandiCommunity when a more specific one is stated or clearly implied.
-- Predicate must be UPPER_CASE_WITH_UNDERSCORES, e.g. IS_SPOKEN_BY, MAINTAINS, IS_LOCATED_IN.
-- Reuse a single consistent predicate for a given relationship type across the whole passage (e.g. always WEARS for clothing — never invent variants like WEAR_MENS_ATTIRE or WEAR_WOMENS_ATTIRE for the same relationship). Before outputting a block, check whether the same Subject-Object pair or fact has already been extracted under a different predicate wording in this passage; if so, do not extract it again.
-- If a sentence lists multiple values for the same relationship (e.g. multiple professions, multiple locations, multiple languages), output ONE SEPARATE triple per value. Never combine multiple values into a single comma-separated Object — e.g. write (GaroCommunity)-[HAS_PROFESSION]->(Teacher) and (GaroCommunity)-[HAS_PROFESSION]->(Farmer) as two blocks, not one block with (Teacher, Farmer).
-- Do not decide in advance what topics or domains to look for — extract everything factual the passage contains about the Garo/Mandi community's culture, language, history, practices, and lived experience.
+- Predicate must be UPPER_CASE_WITH_UNDERSCORES ONLY -- no lowercase letters, no spaces, no mixed case. For example, write IS_USED_IN, never "IS USED IN"; write WEARS, never "WE WEAR"; write HAS_FAMILY_STRUCTURE, never "HAS_FamilyStructure". A predicate containing a space or a lowercase word is always wrong -- rewrite it before outputting the block.
+- Choose the Subject at the level of specificity the sentence itself actually supports -- neither more nor less. If the sentence names a specific subgroup, item, individual, organization, ritual, or role, use that specific entity as the Subject. If the sentence instead makes a general statement about the community as a whole, GaroPeople or GaroCommunity IS the correct Subject -- do not force a narrower entity onto a general statement, and do not default to a broad community-level noun when the sentence clearly names something narrower.
+- Identify the underlying relationship TYPE each fact expresses (e.g. wearing an item of clothing, practicing a belief, migrating from a place, working in an occupation) and use exactly ONE predicate name for that type everywhere it appears in this passage, regardless of which specific subject or object is involved -- e.g. if you extract (GaroMen)-[WEARS]->(Lungis), also use WEARS for (GaroWomen)-[WEARS]->(Sarees), never a different word like WEAR or WORE for the same relationship type elsewhere in this passage. Before outputting a block, check whether this relationship type already has a predicate name used earlier in this passage; if so, reuse it exactly rather than inventing a new one.
+- If a sentence lists multiple values for the same relationship (e.g. multiple professions, locations, languages, foods, or beliefs), output ONE SEPARATE triple per value. Never combine multiple values into a single comma-separated Object -- e.g. write (GaroCommunity)-[HAS_PROFESSION]->(Teacher) and (GaroCommunity)-[HAS_PROFESSION]->(Farmer) as two blocks, not one block with (Teacher, Farmer). If you decide not to extract something because it is a duplicate, simply skip it -- never bundle it into another block instead.
+- Do not decide in advance what topics or domains to look for -- extract everything factual the passage contains about the Garo/Mandi community's culture, language, history, beliefs, practices, and lived experience, whatever section of the paper it comes from.
 - Each PASSAGE line must be traceable to a specific sentence, quoted exactly in SENTENCE REF. If you cannot find an exact sentence, do not output a block for that content at all.
 
-Skip entirely — do not output a block for any of the following:
+Skip entirely -- do not output a block for any of the following:
 - Bibliographic references, author citations, journal titles, page numbers, or keyword lists.
-- Descriptions of the research study itself: sample sizes, participant counts or demographics (age, gender), interview or data collection methods, data analysis or coding procedures, or any statement about what "the researchers" or "the study" did. Only extract facts about the Garo/Mandi community, never facts about how the paper studied them.
+- Anything describing the research process itself rather than the community: sample sizes, participant/respondent counts or demographics, what participants or respondents were asked, told, or observed to say, how they were classified or coded (e.g. classification schemes, occupational codes), interview or data collection methods, data analysis procedures, or any subjective assessment the researchers made about participants (e.g. calling them vulnerable, hesitant, willing, or reluctant). "Respondents" or "participants" must never appear as a Subject or Object. Only extract facts about the Garo/Mandi community itself, never facts about how the paper studied them or who was surveyed.
 
-Output only the formatted comment blocks. No explanation, no prose, no extra text.
+Output only the formatted comment blocks. No explanation, no prose, no extra text, and nothing before the first "// PASSAGE:" line.
+
+Passage:
+{chunk_text}
+"""
+
+
+def _variant_d_prompt(chunk_text: str) -> str:
+    """
+    PR008 / "Variant D" -- the refined prompt, built from three rounds of A/B/C
+    testing on page 3 PLUS a read of the full 148-triple manual ground truth
+    (KG_extraction_Garo_1.xlsx, 'Final Triples' sheet, all 7 pages / 13
+    sections: Abstract, Introduction, Demographic Information, Attire, Food
+    habits, Household, Health, Occupation, Religion, Festival, Land Ownership,
+    Assistance/NGOs, Major Findings). Two important things came out of the
+    manual sheet that changed the design vs Variant A/C:
+
+    1. The human team's own subject choice is NOT "always most specific" --
+       GaroPeople/GaroCommunity is the subject in 90/148 (61%) of the manual
+       triples, including many that are clearly general community-level
+       statements. Variant A's blanket "prefer specific, avoid GaroCommunity"
+       instruction was measured against page 3's Attire section specifically,
+       where per-gender phrasing happens to dominate -- that is NOT
+       representative of the rest of the paper, and over-applying it risks
+       actively hurting accuracy on other pages. This variant instructs
+       matching specificity to what the SENTENCE supports, not a blanket
+       preference either way -- confirmed by the human team's own notes in
+       that sheet (e.g. "Keeping same node of GaroPeople, Duplication?").
+    2. Every round of testing (3 rounds, all 4 prompts) hit the same two
+       failure modes regardless of which variant was used: (a) study-
+       methodology leakage that evolves past a literal "Respondents" keyword
+       into paraphrases like "ASKED_ABOUT_X" or classification jargon, and
+       (b) the known parse_ollama_blocks() bug where DeepSeek's <think>
+       reasoning (or any preamble) before the first "// PASSAGE:" marker
+       causes the whole response to collapse into a single UNKNOWN triple.
+       Both are addressed directly and generically below -- neither fix
+       assumes anything about page 3's specific content.
+
+    Deliberately NOT included: no page-3-specific vocabulary (no "attire",
+    "Gando/Katib/Salchak", or similar) is used as an instruction target --
+    every named example below is pulled from a DIFFERENT section of the
+    manual sheet (Festival, Household, Land Ownership, Assistance/NGOs) so
+    the prompt doesn't overfit to the one page it's been tested on so far.
+    """
+    return f"""You are a knowledge graph extraction assistant. You will be provided with a passage from an academic research paper.
+
+Read the passage. Identify every factual claim, relationship, practice, belief, observation, or piece of knowledge about the Garo / Mandi community discussed in the passage. This passage may come from any part of the paper -- introduction, demographics, attire, food, religion, festivals, health, household life, occupation, or any other section -- so do not assume in advance which topic it covers.
+
+Output your answer immediately as a sequence of Cypher comment blocks. Do not include any reasoning, planning, or <think> content, and do not write anything before the first block -- your entire response must consist only of comment blocks in this exact format:
+
+// PASSAGE: (Subject)-[PREDICATE]->(Object)
+// SENTENCE REF: <exact sentence from the paper this was drawn from>
+// SOURCE: <paper title placeholder>
+
+Strict rules for the PASSAGE line:
+- It MUST be written ONLY as (Subject)-[PREDICATE]->(Object). Never write a full sentence, paraphrase, or description on the PASSAGE line -- that line is a structured triple, not prose.
+- Subject and Object must be short noun phrases (1-4 words) in CamelCase with no spaces, e.g. (MandiLanguage), (GaroCommunity), (WangalaFestival).
+- Choose the Subject at the level of specificity the sentence itself actually supports -- neither more nor less. If the sentence names a specific subgroup, item, individual, organization, ritual, or role (e.g. GaroWomen, GaroHousehold, NGOs, MatrilinealSystem), use that specific entity as the Subject. If the sentence instead makes a general statement about the community as a whole, GaroPeople or GaroCommunity IS the correct Subject -- do not force a narrower entity onto a general statement, and do not default to a broad community-level noun when the sentence clearly names something narrower.
+- Predicate must be UPPER_CASE_WITH_UNDERSCORES. Prefer a predicate already used elsewhere in this passage, or a common relationship type if one fits (e.g. IS_LOCATED_IN, LIVES_IN, MIGRATED_FROM, SPEAKS, WEARS, CELEBRATES, PRACTICES, WORKS_IN, DEPENDS_ON, BELIEVES_IN, WORSHIPS, FACES, CONSUMES) -- only invent a new predicate when none of these describe the relationship. Before outputting a block, check whether the same Subject-Object pair or fact has already been extracted under a different predicate wording in this passage; if so, do not extract it again.
+- If a sentence lists multiple values for the same relationship (e.g. multiple professions, locations, languages, foods, or beliefs), output ONE SEPARATE triple per value. Never combine multiple values into a single comma-separated Object -- e.g. write (GaroCommunity)-[HAS_PROFESSION]->(Teacher) and (GaroCommunity)-[HAS_PROFESSION]->(Farmer) as two blocks, not one block with (Teacher, Farmer).
+- Do not decide in advance what topics or domains to look for -- extract everything factual the passage contains about the Garo/Mandi community's culture, language, history, beliefs, practices, and lived experience, whatever section of the paper it comes from.
+- Each PASSAGE line must be traceable to a specific sentence, quoted exactly in SENTENCE REF. If you cannot find an exact sentence, do not output a block for that content at all.
+
+Skip entirely -- do not output a block for any of the following:
+- Bibliographic references, author citations, journal titles, page numbers, or keyword lists.
+- Anything describing the research process itself rather than the community: sample sizes, participant/respondent counts or demographics, what participants or respondents were asked, told, or observed to say, how they were classified or coded (e.g. classification schemes, occupational codes), interview or data collection methods, data analysis procedures, or any subjective assessment the researchers made about participants (e.g. calling them vulnerable, hesitant, willing, or reluctant). "Respondents" or "participants" must never appear as a Subject or Object. Only extract facts about the Garo/Mandi community itself, never facts about how the paper studied them or who was surveyed.
+
+Output only the formatted comment blocks. No explanation, no prose, no extra text, and nothing before the first "// PASSAGE:" line.
 
 Passage:
 {chunk_text}
@@ -178,6 +289,7 @@ PROMPT_VARIANTS = {
     "A": _variant_a_prompt,
     "B": _variant_b_prompt,
     "C": _variant_c_prompt,
+    "D": _variant_d_prompt,
 }
 
 

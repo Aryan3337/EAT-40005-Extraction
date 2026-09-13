@@ -55,7 +55,40 @@ def validate_triple_format(triple: Dict[str, Any], strict_predicate: bool = Fals
     # format, which parse_ollama_blocks() falls back to labeling UNKNOWN).
     if triple["subject"].strip().upper() == "UNKNOWN" or triple["object"].strip().upper() == "UNKNOWN":
         raise AssertionError("Triple contains UNKNOWN placeholder — extraction failed to parse a real subject/object.")
-    
+
+    # Reject triples whose sentence-level evidence is the model literally
+    # echoing the prompt's own template placeholder text back, instead of
+    # filling in a real quoted sentence -- found on a garo_1 page-3 re-run
+    # where roughly half the triples had sentence_ref == "<exact sentence
+    # from the paper this was drawn from>" (the prompt's own SENTENCE REF
+    # placeholder, copied verbatim) or a similar self-referential non-quote
+    # like "the passage provided". The prompt explicitly instructs the
+    # model to skip a triple rather than output one it can't ground in a
+    # real sentence -- this is that rule not being followed. Deliberately
+    # checking "sentence_ref" and "passage" directly here rather than the
+    # evidence_key resolved above: evidence_key resolves to "source_section"
+    # for every triple in this pipeline (no triple has ever populated
+    # "evidence" -- see subject_specificity.py's get_evidence_sentence()),
+    # and source_section is just "Page N", so it would never contain this
+    # text and this check would silently catch nothing. Unlike
+    # subject-collapse or artifact filtering, there's no judgment call
+    # here: template text can never be genuine evidence, so this is a hard
+    # reject, not a filter.
+    PLACEHOLDER_EVIDENCE_PHRASES = [
+        "exact sentence from the paper this was drawn from",
+        "the passage provided",
+        "paper title placeholder",
+        "sentence from the paper this was drawn from",
+    ]
+    sentence_level_text = f"{triple.get('sentence_ref', '')} {triple.get('passage', '')}".strip().lower()
+    for phrase in PLACEHOLDER_EVIDENCE_PHRASES:
+        if phrase in sentence_level_text:
+            raise AssertionError(
+                f"Evidence field echoes the prompt's own template placeholder "
+                f"('{phrase}') instead of a real quoted sentence — extraction "
+                f"failed to ground this triple in the source text."
+            )
+
     # Predicate format
     if strict_predicate:
         pattern = r'^[A-Z][A-Z0-9_]+$'          # UPPER_SNAKE with optional digits
@@ -82,9 +115,58 @@ ARTIFACT_KEYWORDS = [
     "participant", "interview", "snowball", "consent", "pseudonym",
     "audio-recorded", "transcribed", "coded", "questionnaire",
     "researcher", "researchers", "we analyzed", "we conducted",
-    "sample size", "n=", "n =", "age range", "male", "female", 
+    "sample size", "n=", "n =", "age range", "male", "female",
     "semi-structured", "thematic analysis", "data collection",
-    "key words", "keywords"
+    "key words", "keywords",
+    # Added 2026-09-09 after reviewing the garo_1.pdf full-paper run: 27
+    # methodology/research-process triples reached Neo4j despite this
+    # filter, none matched by the list above. Checked against all 325
+    # triples that run produced -- no false positives in this paper's
+    # vocabulary (see the predicate-only list below for the ones that
+    # DID need scoping to avoid a false positive).
+    "respondent",        # catches "Respondents" as Subject/Object (singular or plural)
+    "demographic",       # catches "DemographicInformation" node and "HAS_DEMOGRAPHICBACKGROUND"
+    "historicaldata",    # catches USED_HISTORICALDATA (the study's own data sources)
+    "historical data",
+    "purposive sampling",
+    # Added 2026-09-09, broader research-methodology vocabulary not yet
+    # observed as a leak in this paper but common in academic papers
+    # generally -- each checked against all 326 triples from the
+    # garo_1.pdf run with zero false-positive hits before being added
+    # (one, "case study", DOES hit -- but it's one of the 27 already-
+    # known leaks, already caught via the predicate marker below, so
+    # this is redundant-but-harmless defense-in-depth for a future paper
+    # that phrases the same leak under a different predicate name).
+    "case study", "focus group", "field notes", "fieldnotes",
+    "informed consent", "ethical approval", "ethics committee", "irb",
+    "inclusion criteria", "exclusion criteria",
+    "convenience sampling", "random sampling", "snowball sampling",
+    "literature review", "research design", "study design",
+    "data saturation", "member checking", "triangulation",
+    "content analysis", "grounded theory", "inter-rater",
+    "the present study", "the current study", "this study", "this paper",
+    "this article", "our study", "the study", "et al", "doi:", "issn",
+    "limitations of the study", "further research", "future research",
+    "future studies", "self-reported", "self reported", "recruited",
+    "recruitment",
+]
+
+# Predicate-only substring markers. These words are legitimate inside a
+# Subject or Object -- e.g. "EstablishInstitutionAndResearchCenter" is a
+# real community recommendation from garo_1.pdf, not a leak, and
+# "(GaroCommunity)-[HAS_PROBLEM]->(Poor Settlement Surveys)" is a real
+# land-ownership finding that would false-positive on a whole-triple
+# "survey" keyword -- but a PREDICATE describes a relationship TYPE, not
+# an entity, so none of these have any legitimate reason to appear inside
+# one in this schema. Kept separate from ARTIFACT_KEYWORDS (which scans
+# the whole triple) specifically to avoid false-flagging triples like
+# those two.
+RESEARCH_PROCESS_PREDICATE_MARKERS = [
+    "research", "methodology", "method", "objective", "sample", "aim",
+    # Added 2026-09-09, same rationale as above -- zero collisions
+    # against current predicates, added proactively for future papers:
+    "survey", "study", "design", "criteria", "analysis", "framework",
+    "hypothesis", "literature", "limitation",
 ]
 
 def flag_artifact_triples(triples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -92,14 +174,26 @@ def flag_artifact_triples(triples: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     for idx, triple in enumerate(triples):
         evidence_text = triple.get("evidence", "") + triple.get("source_section", "")
         text_to_scan = f"{triple['subject']} {triple['predicate']} {triple['object']} {evidence_text}".lower()
+        predicate_text = triple.get("predicate", "").lower()
+
+        matched_keyword = None
         for keyword in ARTIFACT_KEYWORDS:
             if keyword in text_to_scan:
-                flagged.append({
-                    "index": idx,
-                    "triple": triple,
-                    "matched_keyword": keyword
-                })
+                matched_keyword = keyword
                 break
+
+        if matched_keyword is None:
+            for marker in RESEARCH_PROCESS_PREDICATE_MARKERS:
+                if marker in predicate_text:
+                    matched_keyword = f"predicate:{marker}"
+                    break
+
+        if matched_keyword:
+            flagged.append({
+                "index": idx,
+                "triple": triple,
+                "matched_keyword": matched_keyword
+            })
     return flagged
 
 # ------------------------------------------------------------
