@@ -6,5 +6,8 @@ venv/
 papers/
 output/
 
+# Superseded backup of the prompt iteration log - not the shared source of truth
+Prompt_Iteration_Log_backup_*.xlsx
+
 # LibreOffice lock files
 .~lock.*
