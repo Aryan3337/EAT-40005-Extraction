@@ -12,7 +12,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
 import 'package:flutter_application/features/chat/chat_page.dart';
-import 'package:flutter_application/main.dart';
+import 'package:flutter_application/features/auth/login_page.dart';
 import 'package:flutter_application/services/chat_service.dart';
 
 class _FakeRagClient extends http.BaseClient {
@@ -32,14 +32,19 @@ class _FakeRagClient extends http.BaseClient {
 }
 
 void main() {
-  testWidgets('renders the knowledge graph assistant', (
-    WidgetTester tester,
-  ) async {
-    await tester.pumpWidget(const KnowledgeGraphApp());
+  testWidgets('renders the login screen', (WidgetTester tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LoginPage(onSignIn: (email, password, rememberMe) async {}),
+      ),
+    );
+    await tester.pump();
 
-    expect(find.text('Mandi/Garo ChatBot'), findsOneWidget);
-    expect(find.text('Ask me anything'), findsNWidgets(2));
-    expect(find.byType(TextField), findsOneWidget);
+    expect(find.text('Welcome back'), findsOneWidget);
+    expect(find.text('Email address'), findsOneWidget);
+    expect(find.text('Password'), findsOneWidget);
+    expect(find.text('Sign in'), findsOneWidget);
+    expect(find.byType(TextFormField), findsNWidgets(2));
   });
 
   testWidgets('sends a question and renders the response', (

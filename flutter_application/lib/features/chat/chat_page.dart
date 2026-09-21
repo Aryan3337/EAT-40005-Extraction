@@ -1,13 +1,24 @@
 import 'package:flutter/material.dart';
 
+import '../../models/chat_conversation.dart';
 import '../../models/chat_message.dart';
+import '../../services/chat_history_service.dart';
 import '../../services/chat_service.dart';
 
 // Hosts the conversation layout and coordinates user input with RAG.py.
 class ChatPage extends StatefulWidget {
-  const ChatPage({super.key, required this.service});
+  const ChatPage({
+    super.key,
+    required this.service,
+    this.onSignOut,
+    this.userEmail = 'local-user',
+    this.historyService,
+  });
 
   final ChatService service;
+  final VoidCallback? onSignOut;
+  final String userEmail;
+  final ChatHistoryService? historyService;
 
   // Creates the mutable conversation state.
   @override
@@ -18,7 +29,27 @@ class _ChatPageState extends State<ChatPage> {
   final _inputController = TextEditingController();
   final _scrollController = ScrollController();
   final _messages = <ChatMessage>[];
+  late final ChatHistoryService _historyService;
+  List<ChatConversation> _history = [];
+  String? _conversationId;
+  bool _isHistoryLoading = true;
   bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _historyService = widget.historyService ?? ChatHistoryService();
+    _loadHistory();
+  }
+
+  Future<void> _loadHistory() async {
+    final history = await _historyService.load(widget.userEmail);
+    if (!mounted) return;
+    setState(() {
+      _history = history;
+      _isHistoryLoading = false;
+    });
+  }
 
   // Releases controllers owned by the chat screen.
   @override
@@ -34,6 +65,7 @@ class _ChatPageState extends State<ChatPage> {
     if (question.isEmpty || _isLoading) return;
 
     setState(() {
+      _conversationId ??= DateTime.now().microsecondsSinceEpoch.toString();
       _messages.add(ChatMessage(text: question, author: MessageAuthor.user));
       _inputController.clear();
       _isLoading = true;
@@ -45,7 +77,29 @@ class _ChatPageState extends State<ChatPage> {
       _messages.add(answer);
       _isLoading = false;
     });
+    await _saveCurrentConversation();
     _scrollToBottom();
+  }
+
+  Future<void> _saveCurrentConversation() async {
+    if (_messages.isEmpty || _conversationId == null) return;
+    final firstUserMessage = _messages.firstWhere(
+      (message) => message.author == MessageAuthor.user,
+      orElse: () => _messages.first,
+    );
+    final conversation = ChatConversation(
+      id: _conversationId!,
+      title: firstUserMessage.text,
+      messages: List.unmodifiable(_messages),
+      updatedAt: DateTime.now(),
+    );
+    final updated = [
+      conversation,
+      ..._history.where((item) => item.id != conversation.id),
+    ]..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    await _historyService.save(widget.userEmail, updated);
+    if (!mounted) return;
+    setState(() => _history = updated);
   }
 
   // Moves the conversation to the latest message.
@@ -62,10 +116,39 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   // Clears the current conversation and starts a fresh session.
-  void _startNewChat() {
+  Future<void> _startNewChat() async {
+    await _saveCurrentConversation();
+    if (!mounted) return;
     setState(() {
       _messages.clear();
+      _conversationId = null;
       _isLoading = false;
+    });
+  }
+
+  Future<void> _openConversation(ChatConversation conversation) async {
+    await _saveCurrentConversation();
+    if (!mounted) return;
+    setState(() {
+      _conversationId = conversation.id;
+      _messages
+        ..clear()
+        ..addAll(conversation.messages);
+      _isLoading = false;
+    });
+    Navigator.of(context).pop();
+    _scrollToBottom();
+  }
+
+  Future<void> _deleteConversation(ChatConversation conversation) async {
+    await _historyService.delete(widget.userEmail, conversation.id);
+    if (!mounted) return;
+    setState(() {
+      _history.removeWhere((item) => item.id == conversation.id);
+      if (_conversationId == conversation.id) {
+        _messages.clear();
+        _conversationId = null;
+      }
     });
   }
 
@@ -73,13 +156,23 @@ class _ChatPageState extends State<ChatPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      drawer: _HistoryDrawer(
+        history: _history,
+        isLoading: _isHistoryLoading,
+        onOpen: _openConversation,
+        onDelete: _deleteConversation,
+        onNewChat: _startNewChat,
+      ),
       body: SafeArea(
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 1120),
             child: Column(
               children: [
-                _ChatHeader(onNewChat: _startNewChat),
+                _ChatHeader(
+                  onNewChat: _startNewChat,
+                  onSignOut: widget.onSignOut,
+                ),
                 Expanded(
                   child: _ConversationView(
                     messages: _messages,
@@ -98,9 +191,10 @@ class _ChatPageState extends State<ChatPage> {
 }
 
 class _ChatHeader extends StatelessWidget {
-  const _ChatHeader({required this.onNewChat});
+  const _ChatHeader({required this.onNewChat, this.onSignOut});
 
-  final VoidCallback onNewChat;
+  final Future<void> Function() onNewChat;
+  final VoidCallback? onSignOut;
 
   // Builds the product identity and session controls.
   @override
@@ -109,6 +203,13 @@ class _ChatHeader extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(24, 22, 24, 12),
       child: Row(
         children: [
+          Builder(
+            builder: (context) => IconButton(
+              onPressed: () => Scaffold.of(context).openDrawer(),
+              tooltip: 'Chat history',
+              icon: const Icon(Icons.menu_rounded),
+            ),
+          ),
           const Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -125,7 +226,99 @@ class _ChatHeader extends StatelessWidget {
             tooltip: 'New chat',
             icon: const Icon(Icons.add_comment_outlined),
           ),
+          if (onSignOut != null)
+            IconButton(
+              onPressed: onSignOut,
+              tooltip: 'Sign out',
+              icon: const Icon(Icons.logout_outlined),
+            ),
         ],
+      ),
+    );
+  }
+}
+
+class _HistoryDrawer extends StatelessWidget {
+  const _HistoryDrawer({
+    required this.history,
+    required this.isLoading,
+    required this.onOpen,
+    required this.onDelete,
+    required this.onNewChat,
+  });
+
+  final List<ChatConversation> history;
+  final bool isLoading;
+  final Future<void> Function(ChatConversation conversation) onOpen;
+  final Future<void> Function(ChatConversation conversation) onDelete;
+  final Future<void> Function() onNewChat;
+
+  @override
+  Widget build(BuildContext context) {
+    return Drawer(
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 22, 12, 14),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Chat history',
+                      style: TextStyle(
+                        fontSize: 21,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: onNewChat,
+                    tooltip: 'New chat',
+                    icon: const Icon(Icons.add_comment_outlined),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: isLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : history.isEmpty
+                  ? const Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(24),
+                        child: Text(
+                          'Your saved conversations will appear here.',
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      itemCount: history.length,
+                      itemBuilder: (context, index) {
+                        final conversation = history[index];
+                        return ListTile(
+                          leading: const Icon(Icons.chat_bubble_outline),
+                          title: Text(
+                            conversation.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: IconButton(
+                            onPressed: () => onDelete(conversation),
+                            tooltip: 'Delete conversation',
+                            icon: const Icon(Icons.delete_outline),
+                          ),
+                          onTap: () => onOpen(conversation),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
       ),
     );
   }
