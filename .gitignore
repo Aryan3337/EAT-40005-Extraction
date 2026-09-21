@@ -6,9 +6,5 @@ venv/
 papers/
 output/
 
-# Personal prompt-iteration analysis (manual ground-truth scoring) - not for the shared repo
-Prompt_Iteration_Log.xlsx
-Prompt_Iteration_Log_backup_*.xlsx
-
 # LibreOffice lock files
 .~lock.*
