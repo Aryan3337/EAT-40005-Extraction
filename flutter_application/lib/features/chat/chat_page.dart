@@ -188,30 +188,16 @@ class _EmptyState extends StatelessWidget {
   }
 }
 
-class _PromptChip extends StatelessWidget {
-  const _PromptChip({required this.label});
-
-  final String label;
-
-  // Builds a visually compact example question.
-  @override
-  Widget build(BuildContext context) {
-    return Chip(
-      avatar: const Icon(Icons.auto_awesome, size: 16),
-      label: Text(label),
-    );
-  }
-}
-
 class _MessageBubble extends StatelessWidget {
   const _MessageBubble({required this.message});
 
   final ChatMessage message;
 
-  // Builds a user or assistant message with optional sources.
+  // Builds a user or assistant message with verifiable source evidence.
   @override
   Widget build(BuildContext context) {
     final isUser = message.author == MessageAuthor.user;
+
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
@@ -228,14 +214,105 @@ class _MessageBubble extends StatelessWidget {
           ),
           border: isUser ? null : Border.all(color: const Color(0xFFE0E7E3)),
         ),
-        child: Text(
-          message.text,
-          style: TextStyle(
-            color: isUser ? Colors.white : const Color(0xFF26343D),
-            height: 1.45,
-            fontSize: 15,
-          ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              message.text,
+              style: TextStyle(
+                color: isUser ? Colors.white : const Color(0xFF26343D),
+                height: 1.45,
+                fontSize: 15,
+              ),
+            ),
+            if (!isUser && message.sources.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              const Divider(color: Color(0xFFE0E7E3)),
+              Theme(
+                data: Theme.of(context)
+                    .copyWith(dividerColor: Colors.transparent),
+                child: ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: EdgeInsets.zero,
+                  leading: const Icon(
+                    Icons.verified_outlined,
+                    color: Color(0xFF2E7D5B),
+                  ),
+                  title: Text(
+                    'View verified sources (${message.sources.length})',
+                    style: const TextStyle(
+                      color: Color(0xFF2E7D5B),
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                    ),
+                  ),
+                  children: [
+                    for (var index = 0; index < message.sources.length; index++)
+                      _buildSourceCard(message.sources[index], index + 1),
+                  ],
+                ),
+              ),
+            ],
+          ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildSourceCard(SourceEvidence source, int number) {
+    final supportingText = source.supportingText;
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4F8F6),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFD6E5DE)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Source $number',
+            style: const TextStyle(
+              fontWeight: FontWeight.w700,
+              color: Color(0xFF2E7D5B),
+            ),
+          ),
+          if (source.sourceSection.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text('Section: ${source.sourceSection}'),
+          ],
+          if (supportingText.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              supportingText,
+              style: const TextStyle(fontStyle: FontStyle.italic, height: 1.35),
+            ),
+          ],
+          if (source.subject.isNotEmpty &&
+              source.predicate.isNotEmpty &&
+              source.object.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Knowledge graph: ${source.triple}',
+              style: const TextStyle(fontSize: 13, color: Color(0xFF52616A)),
+            ),
+          ],
+          if (source.confidence.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Confidence: ${source.confidence}',
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF52616A),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
