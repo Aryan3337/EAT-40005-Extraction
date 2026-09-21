@@ -274,7 +274,7 @@ def call_ollama(system_prompt: str, user_prompt: str, retries: int = 2) -> Optio
                     "stream": False,
                     "options": {
                         "temperature": 0.1,   # low temp for consistent scoring
-                        "num_predict": 2048,
+                        "num_predict": 256,
                     }
                 },
                 timeout=300   # longer timeout — full paper evaluation takes time
