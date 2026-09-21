@@ -1,4 +1,4 @@
-# Extraction & Verification Design — Strict Prompt Trial, Two-Step Verification, Evidence/Direction Checks
+# Extraction & Verification Design — Strict Prompt Trial, Two-Step Verification, Evidence/Direction/Readability Checks
 
 **Project:** EAT40005 Capstone, Group P85 — Mandi/Garo Knowledge Graph Extraction
 **Date:** 2026-09-21
@@ -24,17 +24,30 @@ this design; they are noted as future phases in §8.
    with real measurements, not assumption.
 2. Design and build a two-step extract → verify pipeline shape (per Tanjila's
    suggestion), as a second, independently-measured configuration.
-3. Add an evidence check (does the source sentence support the triple) and a
+3. Add an evidence check (does the source sentence support the triple), a
    direction/ontology check (is the predicate's subject/object direction plausible),
-   both able to run pre-upload, on CSV output, never touching the production Neo4j
-   instance.
+   and a **readability/well-formedness check** (does the triple read as a clear,
+   sensible standalone statement — see §6.2, added after reviewing real Neo4j triples
+   that are technically valid but not human-readable, which matters directly for the
+   RAG chatbot's answer quality), all able to run pre-upload, on CSV output, never
+   touching the production Neo4j instance.
 4. Build an automated precision/recall/F1 (+ hallucination rate, triples/page) scoring
    harness against the existing 148-triple manual ground truth, since no such script
    exists today (all prior scoring in `Prompt_Iteration_Log.xlsx` was done by hand).
 5. Keep every prompt variant in a versioned file (not an inline string) so variants can
    be diffed and logged, and document the reasoning behind each design decision.
 
-### 1.2 Non-goals for this phase
+### 1.2 Constraints
+
+- **Zero marginal cost.** This project must not incur any paid API usage. All LLM calls
+  (extraction, verify pass) use the existing local Ollama (`deepseek-r1:7b`) — no
+  OpenAI/Anthropic backend is wired into any new module in this design, even though
+  `pruner/llm_judge.py` (pre-existing, separate tool) happens to support them as
+  options for whoever runs it manually. `verification/verify_pass.py`'s real backend
+  is Ollama-only. Every other new dependency (`pytest`, plus reusing already-installed
+  `rapidfuzz`/`spacy`) is free and runs locally, same as the rest of the pipeline.
+
+### 1.3 Non-goals for this phase
 
 - Table-to-sentence preprocessing for the new tabular source data (future phase).
 - Chatbot-side feedback loop (future phase).
@@ -46,7 +59,7 @@ this design; they are noted as future phases in §8.
   `test_extraction.py`-style scripts.
 - Actually executing the new prompts end-to-end against `deepseek-r1:7b` — Ollama in
   this environment only runs inside a Docker container this session cannot reach (see
-  §7, Execution Plan). This phase builds and validates the harness/checks against
+  §10, Execution Plan). This phase builds and validates the harness/checks against
   ground truth and already-existing historical extraction CSVs in `output/`; running
   the new prompt variants happens afterward, on the author's machine.
 
@@ -100,9 +113,10 @@ harness:
 - **(C) Broad extraction (de-hubbed) → verification pass, two steps** — new. Directly
   answers Tanjila's two-step suggestion.
 
-The direction/ontology check (deterministic, no LLM) can additionally run on the output
-of any of the three, including (A), since it costs nothing — this lets us see its effect
-in isolation as a fourth comparison point.
+The direction/ontology check and the readability/well-formedness check (both
+deterministic, no LLM) can additionally run on the output of any of the three,
+including (A), since they cost nothing — this lets us see each check's effect in
+isolation, on top of any prompt configuration.
 
 ```
                     ┌────────────────────────────────────────────┐
@@ -117,13 +131,16 @@ in isolation as a fourth comparison point.
                      │                   │             ┌─────┴─────┐
                      │                   │             │ verify_tacit│  (new LLM call,
                      │                   │             │ _evidence   │   pluggable judge_fn,
-                     │                   │             │ pass        │   keep/review/reject
-                     │                   │             └─────┬─────┘   bands)
+                     │                   │             │ _readable   │   keep/review/reject
+                     │                   │             │ pass        │   bands — 3 combined
+                     │                   │             └─────┬─────┘   questions, 1 call)
                      │                   │                   │
                      └─────────┬─────────┴─────────┬─────────┘
                                 │                   │
-                        (optional, all 3) direction/ontology check
-                                │                   (deterministic, lexicon-based)
+                    (optional, all 3) direction/ontology check
+                                │      (deterministic, lexicon-based)
+                    (optional, all 3) well-formedness check
+                                │      (deterministic, word-count/fragment heuristics)
                                 ▼
                      eval/scorer.py  →  strict/lenient P/R/F1,
                                         hallucination rate, triples/page
@@ -163,19 +180,31 @@ Files:
   (CamelCase entities, `UPPER_SNAKE_CASE` predicates, one triple per value, exact
   `SENTENCE REF`). If a passage contains nothing that clears the tacit-knowledge bar,
   the prompt instructs the model to output nothing rather than force a weak triple —
-  directly implementing "better to miss than to store wrong."
+  directly implementing "better to miss than to store wrong." Also includes an explicit
+  readability rule: "if the resulting `(Subject)-[PREDICATE]->(Object)` would be
+  confusing or meaningless to someone reading it with no other context, do not output
+  it" — directly targeting the unreadable-triple problem observed in the live graph
+  (e.g. `subject_specificity.py`'s own documented case, a mis-chunked appositive
+  producing the entity name `PioneeringGaroScholarThe`).
 - `prompts/verify_tacit_evidence_v1.txt` — new. Takes one candidate triple + its source
-  sentence and asks two questions in one call, mirroring the proven pattern in
+  sentence and asks **three** questions in one call, mirroring the proven pattern in
   `pruner/llm_judge.py`'s `JUDGE_PROMPT`: (1) is this relationship stated or clearly
   implied by the source sentence (evidence/faithfulness), (2) does it meet the same
-  tacit-knowledge definition used in the strict prompt. Returns
-  `{"decision": "keep"|"reject", "confidence": <0.0-1.0>, "reason": "<one sentence>"}`.
-  Deliberately does **not** re-ask "is this about the community / not research
-  methodology" — that question is already answered by the strict tacit-knowledge
-  definition (tacit knowledge and research-methodology description are mutually
-  exclusive by construction), so asking it a third time (extraction skip-list → this
-  verify pass → the existing `flag_artifact_triples` keyword filter, which stays as a
-  safety net) would be redundant, not additive.
+  tacit-knowledge definition used in the strict prompt, (3) read on its own as
+  `(Subject) predicate (Object)`, would this make sense to someone with no other
+  context (readability) — this is the question that catches semantically-garbled
+  triples the deterministic well-formedness check (§6.2) can't, since it requires
+  actually understanding the content, not just its shape. Returns
+  `{"decision": "keep"|"reject", "confidence": <0.0-1.0>, "reason": "<one sentence>"}`,
+  where `reason` names whichever check failed. Deliberately does **not** re-ask "is
+  this about the community / not research methodology" — that question is already
+  answered by the strict tacit-knowledge definition (tacit knowledge and
+  research-methodology description are mutually exclusive by construction), so asking
+  it a fourth time (extraction skip-list → this verify pass → the existing
+  `flag_artifact_triples` keyword filter, which stays as a safety net) would be
+  redundant, not additive. Still exactly **one** LLM call per candidate triple, same
+  cost as before — the readability question is added to the existing call, not a new
+  one, consistent with the zero-cost constraint (§1.2).
 
 A companion `prompts/CHANGELOG.md` records, per version, what changed and why — the
 doc-note requirement from the project constraints, kept out of the `.txt` files
@@ -209,7 +238,9 @@ def verify_triple(subject: str, predicate: str, obj: str, source_sentence: str,
     be added later through manual expert verification": ambiguous candidates are held
     for a human, not defaulted to correctness-over-coverage on the pipeline's own guess.
 
-## 6. Direction/ontology check
+## 6. Deterministic pre-upload checks (no LLM, run on all configurations)
+
+### 6.1 Direction/ontology check
 
 New module `verification/direction_check.py`. Given the schema has no real entity-type
 labels (every node is `:Entity`; `pruner/dedup.py`'s own notes already confirm this),
@@ -244,6 +275,41 @@ isn't built from imagination. Extending it to the spaCy-based cross-check is doc
 here as a future option (§8) if the lexicon proves too narrow once more data is
 processed — deliberately not built now, per "prefer the smallest change that can be
 measured."
+
+### 6.2 Well-formedness / readability check
+
+New module `verification/wellformedness_check.py`. This is the direct response to the
+observation that a lot of triples already in the Neo4j instance are technically valid
+(pass `validate_triple_format`) but don't read as sensible, human-understandable facts —
+which matters directly because the RAG chatbot (`rag.py`) synthesizes its answers from
+retrieved graph triples, so an unreadable triple becomes an unreadable or confusing
+answer. Purely structural/shape checks, no semantic judgment — semantic garbling (a
+triple that is shaped correctly but still doesn't make sense) is instead caught by the
+strict prompt's readability rule (§4) and the verify pass's third question (§5):
+
+```python
+# verification/wellformedness_check.py
+MAX_ENTITY_WORDS = 4       # matches the prompts' own "1-4 words" entity rule
+MAX_PREDICATE_WORDS = 3    # a predicate should name a relationship, not a clause
+DANGLING_LEADING_WORDS = {"the", "a", "an", "of", "in", "on", "at", "and", "or"}
+
+def check_wellformedness(subject: str, predicate: str, obj: str) -> WellformednessResult:
+    """Flags (never deletes) a triple whose Subject, Predicate, or Object looks like a
+    mis-split sentence fragment rather than a clean entity/relationship name:
+      - word count over MAX_ENTITY_WORDS (subject/object) or MAX_PREDICATE_WORDS
+        (predicate) — same heuristic pruner/rules.py's find_oversized_entity_nodes()
+        already uses post-Neo4j, applied here pre-upload instead.
+      - a CamelCase split that ends or starts on a word in DANGLING_LEADING_WORDS,
+        e.g. "PioneeringGaroScholarThe" -> trailing "The" -- the appositive-merge bug
+        subject_specificity.py's own comments already document as real, observed data.
+      - predicate containing more than MAX_PREDICATE_WORDS underscore-separated
+        segments, which tends to mean the model wrote a clause instead of a relation
+        name (e.g. IS_USED_IN_THE_TRADITIONAL_CONTEXT_OF)."""
+```
+
+Flag-only, never auto-delete — same conservative posture as the existing
+oversized-entity heuristic in `pruner/rules.py`, since an occasional long name (e.g. a
+genuine multi-word festival name) can be legitimate.
 
 ## 7. Test harness
 
@@ -314,18 +380,19 @@ Sibling script to `run_page_pipeline.py`, following the same "import unmodified,
 never touch Neo4j" convention as `test_extraction.py`:
 
 ```
-python run_verification_pipeline.py output/garo_1_page3_variantA.csv --direction-check --verify
+python run_verification_pipeline.py output/garo_1_page3_variantA.csv --direction-check --wellformedness-check --verify
 ```
 
-Takes an already-produced extraction CSV, optionally runs the verify pass (§5) and/or
-the direction check (§6), and writes:
+Takes an already-produced extraction CSV, optionally runs the verify pass (§5), the
+direction check (§6.1), and/or the well-formedness check (§6.2), and writes:
 
 - `<name>_refined.csv` — surviving triples.
 - `<name>_reviewed_out.csv` — borderline verify-pass results (audit trail, never
   silently dropped).
 - `<name>_direction_flags.csv` — triples the direction check flagged (flag-only, never
-  auto-deleted, same conservative posture as the existing oversized-entity heuristic in
-  `pruner/rules.py`).
+  auto-deleted).
+- `<name>_wellformedness_flags.csv` — triples the well-formedness check flagged
+  (flag-only, never auto-deleted).
 
 Never imports `neo4j_loader`, never calls `add_triples()`.
 
@@ -364,10 +431,16 @@ All new logic gets tests written first, and all of it is testable without Ollama
    `Prompt_Iteration_Log.xlsx`'s `Page3_Ground_Truth` sheet.
 3. `verification/direction_check.py` — unit tests with crafted examples per lexicon
    entry, including at least one deliberately-reversed case per predicate.
-4. `verification/verify_pass.py` — unit tests with a mocked `judge_fn` covering all
-   three confidence bands (reject / review / keep).
-5. `run_verification_pipeline.py` — an integration-style test that feeds a small
-   crafted CSV through with a mocked judge and asserts the three output files contain
+4. `verification/wellformedness_check.py` — unit tests including a real crafted
+   reproduction of the `PioneeringGaroScholarThe`-style dangling-word case, an
+   oversized-entity case, and an over-long predicate case, plus at least one clean
+   triple that must NOT be flagged (to guard against over-flagging legitimate long
+   names).
+5. `verification/verify_pass.py` — unit tests with a mocked `judge_fn` covering all
+   three confidence bands (reject / review / keep) and all three failure reasons
+   (unevidenced, not tacit, unreadable).
+6. `run_verification_pipeline.py` — an integration-style test that feeds a small
+   crafted CSV through with a mocked judge and asserts all four output files contain
    the expected rows.
 
 ## 10. Execution plan (given Ollama constraint)
@@ -382,6 +455,6 @@ pass are built and unit-tested here, but not run end-to-end here. After this pha
 2. Score each configuration with `eval/run_eval.py` against the ground truth.
 3. Compare precision/recall/F1 (strict + lenient), hallucination rate, and
    triples/page across (A) live prompt, (B) strict-only, (C) broad-v2+verify, each
-   with and without the direction check layered on.
+   with and without the direction and well-formedness checks layered on.
 4. Only then decide which configuration (if any) is promoted toward `main.py`'s
    production path — a separate, later decision, not part of this design.
