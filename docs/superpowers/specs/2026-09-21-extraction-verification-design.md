@@ -90,16 +90,25 @@ this design; they are noted as future phases in §8.
 - `deduplicate_triples()` (used pre-upload) is exact-match only, on normalized
   subject|predicate|object. Near-duplicate/paraphrase-level dedup exists only as fuzzy
   **entity-name** matching, post-upload, in `pruner/dedup.py`.
-- The 148-triple manual ground truth lives in `KG_extraction_Garo_1.xlsx` (`Final
-  Triples` sheet, joined to `Sentence Extraction` for verbatim source sentences),
-  spanning pages 1–7 of `garo_1.pdf`. `Prompt_Iteration_Log.xlsx`'s `Prompt Iteration
-  Log` sheet already has the target metric shape (Prompt ID, Precision/Recall/F1 strict
-  and lenient, failure-mode notes) for page 3 specifically, computed by hand across
-  several prior rounds — no scoring script exists.
-- `output/` already contains several historical extraction CSVs
-  (`garo_1_page3_test.csv`, `garo_1_page3_variant{baseline,A,B,C}.csv`,
-  `garo_1_page{1,4,5}_kg.csv`, `garo_1_fullpaper_variantA.csv`) that can validate a new
-  scorer against already-known, already-logged results without needing to run Ollama.
+- The 148-triple manual ground truth lives in `KG_extraction_Marcus.xlsx` (`Final
+  Triples` sheet — columns `Ref #`, `Sentence #`, `Triple`, `Notes`, `Confidence`, no
+  `Page` column directly on this sheet; page/section is only available by joining
+  `Sentence #` against the `Sentence Extraction` sheet's `Page / Para` column, e.g.
+  `"page 3, Attire"`). Some rows (the `M`-prefixed "Major Findings" triples) have no
+  `Sentence #` at all, so no derivable page — the ground-truth loader must handle that
+  as "page unknown," not an error. `Prompt_Iteration_Log.xlsx`'s `Prompt Iteration Log`
+  sheet has the target metric *shape* (Prompt ID, Precision/Recall/F1 strict and
+  lenient, failure-mode notes) from prior hand-scored rounds, but — see §7.4 — this
+  design does not attempt to reproduce those specific historical numbers; hand-scoring
+  encoded subjective, context-dependent judgment (e.g. whether a collapsed-to-hub
+  subject "counts") that a mechanical matcher can't and shouldn't try to replicate. The
+  goal is a correct, transparent, honest scorer that measures *forward* progress on the
+  real ground truth, not a re-derivation of past manual scores.
+- `output/` contains several historical extraction CSVs
+  (`garo_1_page3_test_root_copy.csv`, `garo_1_page3_variant{baseline,A,B,C}.csv`,
+  `garo_1_page{1,4,5}_kg.csv`, `garo_1_fullpaper_variantA.csv`) — useful as realistic
+  input shapes for manual smoke-testing the CLI, but not used as pass/fail fixtures
+  (§7.4).
 
 ## 3. Design overview
 
@@ -315,18 +324,38 @@ genuine multi-word festival name) can be legitimate.
 
 ### 7.1 Ground truth loader — `eval/ground_truth.py`
 
+Default source: `KG_extraction_Marcus.xlsx` (the corrected ground truth — an earlier,
+wrong workbook was removed from the repo). Its `Final Triples` sheet has no `Page`
+column; page/section must be derived by joining `Sentence #` against the `Sentence
+Extraction` sheet's `Page / Para` column (values like `"page 3, Attire"` or
+`"page 4-5, Festival"`). Some rows (the `M`-prefixed "Major Findings" triples) have no
+`Sentence #` at all — for those, page/section is `None`, not an error.
+
+- `GroundTruthTriple` — a dataclass: `ref: str`, `sentence_num: str | None`,
+  `subject: str`, `predicate: str`, `object: str`, `pages: frozenset[str]` (empty
+  frozenset when unknown), `section: str | None`, `sentence_text: str | None`.
+- `parse_triple_string(text: str) -> tuple[str, str, str] | None` — matches
+  `(Subject)-[PREDICATE]->(Object)`, the same core pattern
+  `kg_extractor.parse_ollama_blocks` uses, so ground truth and pipeline output are
+  parsed identically. Returns `None` if the text doesn't match (never raises).
+- `parse_page_cell(text: str) -> tuple[frozenset[str], str | None]` — parses a
+  `Page / Para` cell like `"page 4-5, Festival"` into `({"4", "5"}, "Festival")`, or
+  `"page 3, Attire"` into `({"3"}, "Attire")`.
+- `load_sentences(xlsx_path=DEFAULT_GT_PATH) -> dict[str, tuple[frozenset[str], str | None, str]]`
+  — `Sentence #` → `(pages, section, verbatim sentence text)`, from the `Sentence
+  Extraction` sheet. Row-detection is by regex on the first cell (`^[A-Za-z]+\d+$`,
+  e.g. `S1`), not a fixed row number, so it tolerates the sheet's leading title/
+  instruction rows without hardcoding "data starts at row 4."
 - `load_final_triples(xlsx_path=DEFAULT_GT_PATH) -> list[GroundTruthTriple]` — parses
-  the `Final Triples` sheet, reusing the exact `(Subject)-[PREDICATE]->(Object)` regex
-  already in `kg_extractor.parse_ollama_blocks`, so ground truth and pipeline output are
-  parsed identically. Each result carries `ref`, `sentence_num`, `subject`, `predicate`,
-  `object`, `page`, `section`.
-- `load_sentences(xlsx_path) -> dict[str, str]` — `Sentence #` → verbatim sentence, from
-  the `Sentence Extraction` sheet. Used by scorer diagnostics and by verify-pass unit
-  tests that want a real sentence without touching the pipeline.
-- `triples_for_pages(triples, pages: list[str]) -> list[GroundTruthTriple]` — filter
-  helper (the sheet's `Page` column includes values like `"1-2"`, so this does a
-  substring/contains match on the page token, not pure equality).
-- Read-only: this module never writes to `KG_extraction_Garo_1.xlsx`.
+  the `Final Triples` sheet (same row-detection approach: regex `^[A-Za-z]+\d+$` on the
+  first cell, matching both `R`- and `M`-prefixed refs), joins each row's `Sentence #`
+  against `load_sentences()`'s result to fill in `pages`/`section`/`sentence_text`
+  (all `None`/empty when the row has no `Sentence #` or it isn't found).
+- `triples_for_pages(triples, pages: list[str]) -> list[GroundTruthTriple]` — returns
+  triples whose `pages` intersects the requested set. A triple with an empty `pages`
+  (unknown) never matches any page filter — it's still returned by
+  `load_final_triples()` for whole-document runs, just excluded from page-scoped ones.
+- Read-only: this module never writes to `KG_extraction_Marcus.xlsx`.
 
 ### 7.2 Scorer — `eval/scorer.py`
 
@@ -336,9 +365,9 @@ genuine multi-word festival name) can be legitimate.
   Jaccard over the combined subject+predicate+object text of both triples.
 - `match_strict(a, b) -> bool` — normalized exact equality on all three fields.
 - `match_lenient(a, b, threshold=LENIENT_THRESHOLD) -> bool` — `jaccard_similarity >=
-  threshold`. `LENIENT_THRESHOLD` starts as a named constant tuned against page 3 (the
-  one page with prior hand-scored "lenient" judgments in `Prompt_Iteration_Log.xlsx` to
-  calibrate against) before being trusted on other pages.
+  threshold`. `LENIENT_THRESHOLD` is a named constant, chosen (§7.4) against a small set
+  of hand-picked, unambiguous example pairs (a true paraphrase vs. an unrelated triple)
+  rather than against `Prompt_Iteration_Log.xlsx`'s historical counts — see §7.4 for why.
 - `score(extracted: list[dict], ground_truth: list[GroundTruthTriple]) -> ScoreReport` —
   greedy one-to-one matching (each ground-truth triple claimable by at most one
   extracted triple, and vice versa, checked strict-first then lenient-first) to avoid
@@ -359,20 +388,38 @@ Appends one row to a new, git-tracked `eval/results.csv` (separate from
 avoid corrupting its manually-written notes/formatting; rows can be copied across by a
 human when wanted).
 
-### 7.4 Validation without Ollama
+### 7.4 Validation without Ollama — and why it does NOT target the old hand-scored numbers
 
-The scorer's own correctness is checked against real historical data already in the
-repo, before it is trusted on anything new:
+**Finding from prototyping:** exact-string `match_strict` scores 0 true positives
+against real historical CSVs that the manual log scored 11/23 and 2/23, because the
+human tolerated predicate rewording (`WEAR` vs `WEARS` vs `WEAR Men's Attire`) that
+literal equality doesn't. Object-only matching gets close on one file (11) but
+massively overcounts on the other (10 vs. logged 2), because that second run collapsed
+every subject to `GaroCommunity`, and the human specifically judged those as *not*
+matching the ground truth's `GaroMen`/`GaroWomen`/`AttireStyles` subjects in that
+comparison — a context-dependent, subjective call ("does this run still have the
+subject-collapse bug") that a mechanical string/token comparison cannot and should not
+try to encode. **Decision: the goal of this project is a scorer that measures forward
+progress with a transparent, defensible method, not a reproduction of past subjective
+hand-scoring.** `match_strict`/`match_lenient` (§7.2) are kept as designed; what's
+dropped is any attempt to hit the old logged numbers.
 
-- `eval/scorer.py` run against `output/garo_1_page3_test.csv` (the exact file the
-  logged "PR007 (baseline)" row used) must land close to that row's recorded TP-strict
-  = 11/23, TP-lenient = 16/23.
-- Run against `output/garo_1_page3_variantbaseline.csv` (the file the logged "PR007
-  (baseline, rerun)" row used) must land close to TP-strict = 2/23, TP-lenient = 14/23.
-- These become regression tests (`tests/test_scorer_golden.py`), not just a one-off
-  sanity check — they pin the scorer's matching behavior against known-good numbers so
-  future changes to `match_lenient`'s threshold or the matching algorithm can't
-  silently drift without a visible test failure.
+The scorer's correctness is instead validated with **hand-crafted fixtures with known,
+unambiguous right answers** — no reliance on reproducing anyone's past judgment call:
+
+- A tiny fixture ground truth (4-5 `GroundTruthTriple` rows, written directly in the
+  test file) and a tiny fixture extraction (a handful of triples) covering: an exact
+  match (must count as both strict and lenient), a true near-paraphrase — same fact,
+  differently-worded predicate (must count as lenient only), and a wrong/unrelated
+  triple (must count as neither, and must contribute a false positive).
+- `LENIENT_THRESHOLD` is picked as whatever value makes the near-paraphrase fixture
+  match and the unrelated-triple fixture not match — both directions checked, so the
+  threshold can't be trivially satisfied by setting it to 0 or 1.
+- These are ordinary regression tests (`tests/test_scorer.py`), not "golden" tests
+  against external data. Running the scorer against real files in `output/` remains
+  useful as a manual smoke check (`eval/run_eval.py` on real data should not crash and
+  should print a plausible-looking report), but that's exploratory, not a pass/fail
+  assertion.
 
 ### 7.5 Verification pipeline wiring — `run_verification_pipeline.py`
 
@@ -424,11 +471,13 @@ existing root-level manual-harness naming convention.
 All new logic gets tests written first, and all of it is testable without Ollama:
 
 1. `eval/scorer.py` — unit tests for `normalize`, `jaccard_similarity`, `match_strict`,
-   `match_lenient` with hand-crafted triple pairs; golden regression tests against
-   `output/garo_1_page3_test.csv` and `output/garo_1_page3_variantbaseline.csv` (§7.4).
-2. `eval/ground_truth.py` — unit test that `load_final_triples` returns 148 rows total
-   and the page-3 subset returns 23, matching the counts already documented in
-   `Prompt_Iteration_Log.xlsx`'s `Page3_Ground_Truth` sheet.
+   `match_lenient` with hand-crafted triple pairs, plus the hand-crafted-fixture
+   regression tests described in §7.4 (no dependency on historical log numbers).
+2. `eval/ground_truth.py` — unit tests against the real `KG_extraction_Marcus.xlsx`:
+   `load_final_triples` returns 148 rows total, the page-3 subset (`triples_for_pages`)
+   returns 23, and exactly 12 rows have an empty `pages` (the `M`-prefixed rows with no
+   `Sentence #` to join against) — verified directly against the real workbook while
+   writing this plan, not assumed.
 3. `verification/direction_check.py` — unit tests with crafted examples per lexicon
    entry, including at least one deliberately-reversed case per predicate.
 4. `verification/wellformedness_check.py` — unit tests including a real crafted
