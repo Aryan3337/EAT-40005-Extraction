@@ -47,3 +47,65 @@ def test_match_lenient_rejects_second_different_fact_same_subject():
     b = ("GaroCommunity", "WEARS", "Sarees")
     assert jaccard_similarity(a, b) < 0.3
     assert match_lenient(a, b) is False
+
+
+from eval.scorer import score
+
+
+def test_score_perfect_match():
+    ground_truth = [("GaroCommunity", "WEARS", "Lungis")]
+    extracted = [("GaroCommunity", "WEARS", "Lungis")]
+    report = score(extracted, ground_truth, num_pages=1)
+    assert report.tp_strict == 1
+    assert report.fp_strict == 0
+    assert report.fn_strict == 0
+    assert report.precision_strict == 1.0
+    assert report.recall_strict == 1.0
+    assert report.f1_strict == 1.0
+    assert report.hallucination_rate == 0.0
+    assert report.triples_per_page == 1.0
+
+
+def test_score_one_hallucination():
+    ground_truth = [("GaroCommunity", "WEARS", "Lungis")]
+    extracted = [
+        ("GaroCommunity", "WEARS", "Lungis"),
+        ("Respondents", "KNOWN_ORIGIN", "Tibet"),
+    ]
+    report = score(extracted, ground_truth, num_pages=1)
+    assert report.tp_strict == 1
+    assert report.fp_strict == 1
+    assert report.fn_strict == 0
+    assert report.hallucination_rate == 0.5
+    assert report.triples_per_page == 2.0
+
+
+def test_score_lenient_catches_what_strict_misses():
+    ground_truth = [("GaroMen", "WEARS", "Lungis")]
+    extracted = [("GaroCommunity", "WEAR", "Lungis")]
+    report = score(extracted, ground_truth, num_pages=1)
+    assert report.tp_strict == 0
+    assert report.tp_lenient == 1
+    assert report.recall_lenient == 1.0
+
+
+def test_score_no_extraction_gives_zero_precision_and_no_hallucination():
+    ground_truth = [("GaroCommunity", "WEARS", "Lungis")]
+    report = score([], ground_truth, num_pages=1)
+    assert report.tp_strict == 0
+    assert report.fn_strict == 1
+    assert report.precision_strict == 0.0
+    assert report.hallucination_rate == 0.0
+
+
+def test_score_greedy_matching_is_one_to_one():
+    # Two identical extracted triples must not both claim the single
+    # ground-truth triple.
+    ground_truth = [("GaroCommunity", "WEARS", "Lungis")]
+    extracted = [
+        ("GaroCommunity", "WEARS", "Lungis"),
+        ("GaroCommunity", "WEARS", "Lungis"),
+    ]
+    report = score(extracted, ground_truth, num_pages=1)
+    assert report.tp_strict == 1
+    assert report.fp_strict == 1
