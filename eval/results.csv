@@ -1,0 +1,4 @@
+timestamp,label,csv_path,pages,tp_strict,fp_strict,fn_strict,tp_lenient,fp_lenient,fn_lenient,precision_strict,recall_strict,f1_strict,precision_lenient,recall_lenient,f1_lenient,hallucination_rate,triples_per_page
+2026-09-23T09:50:02.319271+00:00,A: live prompt,output/garo_1_page3_test.csv,3,0,35,23,10,25,13,0.0,0.0,0.0,0.2857142857142857,0.43478260869565216,0.3448275862068965,1.0,35.0
+2026-09-23T09:59:04.049687+00:00,B: strict tacit-only,output/garo_1_page3_extraction_strict_tacit_v1.csv,3,2,23,21,11,14,12,0.08,0.08695652173913043,0.08333333333333333,0.44,0.4782608695652174,0.4583333333333333,0.92,25.0
+2026-09-23T10:41:24.682202+00:00,C: broad-v2 + verify,output/garo_1_page3_extraction_broad_v2_refined.csv,3,4,4,19,5,3,18,0.5,0.17391304347826086,0.25806451612903225,0.625,0.21739130434782608,0.3225806451612903,0.5,8.0
