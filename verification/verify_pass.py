@@ -15,7 +15,10 @@ import requests
 from prompts.loader import load_prompt_template
 
 VERIFY_LOW_THRESHOLD = 0.35
-VERIFY_HIGH_THRESHOLD = 0.7
+# Raised from 0.7: this pipeline feeds a fully autonomous chatbot with no
+# human review step, so a false positive here reaches an end user directly.
+# Recall is an acceptable trade for near-zero hallucination.
+VERIFY_HIGH_THRESHOLD = 0.85
 
 OLLAMA_VERIFY_URL = os.environ.get("OLLAMA_VERIFY_URL", "http://localhost:11434/api/generate")
 
@@ -71,9 +74,10 @@ def judge_with_ollama(subject: str, predicate: str, obj: str, source_sentence: s
     return _parse_judge_response(response.json().get("response", ""))
 
 
-def verify_triple(subject: str, predicate: str, obj: str, source_sentence: str,
-                   judge_fn: JudgeFn) -> VerifyResult:
-    decision, confidence, reason = judge_fn(subject, predicate, obj, source_sentence)
+_BAND_RANK = {"reject": 0, "review": 1, "keep": 2}
+
+
+def _band_single(decision: str, confidence: float, reason: str) -> VerifyResult:
     if confidence < VERIFY_LOW_THRESHOLD:
         band = "reject"
     elif confidence >= VERIFY_HIGH_THRESHOLD:
@@ -87,3 +91,30 @@ def verify_triple(subject: str, predicate: str, obj: str, source_sentence: str,
     if band == "keep" and decision.strip().lower() == "reject":
         band = "review"
     return VerifyResult(band=band, decision=decision, confidence=confidence, reason=reason)
+
+
+def verify_triple(subject: str, predicate: str, obj: str, source_sentence: str,
+                   judge_fn: JudgeFn, n_samples: int = 1) -> VerifyResult:
+    """Judges a triple, optionally resampling judge_fn n_samples times for
+    self-consistency. With no human review step downstream, a "keep" is only
+    trustworthy if every independent run agrees -- any disagreement falls
+    back to the worst (most conservative) band among the runs, since the
+    zero-marginal-cost trade here is recall for near-zero hallucination."""
+    results = [
+        _band_single(*judge_fn(subject, predicate, obj, source_sentence))
+        for _ in range(n_samples)
+    ]
+    if n_samples == 1:
+        return results[0]
+
+    worst = min(results, key=lambda r: _BAND_RANK[r.band])
+    if all(r.band == "keep" for r in results):
+        return worst
+
+    n_keep = sum(1 for r in results if r.band == "keep")
+    return VerifyResult(
+        band=worst.band,
+        decision=worst.decision,
+        confidence=worst.confidence,
+        reason=f"self-consistency disagreement ({n_keep}/{n_samples} runs kept): {worst.reason}",
+    )
