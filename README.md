@@ -289,10 +289,17 @@ design). None of this touches Neo4j.
    - **(B) Strict tacit-only prompt**: swap `kg_extractor.make_extraction_prompt` for
      `prompts.loader.load_prompt("extraction_strict_tacit_v1")` in a small script
      following the same pattern as `test_extraction_variants.py`, then run it the same
-     way.
-   - **(C) Broad-v2 + verify**: same swap with `extraction_broad_v2`, then run
+     way. If the resulting CSV will be passed to `--verify` (as configuration (C)
+     below requires), the script must preserve the model's `SENTENCE REF` line into a
+     `sentence_ref` column — follow `kg_extractor.py`'s output column shape, not
+     `test_extraction_variants.py`'s, which has no such column.
+   - **(C) Broad-v2 + verify**: same swap with `extraction_broad_v2` (again preserving
+     `SENTENCE REF` into a `sentence_ref` column, since this output is always fed to
+     `--verify`), then run
      `python run_verification_pipeline.py output/<the_csv_from_broad_v2> --verify --direction-check --wellformedness-check`.
-2. Score each resulting CSV against the ground truth:
+2. Score each resulting CSV against the ground truth. Each CSV must already be scoped
+   to the pages passed via `--pages` — `eval/run_eval.py` does not filter rows by page
+   itself:
    ```bash
    python -m eval.run_eval output/<csv_from_A> --pages 3 --label "A: live prompt"
    python -m eval.run_eval output/<csv_from_B> --pages 3 --label "B: strict tacit-only"

@@ -5,7 +5,13 @@
 
 Never touches Neo4j. Appends one row to eval/results.csv (creating the header
 if it doesn't exist yet). See
-docs/superpowers/specs/2026-09-21-extraction-verification-design.md §7.3."""
+docs/superpowers/specs/2026-09-21-extraction-verification-design.md §7.3.
+
+Note: load_extracted() reads every row in the input CSV -- it does NOT filter
+by page. The input CSV must already be scoped to the pages you pass via
+--pages (e.g. score a single page's output like garo_1_page3_variantA.csv,
+not a whole-paper CSV, when using --pages 3), or off-page rows will be
+counted as false positives against the page-filtered ground truth."""
 
 import argparse
 import csv
@@ -60,7 +66,12 @@ def append_result(report: ScoreReport, label: str, csv_path: str, pages: str,
 def main() -> None:
     parser = argparse.ArgumentParser(description="Score an extraction CSV against the manual ground truth.")
     parser.add_argument("csv_path")
-    parser.add_argument("--pages", required=True, help="Comma-separated page numbers, e.g. '3' or '1,4,5'")
+    parser.add_argument(
+        "--pages", required=True,
+        help="Comma-separated page numbers, e.g. '3' or '1,4,5'. Only filters the "
+        "ground truth -- load_extracted() does NOT filter the input CSV by page, "
+        "so the CSV itself must already be scoped to these pages.",
+    )
     parser.add_argument("--label", required=True, help="Name for this run, e.g. 'Variant A (broad-v2)'")
     parser.add_argument("--gt-path", default=DEFAULT_GT_PATH)
     parser.add_argument("--results-path", default=DEFAULT_RESULTS_PATH)

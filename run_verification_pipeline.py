@@ -10,6 +10,7 @@ docs/superpowers/specs/2026-09-21-extraction-verification-design.md §7.5.
 
 import argparse
 import csv
+import sys
 from pathlib import Path
 
 from verification.direction_check import check_direction
@@ -38,6 +39,19 @@ def run(csv_path: str, run_verify: bool, run_direction: bool, run_wellformed: bo
         judge_fn: JudgeFn = judge_with_ollama) -> dict:
     rows = load_rows(csv_path)
     fieldnames = list(rows[0].keys()) if rows else ["subject", "predicate", "object"]
+
+    if run_verify and rows and not any(_sentence_for_row(row) for row in rows):
+        print(
+            "WARNING: --verify was requested, but no row in "
+            f"{csv_path!r} has a non-empty 'sentence_ref' or 'passage' "
+            "column. The verify pass will judge every triple against an "
+            "empty source sentence, so its keep/review/reject results are "
+            "unlikely to be meaningful. This input CSV should come from a "
+            "script whose output preserves the original SENTENCE REF value "
+            "(see kg_extractor.py's output shape) as a 'sentence_ref' "
+            "column.",
+            file=sys.stderr,
+        )
 
     refined: list[dict] = []
     reviewed_out: list[dict] = []
