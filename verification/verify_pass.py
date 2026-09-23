@@ -65,7 +65,7 @@ def judge_with_ollama(subject: str, predicate: str, obj: str, source_sentence: s
     response = requests.post(
         OLLAMA_VERIFY_URL,
         json={"model": model, "prompt": prompt, "stream": False},
-        timeout=60,
+        timeout=900,
     )
     response.raise_for_status()
     return _parse_judge_response(response.json().get("response", ""))
