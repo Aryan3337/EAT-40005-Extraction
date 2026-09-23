@@ -276,6 +276,39 @@ docker compose exec app python test_extraction_variants.py papers/garo_1.pdf 3 -
 
 ---
 
+## Comparing extraction/verification configurations (strict prompt, two-step verify)
+
+Three configurations can now be compared on the same ground-truth pages, using the
+harness in `eval/` and `prompts/` (see
+`docs/superpowers/specs/2026-09-21-extraction-verification-design.md` for the full
+design). None of this touches Neo4j.
+
+1. Run each configuration against a page you have ground truth for (e.g. page 3) and
+   save the output CSV:
+   - **(A) Current live prompt** (unchanged): `python test_extraction.py papers/garo_1.pdf 3`
+   - **(B) Strict tacit-only prompt**: swap `kg_extractor.make_extraction_prompt` for
+     `prompts.loader.load_prompt("extraction_strict_tacit_v1")` in a small script
+     following the same pattern as `test_extraction_variants.py`, then run it the same
+     way.
+   - **(C) Broad-v2 + verify**: same swap with `extraction_broad_v2`, then run
+     `python run_verification_pipeline.py output/<the_csv_from_broad_v2> --verify --direction-check --wellformedness-check`.
+2. Score each resulting CSV against the ground truth:
+   ```bash
+   python -m eval.run_eval output/<csv_from_A> --pages 3 --label "A: live prompt"
+   python -m eval.run_eval output/<csv_from_B> --pages 3 --label "B: strict tacit-only"
+   python -m eval.run_eval output/<csv_from_C>_refined.csv --pages 3 --label "C: broad-v2 + verify"
+   ```
+3. Compare the rows in `eval/results.csv` (git-tracked) for precision/recall/F1
+   (strict + lenient), hallucination rate, and triples/page. Check
+   `output/<...>_reviewed_out.csv`, `_direction_flags.csv`, and
+   `_wellformedness_flags.csv` for anything worth a manual look.
+4. `run_verification_pipeline.py --verify` requires Ollama reachable at
+   `OLLAMA_VERIFY_URL` (defaults to `http://localhost:11434/api/generate`; inside the
+   `app` container use `http://ollama:11434/api/generate`, same convention as
+   `OLLAMA_URL` elsewhere in this project).
+
+---
+
 ## Known Issues
 
 - **Low/zero triple counts after validation:** DeepSeek R1 7B doesn't always follow the requested `(Subject)-[PREDICATE]->(Object)` output format — sometimes it writes plain prose instead. When this happens, the parser can't extract a real triple and falls back to a placeholder, which the validation gate now correctly rejects. This shows up as most or all chunks getting rejected in Step 6. **This is a known, pre-existing bug, not something a fresh checkout or your setup is doing wrong.** If you hit this consistently, flag it in the group chat rather than trying to fix it solo — it's being tracked.
