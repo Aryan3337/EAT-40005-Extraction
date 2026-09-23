@@ -36,7 +36,7 @@ def write_rows(path: Path, fieldnames: list[str], rows: list[dict]) -> None:
 
 
 def run(csv_path: str, run_verify: bool, run_direction: bool, run_wellformed: bool,
-        judge_fn: JudgeFn = judge_with_ollama) -> dict:
+        judge_fn: JudgeFn = judge_with_ollama, verify_samples: int = 1) -> dict:
     rows = load_rows(csv_path)
     fieldnames = list(rows[0].keys()) if rows else ["subject", "predicate", "object"]
 
@@ -61,9 +61,12 @@ def run(csv_path: str, run_verify: bool, run_direction: bool, run_wellformed: bo
     for row in rows:
         subject, predicate, obj = row["subject"], row["predicate"], row["object"]
 
+        hard_gated = False
+
         if run_direction:
             direction_result = check_direction(subject, predicate, obj)
             if direction_result.flagged:
+                hard_gated = True
                 flagged_row = dict(row)
                 flagged_row["flag_reason"] = direction_result.reason or ""
                 direction_flags.append(flagged_row)
@@ -71,14 +74,23 @@ def run(csv_path: str, run_verify: bool, run_direction: bool, run_wellformed: bo
         if run_wellformed:
             wellformedness_result = check_wellformedness(subject, predicate, obj)
             if wellformedness_result.flagged:
+                hard_gated = True
                 flagged_row = dict(row)
                 flagged_row["flag_reason"] = "; ".join(wellformedness_result.reasons)
                 wellformedness_flags.append(flagged_row)
 
+        # Direction/wellformedness checks are a hard gate on refined, not
+        # just an audit-trail side channel: this pipeline feeds a fully
+        # autonomous chatbot with no human review step, so a flagged row
+        # must never reach refined regardless of the verify band.
         if run_verify:
-            result = verify_triple(subject, predicate, obj, _sentence_for_row(row), judge_fn)
+            result = verify_triple(
+                subject, predicate, obj, _sentence_for_row(row), judge_fn,
+                n_samples=verify_samples,
+            )
             if result.band == "keep":
-                refined.append(row)
+                if not hard_gated:
+                    refined.append(row)
             elif result.band == "review":
                 reviewed_row = dict(row)
                 reviewed_row["verify_reason"] = result.reason
@@ -86,7 +98,7 @@ def run(csv_path: str, run_verify: bool, run_direction: bool, run_wellformed: bo
                 reviewed_out.append(reviewed_row)
             # "reject" band: dropped, not written anywhere -- same as main.py's
             # existing validation gate, rejection is implicit via absence.
-        else:
+        elif not hard_gated:
             refined.append(row)
 
     stem = Path(csv_path).stem
@@ -118,9 +130,18 @@ def main() -> None:
     parser.add_argument("--verify", action="store_true", help="Run the LLM verify pass (requires Ollama).")
     parser.add_argument("--direction-check", action="store_true")
     parser.add_argument("--wellformedness-check", action="store_true")
+    parser.add_argument(
+        "--verify-samples", type=int, default=3,
+        help="Resample the verify judge this many times per triple and require unanimous "
+             "'keep' (self-consistency). Zero marginal cost on local Ollama; trades recall "
+             "for lower hallucination rate. Default 3; pass 1 to disable resampling.",
+    )
     args = parser.parse_args()
 
-    summary = run(args.csv_path, args.verify, args.direction_check, args.wellformedness_check)
+    summary = run(
+        args.csv_path, args.verify, args.direction_check, args.wellformedness_check,
+        verify_samples=args.verify_samples,
+    )
     print(summary)
 
 

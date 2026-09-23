@@ -286,17 +286,12 @@ design). None of this touches Neo4j.
 1. Run each configuration against a page you have ground truth for (e.g. page 3) and
    save the output CSV:
    - **(A) Current live prompt** (unchanged): `python test_extraction.py papers/garo_1.pdf 3`
-   - **(B) Strict tacit-only prompt**: swap `kg_extractor.make_extraction_prompt` for
-     `prompts.loader.load_prompt("extraction_strict_tacit_v1")` in a small script
-     following the same pattern as `test_extraction_variants.py`, then run it the same
-     way. If the resulting CSV will be passed to `--verify` (as configuration (C)
-     below requires), the script must preserve the model's `SENTENCE REF` line into a
-     `sentence_ref` column — follow `kg_extractor.py`'s output column shape, not
-     `test_extraction_variants.py`'s, which has no such column.
-   - **(C) Broad-v2 + verify**: same swap with `extraction_broad_v2` (again preserving
-     `SENTENCE REF` into a `sentence_ref` column, since this output is always fed to
-     `--verify`), then run
-     `python run_verification_pipeline.py output/<the_csv_from_broad_v2> --verify --direction-check --wellformedness-check`.
+   - **(B) Strict tacit-only prompt**: `python test_extraction_prompt_config.py papers/garo_1.pdf 3 --prompt extraction_strict_tacit_v1`
+   - **(C) Broad-v2 + verify**: `python test_extraction_prompt_config.py papers/garo_1.pdf 3 --prompt extraction_broad_v2`,
+     then `python run_verification_pipeline.py output/<the_csv_from_broad_v2> --verify --direction-check --wellformedness-check`.
+     `test_extraction_prompt_config.py` (unlike `test_extraction_variants.py`) always
+     preserves the model's `SENTENCE REF` line into a `sentence_ref` column, since (C)'s
+     output is always fed to `--verify`.
 2. Score each resulting CSV against the ground truth. Each CSV must already be scoped
    to the pages passed via `--pages` — `eval/run_eval.py` does not filter rows by page
    itself:
@@ -313,6 +308,30 @@ design). None of this touches Neo4j.
    `OLLAMA_VERIFY_URL` (defaults to `http://localhost:11434/api/generate`; inside the
    `app` container use `http://ollama:11434/api/generate`, same convention as
    `OLLAMA_URL` elsewhere in this project).
+
+### No-human-review hardening (autonomous chatbot target)
+
+This pipeline feeds a fully autonomous chatbot with no human curation step, so a
+false positive here reaches an end user directly. Three things bias it toward
+recall loss over hallucination risk:
+
+- **`--direction-check` and `--wellformedness-check` are a hard gate on
+  `_refined.csv`**, not just an audit-trail side channel — a flagged row is
+  excluded from `_refined.csv` even if the verify pass bands it "keep". The
+  flag is still recorded in `_direction_flags.csv` / `_wellformedness_flags.csv`
+  for inspection; it just no longer doubles as an allow-list.
+- **`verify_pass.VERIFY_HIGH_THRESHOLD` is 0.85** (raised from 0.7): only
+  strongly-evidenced triples band to "keep".
+- **`--verify-samples N` (default 3)** resamples the judge model N times per
+  triple and requires unanimous "keep" across all N runs; any disagreement
+  falls back to the worst band seen. Zero marginal cost on local Ollama, so
+  this is a cheap way to trade recall for a lower hallucination rate. Pass
+  `--verify-samples 1` to disable resampling (single call per triple, as before).
+
+There is deliberately no "held for human review" path in this pipeline — a
+triple that isn't unanimously and confidently "keep" is dropped, not queued.
+`_reviewed_out.csv` remains only as an audit log of the verify pass's "review"
+band; nothing downstream reads it automatically.
 
 ---
 
