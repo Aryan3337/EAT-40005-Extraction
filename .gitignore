@@ -11,3 +11,6 @@ Prompt_Iteration_Log_backup_*.xlsx
 
 # LibreOffice lock files
 .~lock.*
+
+# Local git worktrees
+.worktrees/
