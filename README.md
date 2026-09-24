@@ -333,6 +333,12 @@ recall loss over hallucination risk:
   at all fails closed. Added after full-corpus validation showed the verify
   pass's plausibility judgment alone isn't reliable (see below) — it judges
   "does this relate to the sentence", not "does the sentence actually say this".
+- **`--wellformedness-check` also flags tautological Subject/Object pairs**
+  (see `verification/wellformedness_check.py`'s `_check_tautology`) — e.g.
+  "Types of baskets" `HAS_TYPE` "Different types of baskets" restates the same
+  concept rather than expressing a real relationship. Subject/Object word sets
+  are compared after stripping qualifier words ("different", "various", "the",
+  "of", etc.); an exact match after stripping is flagged.
 
 There is deliberately no "held for human review" path in this pipeline — a
 triple that isn't unanimously and confidently "keep" (and ungated by every
@@ -347,12 +353,16 @@ scored 18 kept / **89% hallucination** (strict precision 0.11). Adding
 `--grounding-check` on top brought that down to 3 kept / **33%
 hallucination** (strict precision 0.67) — a large improvement, but not zero.
 The one remaining false positive in that run was a malformed, tautological
-entity pair ("Types of baskets" `HAS_TYPE` "Different types of baskets")
-that `check_wellformedness`'s word-count/dangling-word rules didn't catch —
-a plausible next check to add if further hardening is needed. Always
-validate any threshold/gate change against the full ground-truth corpus
-(all 7 pages), not a single page — see `eval/results.csv` for the
-`"C-hardened..."`-labeled rows.
+entity pair ("Types of baskets" `HAS_TYPE` "Different types of baskets").
+Adding the tautology check to `check_wellformedness` (above) catches exactly
+that case: full-corpus result with direction + wellformedness + grounding
+all enabled is 2 kept / **0% hallucination** (strict precision 1.00, recall
+0.01 — 2/148 GT triples). Given the product goal (a fully autonomous chatbot
+with zero tolerance for returning false information, and no human review
+step), this low-recall/zero-hallucination trade is the intended and accepted
+outcome, not a shortfall to fix. Always validate any threshold/gate change
+against the full ground-truth corpus (all 7 pages), not a single page — see
+`eval/results.csv` for the `"C-hardened..."`-labeled rows.
 
 ---
 

@@ -34,3 +34,22 @@ def test_overlong_predicate_is_flagged():
 def test_simple_predicate_not_flagged():
     result = check_wellformedness("GaroCommunity", "HAS_PROFESSION", "Farmer")
     assert result.flagged is False
+
+
+def test_tautological_subject_object_pair_is_flagged():
+    # Real full-corpus false positive (2026-09-24): Subject and Object are the
+    # same concept restated with a qualifier word, not a real relationship.
+    result = check_wellformedness("Types of baskets", "HAS_TYPE", "Different types of baskets")
+    assert result.flagged is True
+    assert any("tautological" in reason for reason in result.reasons)
+
+
+def test_related_but_distinct_entities_not_flagged_as_tautological():
+    result = check_wellformedness("GaroMen", "WEARS", "Trousers")
+    assert result.flagged is False
+
+
+def test_subject_equal_to_object_is_flagged_as_tautological():
+    result = check_wellformedness("Basket", "HAS_TYPE", "Basket")
+    assert result.flagged is True
+    assert any("tautological" in reason for reason in result.reasons)
