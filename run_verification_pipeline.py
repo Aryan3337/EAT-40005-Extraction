@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from verification.direction_check import check_direction
+from verification.grounding_check import check_grounding
 from verification.verify_pass import JudgeFn, judge_with_ollama, verify_triple
 from verification.wellformedness_check import check_wellformedness
 
@@ -36,7 +37,8 @@ def write_rows(path: Path, fieldnames: list[str], rows: list[dict]) -> None:
 
 
 def run(csv_path: str, run_verify: bool, run_direction: bool, run_wellformed: bool,
-        judge_fn: JudgeFn = judge_with_ollama, verify_samples: int = 1) -> dict:
+        judge_fn: JudgeFn = judge_with_ollama, verify_samples: int = 1,
+        run_grounding: bool = False) -> dict:
     rows = load_rows(csv_path)
     fieldnames = list(rows[0].keys()) if rows else ["subject", "predicate", "object"]
 
@@ -57,6 +59,7 @@ def run(csv_path: str, run_verify: bool, run_direction: bool, run_wellformed: bo
     reviewed_out: list[dict] = []
     direction_flags: list[dict] = []
     wellformedness_flags: list[dict] = []
+    grounding_flags: list[dict] = []
 
     for row in rows:
         subject, predicate, obj = row["subject"], row["predicate"], row["object"]
@@ -79,10 +82,18 @@ def run(csv_path: str, run_verify: bool, run_direction: bool, run_wellformed: bo
                 flagged_row["flag_reason"] = "; ".join(wellformedness_result.reasons)
                 wellformedness_flags.append(flagged_row)
 
-        # Direction/wellformedness checks are a hard gate on refined, not
-        # just an audit-trail side channel: this pipeline feeds a fully
-        # autonomous chatbot with no human review step, so a flagged row
-        # must never reach refined regardless of the verify band.
+        if run_grounding:
+            grounding_result = check_grounding(subject, obj, _sentence_for_row(row))
+            if grounding_result.flagged:
+                hard_gated = True
+                flagged_row = dict(row)
+                flagged_row["flag_reason"] = "; ".join(grounding_result.reasons)
+                grounding_flags.append(flagged_row)
+
+        # Direction/wellformedness/grounding checks are a hard gate on
+        # refined, not just an audit-trail side channel: this pipeline feeds
+        # a fully autonomous chatbot with no human review step, so a flagged
+        # row must never reach refined regardless of the verify band.
         if run_verify:
             result = verify_triple(
                 subject, predicate, obj, _sentence_for_row(row), judge_fn,
@@ -113,12 +124,15 @@ def run(csv_path: str, run_verify: bool, run_direction: bool, run_wellformed: bo
         write_rows(out_dir / f"{stem}_direction_flags.csv", fieldnames + ["flag_reason"], direction_flags)
     if wellformedness_flags:
         write_rows(out_dir / f"{stem}_wellformedness_flags.csv", fieldnames + ["flag_reason"], wellformedness_flags)
+    if grounding_flags:
+        write_rows(out_dir / f"{stem}_grounding_flags.csv", fieldnames + ["flag_reason"], grounding_flags)
 
     return {
         "refined": len(refined),
         "reviewed_out": len(reviewed_out),
         "direction_flags": len(direction_flags),
         "wellformedness_flags": len(wellformedness_flags),
+        "grounding_flags": len(grounding_flags),
     }
 
 
@@ -131,6 +145,11 @@ def main() -> None:
     parser.add_argument("--direction-check", action="store_true")
     parser.add_argument("--wellformedness-check", action="store_true")
     parser.add_argument(
+        "--grounding-check", action="store_true",
+        help="Flag (and hard-gate) any triple whose Subject/Object isn't textually "
+             "present in its own sentence_ref. Deterministic, no LLM call.",
+    )
+    parser.add_argument(
         "--verify-samples", type=int, default=3,
         help="Resample the verify judge this many times per triple and require unanimous "
              "'keep' (self-consistency). Zero marginal cost on local Ollama; trades recall "
@@ -140,7 +159,7 @@ def main() -> None:
 
     summary = run(
         args.csv_path, args.verify, args.direction_check, args.wellformedness_check,
-        verify_samples=args.verify_samples,
+        verify_samples=args.verify_samples, run_grounding=args.grounding_check,
     )
     print(summary)
 

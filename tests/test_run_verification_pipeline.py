@@ -33,6 +33,7 @@ def test_run_verification_pipeline_writes_expected_outputs(tmp_path):
         "reviewed_out": 1,
         "direction_flags": 1,
         "wellformedness_flags": 1,
+        "grounding_flags": 0,
     }
 
     assert (tmp_path / "sample_refined.csv").exists()
@@ -116,6 +117,35 @@ def test_run_verification_pipeline_verify_samples_defaults_to_one(tmp_path):
     )
 
     assert len(calls) == 1
+
+
+def test_run_verification_pipeline_hard_gates_ungrounded_rows(tmp_path):
+    csv_path = tmp_path / "sample6.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["subject", "predicate", "object", "sentence_ref"])
+        # "BottleGourd" never appears in the sentence -- fabricated specific.
+        writer.writerow(["GaroCommunity", "HAS_INGREDIENT", "BottleGourd", "They enjoy a variety of vegetables."])
+        writer.writerow(["GaroMen", "WEARS", "Lungis", "Garo men wear lungis."])
+
+    summary = run(str(csv_path), run_verify=False, run_direction=False, run_wellformed=False, run_grounding=True)
+
+    assert summary["refined"] == 1
+    assert summary["grounding_flags"] == 1
+    assert (tmp_path / "sample6_grounding_flags.csv").exists()
+
+
+def test_run_verification_pipeline_grounding_check_off_by_default(tmp_path):
+    csv_path = tmp_path / "sample7.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["subject", "predicate", "object", "sentence_ref"])
+        writer.writerow(["GaroCommunity", "HAS_INGREDIENT", "BottleGourd", "They enjoy a variety of vegetables."])
+
+    summary = run(str(csv_path), run_verify=False, run_direction=False, run_wellformed=False)
+
+    assert summary["refined"] == 1
+    assert summary["grounding_flags"] == 0
 
 
 def test_run_verification_pipeline_warns_when_verify_has_no_sentence_data(tmp_path, capsys):
