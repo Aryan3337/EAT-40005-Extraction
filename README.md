@@ -327,11 +327,32 @@ recall loss over hallucination risk:
   falls back to the worst band seen. Zero marginal cost on local Ollama, so
   this is a cheap way to trade recall for a lower hallucination rate. Pass
   `--verify-samples 1` to disable resampling (single call per triple, as before).
+- **`--grounding-check`** (off by default): a deterministic, LLM-free hard gate
+  — every word of a triple's Subject and Object (see `verification/grounding_check.py`)
+  must appear in its own `sentence_ref`, case-insensitively; no `sentence_ref`
+  at all fails closed. Added after full-corpus validation showed the verify
+  pass's plausibility judgment alone isn't reliable (see below) — it judges
+  "does this relate to the sentence", not "does the sentence actually say this".
 
 There is deliberately no "held for human review" path in this pipeline — a
-triple that isn't unanimously and confidently "keep" is dropped, not queued.
-`_reviewed_out.csv` remains only as an audit log of the verify pass's "review"
-band; nothing downstream reads it automatically.
+triple that isn't unanimously and confidently "keep" (and ungated by every
+enabled check) is dropped, not queued. `_reviewed_out.csv` remains only as
+an audit log of the verify pass's "review" band; nothing downstream reads
+it automatically.
+
+**Full-corpus validation (2026-09-24):** running the hardened pipeline on
+page 3 alone scored 0% hallucination (2 kept, both correct) — but that was a
+2-sample artifact. Across all 7 ground-truth pages (148 GT triples), it
+scored 18 kept / **89% hallucination** (strict precision 0.11). Adding
+`--grounding-check` on top brought that down to 3 kept / **33%
+hallucination** (strict precision 0.67) — a large improvement, but not zero.
+The one remaining false positive in that run was a malformed, tautological
+entity pair ("Types of baskets" `HAS_TYPE` "Different types of baskets")
+that `check_wellformedness`'s word-count/dangling-word rules didn't catch —
+a plausible next check to add if further hardening is needed. Always
+validate any threshold/gate change against the full ground-truth corpus
+(all 7 pages), not a single page — see `eval/results.csv` for the
+`"C-hardened..."`-labeled rows.
 
 ---
 
