@@ -21,25 +21,34 @@ WHAT'S DIFFERENT FROM main.py
    run_full_paper_variantA.py already established.
 2. Validation: replaces validate_triple_format() (UNKNOWN-placeholder +
    basic structural checks) and subject_specificity.py's auto-correction
-   with run_verification_pipeline.py's 5 hard gates: direction check,
-   wellformedness check (incl. tautology), grounding check, quote-genuineness
-   check, and the LLM verify pass (n=3 self-consistency). See the results
-   doc's pipeline-architecture diagram for what each gate catches.
-   flag_artifact_triples() (research-methodology keyword filtering) is KEPT
-   -- it's complementary, not redundant: it filters by topic (is this about
-   the community or about the study itself), which none of the 5 gates
-   check. subject_specificity.py's auto-correction is DROPPED for now: it
-   silently rewrites a triple's Subject rather than gating it, a different
-   design principle than the hard-reject gates below, and wasn't in scope
-   for this integration -- flag if you want it folded back in.
+   with run_verification_pipeline.py's 4 deterministic hard gates -- direction
+   check, wellformedness check (incl. tautology), grounding check, and
+   quote-genuineness check -- ON BY DEFAULT. These are free (no LLM call,
+   seconds to run) and, on this project's own measured full-corpus results,
+   already reached 0% real hallucination_rate on their own: the LLM verify
+   pass (n=3 self-consistency, an Ollama call per sample) is now OPT-IN via
+   --verify, since on a slow/loaded machine it can take many hours longer
+   than extraction itself for no measured reduction in hallucination on this
+   corpus -- see the results doc's "Hardening results" section (direction +
+   wellformedness + grounding alone: 0% hallucination_rate, vs. 83% with
+   grounding left out). Pass --verify to add it back for extra scrutiny at
+   that cost. flag_artifact_triples() (research-methodology keyword
+   filtering) is KEPT -- it's complementary, not redundant: it filters by
+   topic (is this about the community or about the study itself), which
+   none of the gates check. subject_specificity.py's auto-correction is
+   DROPPED for now: it silently rewrites a triple's Subject rather than
+   gating it, a different design principle than the hard-reject gates
+   below, and wasn't in scope for this integration -- flag if you want it
+   folded back in.
 3. Neo4j: --dry-run (default) stops after writing the refined CSV and prints
    what WOULD be uploaded, without calling add_triples(). Pass --live to
    actually write to the configured Neo4j instance.
 
 USAGE
 -----
-    python main_hardened.py papers/garo_1.pdf                  # dry run
+    python main_hardened.py papers/garo_1.pdf                  # dry run, deterministic gates only (fast)
     python main_hardened.py papers/garo_1.pdf --live            # real upload
+    python main_hardened.py papers/garo_1.pdf --verify           # also run the slow LLM verify pass
     python main_hardened.py papers/garo_1.pdf deepseek-r1:7b --live
 """
 
@@ -104,9 +113,18 @@ def main() -> None:
              "Without this flag, stops after writing the refined CSV (dry run, default).",
     )
     parser.add_argument(
+        "--verify", action="store_true",
+        help="Also run the LLM verify pass (Ollama, n=3 self-consistency by default). "
+             "Off by default: the 4 deterministic gates alone already reached 0%% "
+             "measured hallucination_rate on this project's full corpus, and the verify "
+             "pass is by far the slowest, most expensive step (an Ollama call per sample, "
+             "per surviving triple) for no measured safety gain on that corpus.",
+    )
+    parser.add_argument(
         "--verify-samples", type=int, default=3,
-        help="Self-consistency resamples for the LLM verify pass (default 3, matching "
-             "the hardened configuration validated in this project's results doc).",
+        help="Self-consistency resamples for the LLM verify pass, only used with --verify "
+             "(default 3, matching the hardened configuration validated in this project's "
+             "results doc).",
     )
     args = parser.parse_args()
 
@@ -154,11 +172,14 @@ def main() -> None:
     save_triples_to_intermediate_csv(triples, intermediate_csv)
     print(f"Saved intermediate (pre-gate) CSV to {intermediate_csv}")
 
-    print("\nRunning the 5 hard gates (direction, wellformedness, grounding, quote-genuineness, verify)...")
+    gate_names = "direction, wellformedness, grounding, quote-genuineness"
+    if args.verify:
+        gate_names += ", LLM verify (slow)"
+    print(f"\nRunning the hard gates ({gate_names})...")
     page_texts = load_page_texts(str(pdf_path))
     summary = run_verification_gates(
         str(intermediate_csv),
-        run_verify=True, run_direction=True, run_wellformed=True,
+        run_verify=args.verify, run_direction=True, run_wellformed=True,
         run_grounding=True, run_quote_check=True, page_texts=page_texts,
         verify_samples=args.verify_samples,
     )
