@@ -301,9 +301,28 @@ design). None of this touches Neo4j.
    python -m eval.run_eval output/<csv_from_C>_refined.csv --pages 3 --label "C: broad-v2 + verify"
    ```
 3. Compare the rows in `eval/results.csv` (git-tracked) for precision/recall/F1
-   (strict + lenient), hallucination rate, and triples/page. Check
+   (strict + lenient), `gt_miss_rate`, and triples/page. Check
    `output/<...>_reviewed_out.csv`, `_direction_flags.csv`, and
    `_wellformedness_flags.csv` for anything worth a manual look.
+
+   **`gt_miss_rate` is not a hallucination rate.** It's `1 - precision_strict`:
+   the fraction of extracted triples with no *exact* string match to a row in
+   the ground-truth workbook. A triple can miss here for being genuinely wrong,
+   or for being real but phrased differently, using a coarser/finer subject
+   than the human annotator chose, or covering something the ground-truth
+   sheet simply didn't enumerate -- all observed in practice (e.g. the
+   strict-tacit prompt's `GaroCommunity -WEARS-> Saree` vs. the ground truth's
+   `GaroWomen -WEARS-> sarees`: same fact, coarser subject, still counted as a
+   miss). For an actual grounding-based hallucination measure -- does each
+   triple's own cited sentence_ref genuinely appear on its page, and does the
+   triple's Subject/Object actually appear in that citation -- use
+   `eval/hallucination.py`'s `compute_hallucination_rate()`, or pass `--pdf` to
+   `eval/run_eval.py` to log it (as `hallucination_rate` + `citation_coverage`)
+   alongside the ground-truth comparison. Always read `hallucination_rate`
+   next to `citation_coverage`: a low coverage means the extraction path isn't
+   populating `sentence_ref` at all (the live prompt's `test_extraction.py`
+   path does this -- 0/35 on garo_1 page 3), so the rate has no evidence
+   behind it, not that everything is fabricated.
 4. `run_verification_pipeline.py --verify` requires Ollama reachable at
    `OLLAMA_VERIFY_URL` (defaults to `http://localhost:11434/api/generate`; inside the
    `app` container use `http://ollama:11434/api/generate`, same convention as
@@ -325,7 +344,7 @@ recall loss over hallucination risk:
 - **`--verify-samples N` (default 3)** resamples the judge model N times per
   triple and requires unanimous "keep" across all N runs; any disagreement
   falls back to the worst band seen. Zero marginal cost on local Ollama, so
-  this is a cheap way to trade recall for a lower hallucination rate. Pass
+  this is a cheap way to trade recall for a lower `gt_miss_rate`. Pass
   `--verify-samples 1` to disable resampling (single call per triple, as before).
 - **`--grounding-check`** (off by default): a deterministic, LLM-free hard gate
   — every word of a triple's Subject and Object (see `verification/grounding_check.py`)
@@ -333,6 +352,18 @@ recall loss over hallucination risk:
   at all fails closed. Added after full-corpus validation showed the verify
   pass's plausibility judgment alone isn't reliable (see below) — it judges
   "does this relate to the sentence", not "does the sentence actually say this".
+- **`--quote-check`** (off by default, requires `--pdf`): a deterministic,
+  LLM-free hard gate — the triple's `sentence_ref` must be a genuine, verbatim
+  quote from its own page of `--pdf` (see `verification/quote_check.py`),
+  tolerant of a `...`-truncated quote (each segment either side of the
+  ellipsis must independently be genuine). Catches a failure mode
+  `--grounding-check` structurally can't: a triple whose Subject/Object words
+  are all present in *some* sentence, but where that sentence itself was
+  invented or blended from two different real sentences (a fabricated or
+  imprecise citation wrapped around an otherwise-plausible claim). Found
+  during a manual audit of the strict-tacit-only prompt's output — a triple
+  can look "grounded" against its own citation while the citation itself
+  isn't real.
 - **`--wellformedness-check` also flags tautological Subject/Object pairs**
   (see `verification/wellformedness_check.py`'s `_check_tautology`) — e.g.
   "Types of baskets" `HAS_TYPE` "Different types of baskets" restates the same
@@ -347,22 +378,38 @@ an audit log of the verify pass's "review" band; nothing downstream reads
 it automatically.
 
 **Full-corpus validation (2026-09-24):** running the hardened pipeline on
-page 3 alone scored 0% hallucination (2 kept, both correct) — but that was a
+page 3 alone scored a 0% `gt_miss_rate` (2 kept, both correct) — but that was a
 2-sample artifact. Across all 7 ground-truth pages (148 GT triples), it
-scored 18 kept / **89% hallucination** (strict precision 0.11). Adding
+scored 18 kept / **89% `gt_miss_rate`** (strict precision 0.11). Adding
 `--grounding-check` on top brought that down to 3 kept / **33%
-hallucination** (strict precision 0.67) — a large improvement, but not zero.
+`gt_miss_rate`** (strict precision 0.67) — a large improvement, but not zero.
 The one remaining false positive in that run was a malformed, tautological
 entity pair ("Types of baskets" `HAS_TYPE` "Different types of baskets").
 Adding the tautology check to `check_wellformedness` (above) catches exactly
 that case: full-corpus result with direction + wellformedness + grounding
-all enabled is 2 kept / **0% hallucination** (strict precision 1.00, recall
+all enabled is 2 kept / **0% `gt_miss_rate`** (strict precision 1.00, recall
 0.01 — 2/148 GT triples). Given the product goal (a fully autonomous chatbot
 with zero tolerance for returning false information, and no human review
-step), this low-recall/zero-hallucination trade is the intended and accepted
+step), this low-recall/zero-`gt_miss_rate` trade is the intended and accepted
 outcome, not a shortfall to fix. Always validate any threshold/gate change
 against the full ground-truth corpus (all 7 pages), not a single page — see
 `eval/results.csv` for the `"C-hardened..."`-labeled rows.
+
+**These are `gt_miss_rate` numbers, not hallucination rates** (see the caveat
+above) — re-scoring the same files with `eval/hallucination.py`'s real,
+grounding-based check (independent of the ground-truth workbook, so it also
+works on papers with no ground truth at all) tells a related but distinct
+story: raw candidates were 91% flagged, the direction+wellformedness-only
+stage (18 kept) was still 83% flagged, but the moment `--grounding-check`
+enters the gate the flagged rate drops straight to **0%** (3 kept, and stays
+0% at 2 kept after adding the tautology check) — the *same* deterministic
+grounding gate that was tuned against `gt_miss_rate` independently zeroes out
+the real, text-grounded hallucination rate too. Re-running this whole
+pipeline on a second, unrelated paper (`garo_2.pdf`, 22 pages, no ground
+truth) replicates it: 268 raw candidates, 91.8% flagged; 18 gate-survivors,
+22.2% flagged; 2 final kept (after the LLM verify pass), one flagged for a
+trivial one-word paraphrase in its own quote ("This study..." extracted as
+"The study..."), not a fabrication.
 
 ---
 

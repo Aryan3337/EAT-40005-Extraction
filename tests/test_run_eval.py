@@ -52,3 +52,27 @@ def test_append_result_appends_without_duplicate_header(tmp_path):
     assert len(rows) == 3  # header + 2 data rows
     assert rows[1][1] == "First"
     assert rows[2][1] == "Second"
+
+
+def test_append_result_leaves_hallucination_rate_blank_when_not_computed(tmp_path):
+    results_path = tmp_path / "results.csv"
+    report = score([("GaroCommunity", "WEARS", "Lungis")], [("GaroCommunity", "WEARS", "Lungis")], num_pages=1)
+
+    append_result(report, "No PDF given", "some.csv", "3", str(results_path))
+
+    with open(results_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+    assert rows[0][-2:] == ["hallucination_rate", "citation_coverage"]
+    assert rows[1][-2:] == ["", ""]
+
+
+def test_append_result_records_real_hallucination_rate_when_given(tmp_path):
+    results_path = tmp_path / "results.csv"
+    report = score([("GaroCommunity", "WEARS", "Lungis")], [("GaroCommunity", "WEARS", "Lungis")], num_pages=1)
+
+    append_result(report, "With PDF", "some.csv", "3", str(results_path),
+                  hallucination_rate=0.25, citation_coverage=0.9)
+
+    with open(results_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+    assert rows[1][-2:] == ["0.25", "0.9"]

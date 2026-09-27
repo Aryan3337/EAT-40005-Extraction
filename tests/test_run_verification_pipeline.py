@@ -34,6 +34,7 @@ def test_run_verification_pipeline_writes_expected_outputs(tmp_path):
         "direction_flags": 1,
         "wellformedness_flags": 1,
         "grounding_flags": 0,
+        "quote_flags": 0,
     }
 
     assert (tmp_path / "sample_refined.csv").exists()
@@ -146,6 +147,53 @@ def test_run_verification_pipeline_grounding_check_off_by_default(tmp_path):
 
     assert summary["refined"] == 1
     assert summary["grounding_flags"] == 0
+
+
+def test_run_verification_pipeline_hard_gates_fabricated_quotes(tmp_path):
+    csv_path = tmp_path / "sample8.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["page_number", "subject", "predicate", "object", "sentence_ref"])
+        writer.writerow(["3", "GaroMen", "WEARS", "Lungis", "<Garo men wear lungis.>"])
+        # This quote is entirely invented -- not present on page 3 at all.
+        writer.writerow(["3", "Fishman", "USED_IN", "Research", "<The passage mentions Fishman's approach.>"])
+
+    page_texts = {3: "Garo men wear lungis."}
+    summary = run(
+        str(csv_path), run_verify=False, run_direction=False, run_wellformed=False,
+        run_quote_check=True, page_texts=page_texts,
+    )
+
+    assert summary["refined"] == 1
+    assert summary["quote_flags"] == 1
+    assert (tmp_path / "sample8_quote_flags.csv").exists()
+
+
+def test_run_verification_pipeline_quote_check_off_by_default(tmp_path):
+    csv_path = tmp_path / "sample9.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["page_number", "subject", "predicate", "object", "sentence_ref"])
+        writer.writerow(["3", "Fishman", "USED_IN", "Research", "<a fabricated quote>"])
+
+    summary = run(str(csv_path), run_verify=False, run_direction=False, run_wellformed=False)
+
+    assert summary["refined"] == 1
+    assert summary["quote_flags"] == 0
+
+
+def test_run_verification_pipeline_quote_check_requires_page_texts(tmp_path):
+    csv_path = tmp_path / "sample10.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["page_number", "subject", "predicate", "object", "sentence_ref"])
+        writer.writerow(["3", "GaroMen", "WEARS", "Lungis", "<Garo men wear lungis.>"])
+
+    try:
+        run(str(csv_path), run_verify=False, run_direction=False, run_wellformed=False, run_quote_check=True)
+        assert False, "expected a ValueError"
+    except ValueError as e:
+        assert "page_texts" in str(e)
 
 
 def test_run_verification_pipeline_warns_when_verify_has_no_sentence_data(tmp_path, capsys):

@@ -13,8 +13,10 @@ import csv
 import sys
 from pathlib import Path
 
+from eval.hallucination import load_page_texts
 from verification.direction_check import check_direction
 from verification.grounding_check import check_grounding
+from verification.quote_check import check_quote_genuine
 from verification.verify_pass import JudgeFn, judge_with_ollama, verify_triple
 from verification.wellformedness_check import check_wellformedness
 
@@ -38,7 +40,15 @@ def write_rows(path: Path, fieldnames: list[str], rows: list[dict]) -> None:
 
 def run(csv_path: str, run_verify: bool, run_direction: bool, run_wellformed: bool,
         judge_fn: JudgeFn = judge_with_ollama, verify_samples: int = 1,
-        run_grounding: bool = False) -> dict:
+        run_grounding: bool = False, run_quote_check: bool = False,
+        page_texts: dict[int, str] | None = None) -> dict:
+    if run_quote_check and page_texts is None:
+        raise ValueError(
+            "--quote-check requires page_texts (pass --pdf on the CLI, or "
+            "page_texts= when calling run() directly) -- it checks each "
+            "row's sentence_ref against its own page of the source PDF."
+        )
+
     rows = load_rows(csv_path)
     fieldnames = list(rows[0].keys()) if rows else ["subject", "predicate", "object"]
 
@@ -60,6 +70,7 @@ def run(csv_path: str, run_verify: bool, run_direction: bool, run_wellformed: bo
     direction_flags: list[dict] = []
     wellformedness_flags: list[dict] = []
     grounding_flags: list[dict] = []
+    quote_flags: list[dict] = []
 
     for row in rows:
         subject, predicate, obj = row["subject"], row["predicate"], row["object"]
@@ -89,6 +100,15 @@ def run(csv_path: str, run_verify: bool, run_direction: bool, run_wellformed: bo
                 flagged_row = dict(row)
                 flagged_row["flag_reason"] = "; ".join(grounding_result.reasons)
                 grounding_flags.append(flagged_row)
+
+        if run_quote_check:
+            page_text = page_texts.get(int(row["page_number"]), "") if page_texts else ""
+            quote_result = check_quote_genuine(_sentence_for_row(row), page_text)
+            if quote_result.flagged:
+                hard_gated = True
+                flagged_row = dict(row)
+                flagged_row["flag_reason"] = "; ".join(quote_result.reasons)
+                quote_flags.append(flagged_row)
 
         # Direction/wellformedness/grounding checks are a hard gate on
         # refined, not just an audit-trail side channel: this pipeline feeds
@@ -126,6 +146,8 @@ def run(csv_path: str, run_verify: bool, run_direction: bool, run_wellformed: bo
         write_rows(out_dir / f"{stem}_wellformedness_flags.csv", fieldnames + ["flag_reason"], wellformedness_flags)
     if grounding_flags:
         write_rows(out_dir / f"{stem}_grounding_flags.csv", fieldnames + ["flag_reason"], grounding_flags)
+    if quote_flags:
+        write_rows(out_dir / f"{stem}_quote_flags.csv", fieldnames + ["flag_reason"], quote_flags)
 
     return {
         "refined": len(refined),
@@ -133,6 +155,7 @@ def run(csv_path: str, run_verify: bool, run_direction: bool, run_wellformed: bo
         "direction_flags": len(direction_flags),
         "wellformedness_flags": len(wellformedness_flags),
         "grounding_flags": len(grounding_flags),
+        "quote_flags": len(quote_flags),
     }
 
 
@@ -150,6 +173,18 @@ def main() -> None:
              "present in its own sentence_ref. Deterministic, no LLM call.",
     )
     parser.add_argument(
+        "--quote-check", action="store_true",
+        help="Flag (and hard-gate) any triple whose sentence_ref isn't a genuine, "
+             "verbatim quote from its own page of --pdf (catches a fabricated or "
+             "blended citation wrapped around an otherwise-plausible claim). "
+             "Deterministic, no LLM call. Requires --pdf.",
+    )
+    parser.add_argument(
+        "--pdf",
+        help="Path to the source PDF. Required by --quote-check, which checks each "
+             "row's sentence_ref against its own page_number's text in this file.",
+    )
+    parser.add_argument(
         "--verify-samples", type=int, default=3,
         help="Resample the verify judge this many times per triple and require unanimous "
              "'keep' (self-consistency). Zero marginal cost on local Ollama; trades recall "
@@ -157,9 +192,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.quote_check and not args.pdf:
+        parser.error("--quote-check requires --pdf")
+
+    page_texts = load_page_texts(args.pdf) if args.pdf else None
+
     summary = run(
         args.csv_path, args.verify, args.direction_check, args.wellformedness_check,
         verify_samples=args.verify_samples, run_grounding=args.grounding_check,
+        run_quote_check=args.quote_check, page_texts=page_texts,
     )
     print(summary)
 

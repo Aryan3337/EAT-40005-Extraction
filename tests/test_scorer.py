@@ -62,11 +62,15 @@ def test_score_perfect_match():
     assert report.precision_strict == 1.0
     assert report.recall_strict == 1.0
     assert report.f1_strict == 1.0
-    assert report.hallucination_rate == 0.0
+    assert report.gt_miss_rate == 0.0
     assert report.triples_per_page == 1.0
 
 
-def test_score_one_hallucination():
+def test_score_one_gt_miss():
+    # "Respondents KNOWN_ORIGIN Tibet" has no exact match in this tiny
+    # ground truth -- gt_miss_rate counts that as a miss. It says nothing
+    # about whether the triple is actually grounded/true; see
+    # eval/hallucination.py for that separate question.
     ground_truth = [("GaroCommunity", "WEARS", "Lungis")]
     extracted = [
         ("GaroCommunity", "WEARS", "Lungis"),
@@ -76,7 +80,7 @@ def test_score_one_hallucination():
     assert report.tp_strict == 1
     assert report.fp_strict == 1
     assert report.fn_strict == 0
-    assert report.hallucination_rate == 0.5
+    assert report.gt_miss_rate == 0.5
     assert report.triples_per_page == 2.0
 
 
@@ -89,13 +93,13 @@ def test_score_lenient_catches_what_strict_misses():
     assert report.recall_lenient == 1.0
 
 
-def test_score_no_extraction_gives_zero_precision_and_no_hallucination():
+def test_score_no_extraction_gives_zero_precision_and_no_gt_miss():
     ground_truth = [("GaroCommunity", "WEARS", "Lungis")]
     report = score([], ground_truth, num_pages=1)
     assert report.tp_strict == 0
     assert report.fn_strict == 1
     assert report.precision_strict == 0.0
-    assert report.hallucination_rate == 0.0
+    assert report.gt_miss_rate == 0.0
 
 
 def test_score_greedy_matching_is_one_to_one():

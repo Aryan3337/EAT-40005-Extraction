@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from eval.ground_truth import DEFAULT_GT_PATH, load_final_triples, triples_for_pages
+from eval.hallucination import compute_hallucination_rate, load_page_texts, load_rows
 from eval.scorer import ScoreReport, Triple, score
 
 DEFAULT_RESULTS_PATH = str(Path(__file__).resolve().parent / "results.csv")
@@ -29,7 +30,15 @@ RESULTS_FIELDS = [
     "tp_lenient", "fp_lenient", "fn_lenient",
     "precision_strict", "recall_strict", "f1_strict",
     "precision_lenient", "recall_lenient", "f1_lenient",
-    "hallucination_rate", "triples_per_page",
+    "gt_miss_rate", "triples_per_page",
+    # Real, grounding-based hallucination rate (eval/hallucination.py) --
+    # only populated when --pdf is given; blank otherwise. Not the same
+    # thing as gt_miss_rate above -- see that field's docstring in scorer.py.
+    # citation_coverage is the fraction of rows that had a sentence_ref to
+    # check at all -- a low value means hallucination_rate rests on thin
+    # evidence (an extraction path that doesn't populate citations), not a
+    # confident measurement, and must be read alongside it, never alone.
+    "hallucination_rate", "citation_coverage",
 ]
 
 
@@ -45,7 +54,9 @@ def load_extracted(csv_path: str) -> list[Triple]:
 
 
 def append_result(report: ScoreReport, label: str, csv_path: str, pages: str,
-                   results_path: str = DEFAULT_RESULTS_PATH) -> None:
+                   results_path: str = DEFAULT_RESULTS_PATH,
+                   hallucination_rate: float | None = None,
+                   citation_coverage: float | None = None) -> None:
     results_file = Path(results_path)
     write_header = not results_file.exists()
     with open(results_file, "a", newline="", encoding="utf-8") as f:
@@ -59,7 +70,9 @@ def append_result(report: ScoreReport, label: str, csv_path: str, pages: str,
             report.tp_lenient, report.fp_lenient, report.fn_lenient,
             report.precision_strict, report.recall_strict, report.f1_strict,
             report.precision_lenient, report.recall_lenient, report.f1_lenient,
-            report.hallucination_rate, report.triples_per_page,
+            report.gt_miss_rate, report.triples_per_page,
+            "" if hallucination_rate is None else hallucination_rate,
+            "" if citation_coverage is None else citation_coverage,
         ])
 
 
@@ -75,6 +88,13 @@ def main() -> None:
     parser.add_argument("--label", required=True, help="Name for this run, e.g. 'Variant A (broad-v2)'")
     parser.add_argument("--gt-path", default=DEFAULT_GT_PATH)
     parser.add_argument("--results-path", default=DEFAULT_RESULTS_PATH)
+    parser.add_argument(
+        "--pdf",
+        help="Path to the source PDF. When given, also computes the real, "
+        "grounding-based hallucination_rate (eval/hallucination.py) by checking "
+        "each row's own citation against its page of this PDF -- independent of "
+        "gt_miss_rate, which only compares against --gt-path's ground truth.",
+    )
     args = parser.parse_args()
 
     pages = [p.strip() for p in args.pages.split(",") if p.strip()]
@@ -83,12 +103,28 @@ def main() -> None:
     gt_triples: list[Triple] = [(t.subject, t.predicate, t.object) for t in ground_truth]
 
     report = score(extracted, gt_triples, num_pages=len(pages))
-    append_result(report, args.label, args.csv_path, args.pages, args.results_path)
 
+    hallucination_rate = None
+    citation_coverage = None
+    if args.pdf:
+        page_texts = load_page_texts(args.pdf)
+        rows = load_rows(args.csv_path)
+        hreport = compute_hallucination_rate(rows, page_texts)
+        hallucination_rate = hreport.hallucination_rate
+        citation_coverage = hreport.citation_coverage
+
+    append_result(report, args.label, args.csv_path, args.pages, args.results_path,
+                  hallucination_rate=hallucination_rate, citation_coverage=citation_coverage)
+
+    if hallucination_rate is None:
+        hallucination_str = "n/a (pass --pdf)"
+    else:
+        hallucination_str = f"{hallucination_rate:.2f} (citation_coverage={citation_coverage:.2f})"
     print(
         f"{args.label}: TP-strict={report.tp_strict} TP-lenient={report.tp_lenient} "
         f"P/R/F1(strict)={report.precision_strict:.2f}/{report.recall_strict:.2f}/{report.f1_strict:.2f} "
-        f"hallucination_rate={report.hallucination_rate:.2f} triples_per_page={report.triples_per_page:.1f}"
+        f"gt_miss_rate={report.gt_miss_rate:.2f} hallucination_rate={hallucination_str} "
+        f"triples_per_page={report.triples_per_page:.1f}"
     )
     print(f"Appended to {args.results_path}")
 

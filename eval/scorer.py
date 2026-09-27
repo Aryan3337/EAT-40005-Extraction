@@ -83,21 +83,34 @@ class ScoreReport:
     precision_lenient: float
     recall_lenient: float
     f1_lenient: float
-    hallucination_rate: float
+    gt_miss_rate: float
     triples_per_page: float
 
 
 def score(extracted: list[Triple], ground_truth: list[Triple], num_pages: int) -> ScoreReport:
+    """`gt_miss_rate` (= 1 - precision_strict) is the fraction of extracted
+    triples with no *exact* string match to a row in `ground_truth`. It is a
+    comparison against one human's page-level ground-truth sheet, not a
+    fabrication/hallucination measure: a triple can miss here because it's
+    genuinely wrong, or because it's real but phrased differently, uses a
+    coarser/finer subject than the human chose, or covers something the
+    human's sheet simply didn't enumerate (a real, observed failure mode --
+    see docs/superpowers/plans/..., the eval/hallucination.py module, and
+    the "Prompt A/B/C comparison" section of the results doc for concrete
+    examples). For an actual grounding-based hallucination measure, use
+    eval/hallucination.py's compute_hallucination_rate() instead, which
+    checks each triple against its own cited source text rather than against
+    this ground-truth sheet."""
     tp_strict, fp_strict, fn_strict = _greedy_match(extracted, ground_truth, match_strict)
     tp_lenient, fp_lenient, fn_lenient = _greedy_match(extracted, ground_truth, match_lenient)
     precision_strict, recall_strict, f1_strict = _precision_recall_f1(tp_strict, fp_strict, fn_strict)
     precision_lenient, recall_lenient, f1_lenient = _precision_recall_f1(tp_lenient, fp_lenient, fn_lenient)
-    hallucination_rate = fp_strict / len(extracted) if extracted else 0.0
+    gt_miss_rate = fp_strict / len(extracted) if extracted else 0.0
     triples_per_page = len(extracted) / num_pages if num_pages else 0.0
     return ScoreReport(
         tp_strict=tp_strict, fp_strict=fp_strict, fn_strict=fn_strict,
         tp_lenient=tp_lenient, fp_lenient=fp_lenient, fn_lenient=fn_lenient,
         precision_strict=precision_strict, recall_strict=recall_strict, f1_strict=f1_strict,
         precision_lenient=precision_lenient, recall_lenient=recall_lenient, f1_lenient=f1_lenient,
-        hallucination_rate=hallucination_rate, triples_per_page=triples_per_page,
+        gt_miss_rate=gt_miss_rate, triples_per_page=triples_per_page,
     )
