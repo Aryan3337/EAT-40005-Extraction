@@ -1,10 +1,19 @@
 import 'package:flutter/material.dart';
 
+import '../../app/app_localizations.dart';
+
 class LoginPage extends StatefulWidget {
-  const LoginPage({super.key, required this.onSignIn});
+  const LoginPage({
+    super.key,
+    required this.onSignIn,
+    this.strings = const AppLocalizations('en'),
+    this.onLanguageChanged,
+  });
 
   final Future<void> Function(String email, String password, bool rememberMe)
   onSignIn;
+  final AppLocalizations strings;
+  final ValueChanged<String>? onLanguageChanged;
 
   @override
   State<LoginPage> createState() => _LoginPageState();
@@ -34,6 +43,11 @@ class _LoginPageState extends State<LoginPage> {
         _passwordController.text,
         _rememberMe,
       );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(widget.strings.text('invalidCredentials'))),
+      );
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }
@@ -54,22 +68,32 @@ class _LoginPageState extends State<LoginPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Container(
-                      width: 58,
-                      height: 58,
-                      decoration: BoxDecoration(
-                        color: theme.colorScheme.primary,
-                        borderRadius: BorderRadius.circular(18),
-                      ),
-                      child: const Icon(
-                        Icons.account_tree_outlined,
-                        color: Colors.white,
-                        size: 30,
-                      ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Container(
+                          width: 58,
+                          height: 58,
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.primary,
+                            borderRadius: BorderRadius.circular(18),
+                          ),
+                          child: const Icon(
+                            Icons.account_tree_outlined,
+                            color: Colors.white,
+                            size: 30,
+                          ),
+                        ),
+                        if (widget.onLanguageChanged != null)
+                          LanguagePicker(
+                            strings: widget.strings,
+                            onChanged: widget.onLanguageChanged!,
+                          ),
+                      ],
                     ),
                     const SizedBox(height: 30),
                     Text(
-                      'Welcome back',
+                      widget.strings.text('welcomeBack'),
                       style: theme.textTheme.headlineMedium?.copyWith(
                         fontWeight: FontWeight.w700,
                         color: const Color(0xFF17212B),
@@ -77,7 +101,7 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Sign in to continue exploring the knowledge graph.',
+                      widget.strings.text('loginDescription'),
                       style: theme.textTheme.bodyLarge?.copyWith(
                         color: const Color(0xFF637078),
                       ),
@@ -88,15 +112,15 @@ class _LoginPageState extends State<LoginPage> {
                       keyboardType: TextInputType.emailAddress,
                       textInputAction: TextInputAction.next,
                       autofillHints: const [AutofillHints.username],
-                      decoration: const InputDecoration(
-                        labelText: 'Email address',
-                        hintText: 'you@example.com',
-                        prefixIcon: Icon(Icons.mail_outline),
+                      decoration: InputDecoration(
+                        labelText: widget.strings.text('usernameEmail'),
+                        hintText: 'admin',
+                        prefixIcon: Icon(Icons.person_outline),
                       ),
                       validator: (value) {
                         final email = value?.trim() ?? '';
-                        if (email.isEmpty || !email.contains('@')) {
-                          return 'Enter a valid email address';
+                        if (email.isEmpty) {
+                          return widget.strings.text('enterUsername');
                         }
                         return null;
                       },
@@ -109,12 +133,12 @@ class _LoginPageState extends State<LoginPage> {
                       autofillHints: const [AutofillHints.password],
                       onFieldSubmitted: (_) => _submit(),
                       decoration: InputDecoration(
-                        labelText: 'Password',
+                        labelText: widget.strings.text('password'),
                         prefixIcon: const Icon(Icons.lock_outline),
                         suffixIcon: IconButton(
                           tooltip: _obscurePassword
-                              ? 'Show password'
-                              : 'Hide password',
+                              ? widget.strings.text('showPassword')
+                              : widget.strings.text('hidePassword'),
                           onPressed: () => setState(
                             () => _obscurePassword = !_obscurePassword,
                           ),
@@ -126,8 +150,8 @@ class _LoginPageState extends State<LoginPage> {
                         ),
                       ),
                       validator: (value) {
-                        if ((value ?? '').length < 6) {
-                          return 'Password must be at least 6 characters';
+                        if ((value ?? '').isEmpty) {
+                          return widget.strings.text('enterPassword');
                         }
                         return null;
                       },
@@ -138,7 +162,7 @@ class _LoginPageState extends State<LoginPage> {
                       value: _rememberMe,
                       onChanged: (value) =>
                           setState(() => _rememberMe = value ?? false),
-                      title: const Text('Keep me signed in'),
+                      title: Text(widget.strings.text('keepSignedIn')),
                       controlAffinity: ListTileControlAffinity.leading,
                     ),
                     const SizedBox(height: 18),
@@ -158,13 +182,13 @@ class _LoginPageState extends State<LoginPage> {
                                   color: Colors.white,
                                 ),
                               )
-                            : const Text('Sign in'),
+                            : Text(widget.strings.text('signIn')),
                       ),
                     ),
                     const SizedBox(height: 22),
                     Center(
                       child: Text(
-                        'Use your workspace credentials to continue.',
+                        widget.strings.text('loginFooter'),
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: const Color(0xFF637078),
                         ),
