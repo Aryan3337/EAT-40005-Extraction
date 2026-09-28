@@ -1,5 +1,7 @@
 enum MessageAuthor { user, assistant }
 
+enum MessageFeedback { helpful, notHelpful }
+
 // Stores one knowledge-graph record used to verify an assistant response.
 class SourceEvidence {
   const SourceEvidence({
@@ -49,22 +51,38 @@ class SourceEvidence {
   String get supportingText => sentenceRef.isNotEmpty ? sentenceRef : passage;
 }
 
-// Stores one rendered turn in the conversation.
+// Stores one rendered turn together with its sources and optional feedback.
 class ChatMessage {
   const ChatMessage({
     required this.text,
     required this.author,
     this.sources = const [],
+    this.feedback,
+    this.feedbackComment = '',
   });
 
   final String text;
   final MessageAuthor author;
   final List<SourceEvidence> sources;
+  final MessageFeedback? feedback;
+  final String feedbackComment;
+
+  ChatMessage copyWith({MessageFeedback? feedback, String? feedbackComment}) {
+    return ChatMessage(
+      text: text,
+      author: author,
+      sources: sources,
+      feedback: feedback ?? this.feedback,
+      feedbackComment: feedbackComment ?? this.feedbackComment,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
     'text': text,
     'author': author.name,
     'sources': sources.map((source) => source.toJson()).toList(),
+    'feedback': feedback?.name,
+    'feedback_comment': feedbackComment,
   };
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) {
@@ -83,10 +101,21 @@ class ChatMessage {
       }
     }
 
+    MessageFeedback? feedback;
+    final rawFeedback = json['feedback'];
+
+    if (rawFeedback == MessageFeedback.helpful.name) {
+      feedback = MessageFeedback.helpful;
+    } else if (rawFeedback == MessageFeedback.notHelpful.name) {
+      feedback = MessageFeedback.notHelpful;
+    }
+
     return ChatMessage(
       text: json['text'] as String? ?? '',
       author: author,
       sources: sources,
+      feedback: feedback,
+      feedbackComment: json['feedback_comment'] as String? ?? '',
     );
   }
 }

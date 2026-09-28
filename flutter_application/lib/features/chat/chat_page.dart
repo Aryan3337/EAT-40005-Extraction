@@ -103,6 +103,24 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   // Moves the conversation to the latest message.
+  // Records feedback for an assistant response and persists it in chat history.
+  Future<void> _updateMessageFeedback(
+    int messageIndex,
+    MessageFeedback feedback,
+    String comment,
+  ) async {
+    if (messageIndex < 0 || messageIndex >= _messages.length) return;
+
+    setState(() {
+      _messages[messageIndex] = _messages[messageIndex].copyWith(
+        feedback: feedback,
+        feedbackComment: comment.trim(),
+      );
+    });
+
+    await _saveCurrentConversation();
+  }
+
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
@@ -178,6 +196,7 @@ class _ChatPageState extends State<ChatPage> {
                     messages: _messages,
                     controller: _scrollController,
                     isLoading: _isLoading,
+                    onFeedback: _updateMessageFeedback,
                   ),
                 ),
                 _Composer(controller: _inputController, onSend: _sendMessage),
@@ -329,11 +348,18 @@ class _ConversationView extends StatelessWidget {
     required this.messages,
     required this.controller,
     required this.isLoading,
+    required this.onFeedback,
   });
 
   final List<ChatMessage> messages;
   final ScrollController controller;
   final bool isLoading;
+  final Future<void> Function(
+    int messageIndex,
+    MessageFeedback feedback,
+    String comment,
+  )
+  onFeedback;
 
   // Builds the empty state, messages, and loading indicator.
   @override
@@ -351,7 +377,11 @@ class _ConversationView extends StatelessWidget {
             child: _TypingIndicator(),
           );
         }
-        return _MessageBubble(message: messages[index]);
+        return _MessageBubble(
+          message: messages[index],
+          messageIndex: index,
+          onFeedback: onFeedback,
+        );
       },
     );
   }
@@ -382,9 +412,20 @@ class _EmptyState extends StatelessWidget {
 }
 
 class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message});
+  const _MessageBubble({
+    required this.message,
+    required this.messageIndex,
+    required this.onFeedback,
+  });
 
   final ChatMessage message;
+  final int messageIndex;
+  final Future<void> Function(
+    int messageIndex,
+    MessageFeedback feedback,
+    String comment,
+  )
+  onFeedback;
 
   // Builds a user or assistant message with verifiable source evidence.
   @override
@@ -446,10 +487,128 @@ class _MessageBubble extends StatelessWidget {
                 ),
               ),
             ],
+            if (!isUser) ...[
+              const SizedBox(height: 12),
+              const Divider(color: Color(0xFFE0E7E3)),
+              const Text(
+                'Was this response helpful?',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF52616A),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  IconButton(
+                    onPressed: () => onFeedback(
+                      messageIndex,
+                      MessageFeedback.helpful,
+                      message.feedbackComment,
+                    ),
+                    tooltip: 'Helpful',
+                    color: const Color(0xFF2E7D5B),
+                    icon: Icon(
+                      message.feedback == MessageFeedback.helpful
+                          ? Icons.thumb_up
+                          : Icons.thumb_up_outlined,
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => onFeedback(
+                      messageIndex,
+                      MessageFeedback.notHelpful,
+                      message.feedbackComment,
+                    ),
+                    tooltip: 'Not helpful',
+                    color: const Color(0xFFC05A47),
+                    icon: Icon(
+                      message.feedback == MessageFeedback.notHelpful
+                          ? Icons.thumb_down
+                          : Icons.thumb_down_outlined,
+                    ),
+                  ),
+                  TextButton.icon(
+                    onPressed: () => _showCommentDialog(context),
+                    icon: const Icon(Icons.comment_outlined, size: 18),
+                    label: Text(
+                      message.feedbackComment.isEmpty
+                          ? 'Add comment'
+                          : 'Edit comment',
+                    ),
+                  ),
+                ],
+              ),
+              if (message.feedback != null)
+                const Text(
+                  'Thank you for your feedback.',
+                  style: TextStyle(fontSize: 12, color: Color(0xFF2E7D5B)),
+                ),
+              if (message.feedbackComment.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(
+                  'Comment: ${message.feedbackComment}',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontStyle: FontStyle.italic,
+                    color: Color(0xFF52616A),
+                  ),
+                ),
+              ],
+            ],
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _showCommentDialog(BuildContext context) async {
+    if (message.feedback == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select helpful or not helpful first.'),
+        ),
+      );
+      return;
+    }
+
+    final controller = TextEditingController(text: message.feedbackComment);
+
+    final comment = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Response feedback'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            maxLines: 4,
+            maxLength: 300,
+            decoration: const InputDecoration(
+              hintText: 'Tell us how this response could be improved.',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(controller.text),
+              child: const Text('Save feedback'),
+            ),
+          ],
+        );
+      },
+    );
+
+    controller.dispose();
+
+    if (comment != null) {
+      await onFeedback(messageIndex, message.feedback!, comment);
+    }
   }
 
   Widget _buildSourceCard(SourceEvidence source, int number) {

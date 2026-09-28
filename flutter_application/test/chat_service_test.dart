@@ -83,5 +83,21 @@ void main() {
       expect(restored.sources.single.triple, original.sources.single.triple);
       expect(restored.sources.single.supportingText, 'Supporting sentence.');
     });
+    test('preserves response feedback in chat-history JSON', () {
+      const original = ChatMessage(
+        text: 'A response with user feedback',
+        author: MessageAuthor.assistant,
+        feedback: MessageFeedback.notHelpful,
+        feedbackComment: 'The answer needs more cultural context.',
+      );
+
+      final restored = ChatMessage.fromJson(original.toJson());
+
+      expect(restored.feedback, MessageFeedback.notHelpful);
+      expect(
+        restored.feedbackComment,
+        'The answer needs more cultural context.',
+      );
+    });
   });
 }
