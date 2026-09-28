@@ -541,13 +541,45 @@ class Neo4jRAGSkeleton:
 
         self.driver = GraphDatabase.driver(uri, auth=(username, password))
 
+    # Words that carry no topic meaning and would match almost every fact.
+    STOPWORDS = {
+        "the", "and", "for", "are", "was", "were", "what", "who", "whom", "whose",
+        "which", "when", "where", "why", "how", "does", "did", "do", "can", "could",
+        "would", "should", "will", "about", "tell", "me", "please", "give", "some",
+        "any", "all", "their", "they", "them", "there", "this", "that", "these",
+        "those", "with", "from", "into", "have", "has", "had", "you", "your", "our",
+        "its", "his", "her", "is", "an", "a", "of", "in", "on", "to", "or", "be",
+        "been", "being", "more", "most", "much", "many", "information", "know",
+        "explain", "describe", "people", "peoples", "person", "community",
+        "communities", "tribe", "tribal", "group", "info",
+    }
+
+    # Names the community is known by; a question using one should find facts
+    # stored under any of the others.
+    COMMUNITY_NAMES = {"mandi", "mande", "garo", "garos", "achik", "a'chik", "achik-mande"}
+
     # Finds graph relationships whose entities or source text match the question.
+    # Topic words decide what is relevant; community names alone only act as a
+    # fallback so general questions ("Who are the Mandi people?") still get facts.
     def query(self, question: str, top_k: int = 10) -> List[Dict]:
-        keywords = [word.lower() for word in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", question)]
-        if not keywords:
-            return []
-        
         question_lower = question.lower()
+        words = [w.lower() for w in re.findall(r"[A-Za-z][A-Za-z0-9_'-]{1,}", question)]
+
+        mentions_community = any(w in self.COMMUNITY_NAMES for w in words)
+        keywords: List[str] = []
+        for word in words:
+            if word in self.COMMUNITY_NAMES or word in self.STOPWORDS or len(word) < 3:
+                continue
+            # Light stemming so "festivals" matches "festival", "farming" matches "farm".
+            for suffix in ("ies", "ing", "es", "s"):
+                if word.endswith(suffix) and len(word) - len(suffix) >= 4:
+                    word = word[: -len(suffix)] + ("y" if suffix == "ies" else "")
+                    break
+            if word not in keywords:
+                keywords.append(word)
+
+        community_terms = ["garo", "mandi", "mande", "achik"]
+
         relationship_terms = []
         if re.search(r"\b(where|live|lives|located|location|reside|resides|home)\b", question_lower):
             relationship_terms.extend(["live", "locat", "resid", "home", "place"])
@@ -555,30 +587,51 @@ class Neo4jRAGSkeleton:
             relationship_terms.extend(["speak", "language", "dialect"])
         if re.search(r"\b(population|many|number)\b", question_lower):
             relationship_terms.extend(["population", "number", "count"])
+        if re.search(r"\b(religion|believe|belief|god|deity|deities|worship)\b", question_lower):
+            relationship_terms.extend(["believ", "worship", "religi", "deit"])
+        if re.search(r"\b(inherit|inheritance|descent|lineage|matrilineal|clan)\b", question_lower):
+            relationship_terms.extend(["inherit", "descent", "lineage", "clan"])
         if re.search(r"\b(what is|who is|what are|who are)\b", question_lower):
-            relationship_terms.extend(["is_a", "type", "identity", "about"])
+            relationship_terms.extend(["is_a", "type", "identity", "about", "known", "call"])
+
+        if not keywords and not mentions_community:
+            return []
+
+        # With no topic words ("Who are the Mandi?") fall back to community facts.
+        search_terms = keywords if keywords else community_terms
 
         cypher = """
         MATCH (s:Entity)-[r]->(o:Entity)
-        WHERE any(keyword IN $keywords WHERE
-            toLower(coalesce(s.name, '')) CONTAINS keyword OR
-            toLower(coalesce(o.name, '')) CONTAINS keyword OR
-            toLower(coalesce(r.passage, '')) CONTAINS keyword OR
-            toLower(coalesce(r.sentence_ref, '')) CONTAINS keyword)
         WITH s, r, o,
-             reduce(score = 0, term IN $relationship_terms |
+             toLower(coalesce(s.name, '')) AS sname,
+             toLower(coalesce(o.name, '')) AS oname,
+             toLower(coalesce(r.passage, '') + ' ' + coalesce(r.sentence_ref, '')) AS text,
+             toLower(type(r)) AS rtype
+        WITH s, r, o, sname, oname, text, rtype,
+             size([k IN $search_terms WHERE sname CONTAINS k OR oname CONTAINS k]) AS entity_hits,
+             size([k IN $search_terms WHERE rtype CONTAINS k]) AS predicate_hits,
+             size([k IN $search_terms WHERE text CONTAINS k]) AS text_hits
+        WHERE entity_hits + predicate_hits + text_hits > 0
+        WITH s, r, o, entity_hits, predicate_hits, text_hits,
+             entity_hits * 6 + predicate_hits * 5 + text_hits * 2
+             + reduce(score = 0, term IN $relationship_terms |
                  score + CASE
-                     WHEN toLower(type(r)) CONTAINS term THEN 10
-                     WHEN toLower(coalesce(r.passage, '')) CONTAINS term THEN 5
+                     WHEN rtype CONTAINS term THEN 10
+                     WHEN text CONTAINS term THEN 3
                      ELSE 0
-                 END) AS relevance
+                 END)
+             + CASE WHEN $mentions_community AND any(c IN $community_terms
+                    WHERE sname CONTAINS c OR oname CONTAINS c OR text CONTAINS c)
+                    THEN 4 ELSE 0 END
+             + CASE WHEN r.paper_id IS NOT NULL THEN -2 ELSE 0 END AS relevance
         RETURN s.name AS subject,
                type(r) AS predicate,
                o.name AS object,
                coalesce(r.sentence_ref, '') AS sentence_ref,
                coalesce(r.source_section, '') AS source_section,
                coalesce(r.passage, '') AS passage,
-               coalesce(r.confidence, '') AS confidence
+               coalesce(r.confidence, '') AS confidence,
+               relevance
         ORDER BY relevance DESC
         LIMIT $top_k
         """
@@ -586,11 +639,24 @@ class Neo4jRAGSkeleton:
         with self.driver.session() as session:
             result = session.run(
                 cypher,
-                keywords=keywords,
+                search_terms=search_terms,
                 relationship_terms=relationship_terms,
+                community_terms=community_terms,
+                mentions_community=mentions_community,
                 top_k=top_k,
             )
-            return [dict(record) for record in result]
+            triples = [dict(record) for record in result]
+
+        # Drop duplicate facts (same subject/predicate/object from several passages).
+        seen = set()
+        unique = []
+        for triple in triples:
+            key = (triple.get("subject"), triple.get("predicate"), triple.get("object"))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(triple)
+        return unique
 
     # Formats Neo4j triples for the Flutter assistant response.
     def format_output(self, triples: List[Dict]) -> str:
@@ -661,6 +727,8 @@ class AnswerSynthesizer:
 
         return f"""You are a careful knowledge-graph research assistant.
 Answer the user's question using only the evidence below.
+The Mandi people are the same community as the Garo people (they call themselves
+A·chik Mande), so treat "Mandi", "Mande", "A·chik" and "Garo" as the same people.
 Do not invent facts, names, dates, or explanations that are not supported.
     If the question asks what an entity is, begin with a direct definition and then add
     one or two supported details such as location, language, or community identity.
@@ -835,6 +903,11 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 })
             except (TypeError, ValueError, json.JSONDecodeError) as error:
                 self._send_json(400, {"error": f"Invalid request: {error}"})
+            except Exception as error:  # e.g. Neo4j connection or Cypher errors
+                # Report the real problem instead of dropping the connection,
+                # which the app would otherwise show as "Cannot reach RAG.py".
+                print(f"RAG API error: {type(error).__name__}: {error}")
+                self._send_json(500, {"error": f"{type(error).__name__}: {error}"})
 
         # Writes a JSON response with CORS enabled for local Flutter clients.
         def _send_json(self, status: int, payload: Dict[str, Any]) -> None:

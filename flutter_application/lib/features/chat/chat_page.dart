@@ -531,6 +531,53 @@ class _MessageBubble extends StatelessWidget {
               ],
             ],
           ),
+          if (message.facts.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Theme(
+              data: theme.copyWith(dividerColor: Colors.transparent),
+              child: ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: const EdgeInsets.only(bottom: 4),
+                dense: true,
+                leading: Icon(
+                  Icons.hub_rounded,
+                  size: 18,
+                  color: theme.colorScheme.primary,
+                ),
+                title: Text(
+                  'Facts from the knowledge graph (${message.facts.length})',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: theme.colorScheme.primary,
+                  ),
+                ),
+                children: message.facts
+                    .map(
+                      (fact) => Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 3),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('\u2022  '),
+                            Expanded(
+                              child: Text(
+                                fact,
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  height: 1.35,
+                                  color: Color(0xFF4A5A64),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ),
+          ],
           if (message.sources.isNotEmpty) ...[
             const SizedBox(height: 14),
             Wrap(
