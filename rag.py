@@ -31,6 +31,8 @@ from collections import defaultdict
 from dotenv import load_dotenv
 import requests
 
+from llm_endpoint import resolve_llm_endpoint
+
 try:
     from neo4j import GraphDatabase  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - optional dependency for Neo4j mode
@@ -143,7 +145,12 @@ class CypherRetriever:
         # Reads from the environment so this works correctly inside Docker, where
         # docker-compose.yml overrides OLLAMA_URL to point at the ollama service
         # rather than localhost. Falls back to localhost for native (non-Docker) runs.
-        self.ollama_url = ollama_url or os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+        # resolve_llm_endpoint refuses a host outside our own network: this
+        # project committed that paper content goes to a local model only.
+        # Checked here so `rag.py --serve` fails at startup, not mid-query.
+        self.ollama_url = resolve_llm_endpoint(
+            ollama_url or os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+        )
         self.model = os.getenv("OLLAMA_MODEL", "deepseek-r1:7b")
 
     def _generate_cypher(self, question: str) -> str:
@@ -616,8 +623,12 @@ class Neo4jRAGSkeleton:
     # Converts retrieved graph evidence into a concise, grounded answer.
 class AnswerSynthesizer:
     def __init__(self, ollama_url: Optional[str] = None, model: Optional[str] = None):
-        self.ollama_url = ollama_url or os.getenv(
-            "OLLAMA_URL", "http://localhost:11434/api/generate"
+        # Answer synthesis sends sentence_ref -- verbatim paper text -- to
+        # the model on every query, so this is the call site that most
+        # needs the guard. Checked at construction: the hosted deployment
+        # runs with no LLM at all and answers from _fallback_answer.
+        self.ollama_url = resolve_llm_endpoint(
+            ollama_url or os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
         )
         self.model = model or os.getenv("OLLAMA_MODEL", "deepseek-r1:7b")
 

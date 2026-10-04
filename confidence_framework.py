@@ -39,6 +39,7 @@ Exit codes:
 import sys
 import csv
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -47,13 +48,23 @@ from enum import Enum
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import requests
+
+from llm_endpoint import resolve_llm_endpoint
 import pdfplumber
 
 # ============================================================
 # Configuration
 # ============================================================
 
-OLLAMA_URL      = "http://localhost:11434/api/chat"
+# Env-driven so this can reach the ollama service inside Docker, where
+# "localhost" is the app container itself -- it was hardcoded, so it could
+# only ever work on the host. Its own variable rather than OLLAMA_URL
+# because this endpoint is /api/chat, not /api/generate.
+# resolve_llm_endpoint refuses a host outside our own network: papers and
+# human-generated data go to a local model only.
+OLLAMA_URL      = resolve_llm_endpoint(
+    os.getenv("CONFIDENCE_OLLAMA_URL", "http://localhost:11434/api/chat")
+)
 OLLAMA_MODEL    = "mistral:7b"
 
 REJECT_THRESHOLD = 60   # score <  60        → REJECTED

@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import List, Tuple, Dict, Any
 from dotenv import load_dotenv
 import requests
+
+from llm_endpoint import resolve_llm_endpoint
 import pdfplumber
 
 load_dotenv()
@@ -165,10 +167,13 @@ def parse_ollama_blocks(raw_response: str, page_num: int) -> List[Dict[str, str]
 
 def extract_triples_from_chunk(chunk_text: str, page_num: int, model: str, retries: int = 2) -> List[Dict[str, str]]:
     prompt = make_extraction_prompt(chunk_text)
+    # Each chunk is ~1500 words of the paper. Refuse before any of it
+    # leaves the process if the endpoint is not on our own network.
+    endpoint = resolve_llm_endpoint(OLLAMA_URL)
     for attempt in range(retries):
         try:
             response = requests.post(
-                OLLAMA_URL,
+                endpoint,
                 json={
                     "model": model,
                     "prompt": prompt,
