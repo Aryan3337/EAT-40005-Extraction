@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import 'app_localizations.dart';
 import '../features/chat/chat_page.dart';
 import '../features/auth/login_page.dart';
 import '../services/auth_service.dart';
@@ -16,11 +18,34 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
   final _authService = AuthService();
   AuthSession? _session;
   bool _isRestoringSession = true;
+  String _languageCode = 'en';
 
   @override
   void initState() {
     super.initState();
     _restoreSession();
+    _restoreLanguage();
+  }
+
+  Future<void> _restoreLanguage() async {
+    final preferences = await SharedPreferences.getInstance();
+    final languageCode = preferences.getString('app.language') ?? 'en';
+    if (!mounted) return;
+    setState(() {
+      _languageCode =
+          AppLocalizations.supportedLanguageCodes.contains(languageCode)
+          ? languageCode
+          : 'en';
+    });
+  }
+
+  Future<void> _setLanguage(String languageCode) async {
+    if (!AppLocalizations.supportedLanguageCodes.contains(languageCode)) {
+      return;
+    }
+    setState(() => _languageCode = languageCode);
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString('app.language', languageCode);
   }
 
   Future<void> _restoreSession() async {
@@ -53,6 +78,7 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
   Widget build(BuildContext context) {
     const ink = Color(0xFF17212B);
     const mint = Color(0xFF2CB67D);
+    final strings = AppLocalizations(_languageCode);
 
     return MaterialApp(
       title: 'Mandi/Garo ChatBot',
@@ -79,11 +105,17 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
       home: _isRestoringSession
           ? const _SessionLoader()
           : _session == null
-          ? LoginPage(onSignIn: _signIn)
+          ? LoginPage(
+              onSignIn: _signIn,
+              strings: strings,
+              onLanguageChanged: _setLanguage,
+            )
           : ChatPage(
               service: ChatService(),
               onSignOut: _signOut,
               userEmail: _session!.email,
+              strings: strings,
+              onLanguageChanged: _setLanguage,
             ),
     );
   }
