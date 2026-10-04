@@ -17,12 +17,23 @@ LLM Triple Extraction (Ollama + DeepSeek R1 7B)
         ↓
 Deduplication
         ↓
-Validation Gate (structure check + research-artifact flagging)
+Validation Gate (structure check + research-artifact exclusion)
+        ↓
+Subject-Specificity Correction (dependency parse, automatic)
+        ↓
+Verification Gates  ← hard gate, drops anything not provably cited
+  1. well-formedness
+  2. grounding (+ citation-length bound)
+  3. quote-genuineness (verbatim against the source PDF page)
         ↓
 Neo4j Upload
         ↓
 Knowledge Graph
 ```
+
+Everything from the validation gate down runs locally and costs nothing: no
+LLM call is made after extraction. The verification gates are a hard gate, not
+an advisory flag — see [The verification gates in `main.py`](#the-verification-gates-in-mainpy).
 
 ---
 
@@ -88,7 +99,38 @@ This downloads ~4.7GB and can take several minutes depending on your connection.
 docker compose exec ollama ollama list
 ```
 
-### The verification gates in `main.py`
+### Step 6: Add a paper and run extraction
+
+Drop a PDF into the `papers/` folder in the project root (this folder is gitignored — PDFs stay local, they don't get committed). Then run:
+
+```bash
+docker compose exec app python main.py papers/your_paper.pdf
+```
+
+**What you'll see happen:**
+1. Text extraction and chunking progress
+2. Per-chunk extraction output (`Chunk 1/50...`, `parsed N triples`)
+3. Deduplication summary
+4. **`Running validation gate...`** — every triple is checked for structural correctness; invalid ones are individually rejected (not the whole batch), and you'll see a count like `Validation: 12 passed, 3 rejected.`
+5. Any **`[FILTERED]`** lines naming triples that matched research-methodology artifacts (interview/participant language) rather than real cultural content — these are **excluded**, not merely warned about
+6. A local CSV backup of the full pre-gate set saved to `output/<paper_name>_kg.csv`
+7. **`Running verification gates...`** — the three deterministic gates (see below). Expect a steep drop here: on the measured `garo_1` corpus roughly 300 extracted triples come out as 13
+8. `output/<paper_name>_kg_refined.csv` (what will be uploaded) and one `output/<paper_name>_kg_<gate>_flags.csv` per gate that rejected anything, each row carrying the reason it was rejected
+7. Upload confirmation: `Uploaded N triples to Neo4j.`
+
+**If you see `Validation: 0 passed` or very few triples survive:** this is a known issue, not something you broke. See **Known Issues** below.
+
+### Step 7: Stopping the containers
+
+```bash
+docker compose down
+```
+
+Your downloaded model and `.env` config are preserved — starting again won't require re-downloading anything.
+
+---
+
+## The verification gates in `main.py`
 
 Since 2026-10-04 `main.py` runs three deterministic, LLM-free gates between
 extraction and the Neo4j upload, via `verification/gate.py`:
@@ -126,35 +168,6 @@ python main.py papers/your_paper.pdf --no-gates     # pre-2026-10-04 behaviour
 > yield will differ. The gates themselves behave identically either way; only
 > what they are fed changes. Use `test_extraction_prompt_config.py` to compare
 > prompts without touching the production path.
-
-### Step 6: Add a paper and run extraction
-
-Drop a PDF into the `papers/` folder in the project root (this folder is gitignored — PDFs stay local, they don't get committed). Then run:
-
-```bash
-docker compose exec app python main.py papers/your_paper.pdf
-```
-
-**What you'll see happen:**
-1. Text extraction and chunking progress
-2. Per-chunk extraction output (`Chunk 1/50...`, `parsed N triples`)
-3. Deduplication summary
-4. **`Running validation gate...`** — every triple is checked for structural correctness; invalid ones are individually rejected (not the whole batch), and you'll see a count like `Validation: 12 passed, 3 rejected.`
-5. Any **`[FILTERED]`** lines naming triples that matched research-methodology artifacts (interview/participant language) rather than real cultural content — these are **excluded**, not merely warned about
-6. A local CSV backup of the full pre-gate set saved to `output/<paper_name>_kg.csv`
-7. **`Running verification gates...`** — the three deterministic gates (see below). Expect a steep drop here: on the measured `garo_1` corpus roughly 300 extracted triples come out as 13
-8. `output/<paper_name>_kg_refined.csv` (what will be uploaded) and one `output/<paper_name>_kg_<gate>_flags.csv` per gate that rejected anything, each row carrying the reason it was rejected
-7. Upload confirmation: `Uploaded N triples to Neo4j.`
-
-**If you see `Validation: 0 passed` or very few triples survive:** this is a known issue, not something you broke. See **Known Issues** below.
-
-### Step 7: Stopping the containers
-
-```bash
-docker compose down
-```
-
-Your downloaded model and `.env` config are preserved — starting again won't require re-downloading anything.
 
 ---
 
@@ -534,7 +547,16 @@ pip install -r requirements.txt
 ### 5. Run
 
 ```bash
-python main.py papers/your_paper.pdf
+python main.py papers/your_paper.pdf              # gated, then uploads
+python main.py papers/your_paper.pdf --dry-run    # gated, uploads nothing
+python main.py papers/your_paper.pdf --no-gates   # pre-2026-10-04 behaviour
+```
+
+Running outside Docker also needs the spaCy model the subject-specificity step
+depends on, which the Dockerfile installs for you:
+
+```bash
+python -m spacy download en_core_web_sm
 ```
 
 ---
