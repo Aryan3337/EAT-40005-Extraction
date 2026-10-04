@@ -315,16 +315,55 @@ Auto-extraction needs a worker process, a job queue, progress reporting the
 admin can watch, and an inference budget. That is a subsystem, not a
 feature.
 
-## 19. Hosted answers are templated, not generated
+## 19. Hosted answers read poorly, and worse than first assumed
 
-The hosted deployment runs with no LLM. `rag.py`'s `_fallback_answer`
-produces answers from per-predicate templates with CamelCase humanisation —
-real sentences ("Garo people live in Meghalaya."), instantly, with no
-third-party exposure.
+The hosted deployment runs with no LLM. `rag.py`'s `_fallback_answer` builds
+an answer from per-predicate templates.
 
-On a question spanning several facts it concatenates up to six sentences,
-which reads mechanically compared with generated prose.
+**Measured 2026-10-04: none of them fire.** `_format_triple` defines eight
+templates — `IS_A`, `TYPE`, `LOCATED_IN`, `LIVE_IN`, `SPEAK_LANGUAGE`,
+`BELONG_TO`, `HAS_LANGUAGE`, `HAS_A_POPULATION`. The graph contains **32
+predicates and not one of them is on that list**, so every answer falls
+through to `_humanize_predicate`, which only lowercases and strips
+underscores.
 
-Running locally with Ollama reachable gives the fluent version through the
-same code path, selected by `OLLAMA_URL`. Private hosted inference is a
+A real response, taken from the running API over the 45-triple corpus with
+no LLM reachable:
+
+> Based on the available knowledge, Population Census 2022 population
+> 1,650,159. Garo People bilingual Bengali. Garo People bilingual Garo
+> Language. Traditional Garo Houses have property Bamboo floor.
+
+That is not prose. It is the triples with their underscores removed.
+
+This is the same defect as the retrieval scoring had — a hardcoded list
+written against an imagined graph rather than the real one — and it is
+limitation #5 (uncontrolled predicate vocabulary) surfacing in the answer
+layer. A controlled vocabulary would fix both at once.
+
+**It also leads with a known-bad fact.** The first triple returned is
+`(Population_Census_2022)-[POPULATION]->(1,650,159)`, which is the
+all-ethnic-communities figure, not the Garo one. The correct figure (76,846)
+was extracted and then rejected by the grounding gate, because its tighter
+citation did not restate the subject's words.
+
+Running locally with Ollama reachable gives genuinely fluent answers through
+the same code path, selected by `OLLAMA_URL`. Private hosted inference is a
 funded decision, not a configuration change.
+
+## 20. The CSV fallback path ranks differently from the graph path
+
+`rag.py` has two retrievers and they do not agree.
+
+`Neo4jRAGSkeleton` uses `question_keywords` and `score_triple`, weighting a
+match by where it lands, with `DEFAULT_TOP_K = 25`.
+
+`ConceptRetriever` — the CSV-backed path used by `--kg`, which is the
+rehearsed fallback for when AuraDB is unavailable — has its own independent
+ranking, still defaults to `top_k = 10`, and by its own docstring scores on
+"length of the `sentence_ref` (longer = more context)".
+
+**That rewards verbose citations**, which is precisely the pathology
+`MAX_SENTENCE_REF_CHARS` was added to `grounding_check` to stop on the
+extraction side. The fallback you would switch to under pressure on demo
+morning is the one with the worse ranking.
