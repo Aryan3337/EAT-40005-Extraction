@@ -42,6 +42,69 @@ load_dotenv()
 
 
 # ============================================================================
+# Retrieval scoring
+# ============================================================================
+
+# Measured on the 16 gated garo_1 triples: the keyword "garo" matches 13 of
+# them. A top_k of 10 therefore discarded real evidence on the most obvious
+# question anyone would ask, silently.
+DEFAULT_TOP_K = 25
+
+# The old keyword regex kept every word of 3+ characters, so "what", "are",
+# "the" and "and" became search terms -- and those appear in nearly every
+# sentence_ref, which is much of why retrieval matched so broadly.
+_STOPWORDS = {
+    "the", "and", "are", "was", "were", "what", "who", "whom", "whose", "which",
+    "how", "why", "when", "where", "does", "did", "for", "with", "about", "from",
+    "into", "that", "this", "these", "those", "their", "them", "they", "there",
+    "have", "has", "had", "can", "could", "would", "should", "will", "shall",
+    "you", "your", "our", "its", "his", "her", "him", "she", "any", "all",
+    "but", "not", "than", "then", "also", "some", "more", "most", "many",
+    "tell", "give", "show", "say", "said", "know", "please", "thing", "things",
+}
+
+
+def question_keywords(question: str) -> List[str]:
+    """Content words from the question, lowercased, duplicates collapsed.
+
+    Order is preserved so the scoring is deterministic and reproducible for
+    a given question.
+    """
+    words = re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", question or "")
+    keywords = []
+    for word in words:
+        lowered = word.lower()
+        if lowered in _STOPWORDS or lowered in keywords:
+            continue
+        keywords.append(lowered)
+    return keywords
+
+
+# Where a keyword matches decides how much it counts. A triple ABOUT the
+# thing asked about should beat one that merely mentions it in passing in its
+# source sentence. The previous scoring looked for a fixed list of terms in
+# the predicate NAME -- speak/language/dialect, population, live/locat --
+# against a graph whose predicates are LANGUAGE_USED, EXTENT_OF_USE,
+# HAS_LANGUAGE_Maintenance and so on. Only POPULATION ever matched, so 10 of
+# 11 predicate types scored 0 and ORDER BY relevance was a tie across almost
+# everything, leaving Neo4j's scan order to pick the answer.
+_FIELD_WEIGHTS = (("subject", 3), ("object", 3), ("predicate", 2), ("sentence_ref", 1))
+
+
+def score_triple(triple: Dict[str, Any], keywords: List[str]) -> int:
+    """How well one triple answers a question, given its content words."""
+    score = 0
+    for field, weight in _FIELD_WEIGHTS:
+        haystack = str(triple.get(field) or "").lower()
+        if not haystack:
+            continue
+        for keyword in keywords:
+            if keyword in haystack:
+                score += weight
+    return score
+
+
+# ============================================================================
 # 1. Knowledge Graph Loader and Index
 # ============================================================================
 
@@ -532,6 +595,12 @@ class RAGSkeleton:
 
 # Queries Entity nodes and their relationships directly from Neo4j.
 class Neo4jRAGSkeleton:
+    # Upper bound on rows pulled back for ranking. Well above the current
+    # graph (45 triples) and above the ~350 expected after 20 more papers,
+    # so it never truncates in practice -- it exists so an unexpectedly
+    # large graph degrades instead of pulling everything into memory.
+    FETCH_LIMIT = 500
+
     # Opens a Neo4j driver using the project's environment configuration.
     def __init__(self):
         from config import PASSWORD, URI, USERNAME
@@ -549,55 +618,62 @@ class Neo4jRAGSkeleton:
         self.driver = GraphDatabase.driver(uri, auth=(username, password))
 
     # Finds graph relationships whose entities or source text match the question.
-    def query(self, question: str, top_k: int = 10) -> List[Dict]:
-        keywords = [word.lower() for word in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", question)]
+    def query(self, question: str, top_k: int = DEFAULT_TOP_K) -> List[Dict]:
+        """Fetch every triple the question's words touch, then rank in Python.
+
+        Ranking moved out of Cypher deliberately. The old query scored with
+        `reduce` over a hardcoded relationship_terms list -- speak/language/
+        dialect, population, live/locat/resid, is_a/type -- matched against
+        the predicate NAME. The graph's predicates are LANGUAGE_USED,
+        EXTENT_OF_USE, HAS_LANGUAGE_Maintenance, HAS_TRADITIONAL_RELIGION and
+        so on; only POPULATION ever matched one, so 10 of 11 predicate types
+        scored 0, ORDER BY relevance was a tie across nearly everything, and
+        Neo4j's scan order chose the answer.
+
+        Scoring here instead makes the ranking unit-testable without a live
+        database, and lets a match on the subject or object outrank one that
+        merely mentions the word in a source sentence.
+
+        This is a full relationship scan with no index -- free at the current
+        45 triples and fine into the low thousands, but it is the documented
+        ceiling on this read path. FETCH_LIMIT bounds the worst case.
+        """
+        keywords = question_keywords(question)
         if not keywords:
             return []
-        
-        question_lower = question.lower()
-        relationship_terms = []
-        if re.search(r"\b(where|live|lives|located|location|reside|resides|home)\b", question_lower):
-            relationship_terms.extend(["live", "locat", "resid", "home", "place"])
-        if re.search(r"\b(language|speak|speaks|dialect)\b", question_lower):
-            relationship_terms.extend(["speak", "language", "dialect"])
-        if re.search(r"\b(population|many|number)\b", question_lower):
-            relationship_terms.extend(["population", "number", "count"])
-        if re.search(r"\b(what is|who is|what are|who are)\b", question_lower):
-            relationship_terms.extend(["is_a", "type", "identity", "about"])
 
         cypher = """
         MATCH (s:Entity)-[r]->(o:Entity)
         WHERE any(keyword IN $keywords WHERE
             toLower(coalesce(s.name, '')) CONTAINS keyword OR
             toLower(coalesce(o.name, '')) CONTAINS keyword OR
-            toLower(coalesce(r.passage, '')) CONTAINS keyword OR
-            toLower(coalesce(r.sentence_ref, '')) CONTAINS keyword)
-        WITH s, r, o, keywords,
-             reduce(score = 0, term IN $relationship_terms |
-                 score + CASE
-                     WHEN toLower(type(r)) CONTAINS term THEN 10
-                     WHEN toLower(coalesce(r.passage, '')) CONTAINS term THEN 5
-                     ELSE 0
-                 END) AS relevance
+            toLower(type(r)) CONTAINS keyword OR
+            toLower(coalesce(r.sentence_ref, '')) CONTAINS keyword OR
+            toLower(coalesce(r.passage, '')) CONTAINS keyword)
         RETURN s.name AS subject,
                type(r) AS predicate,
                o.name AS object,
                coalesce(r.sentence_ref, '') AS sentence_ref,
                coalesce(r.source_section, '') AS source_section,
                coalesce(r.passage, '') AS passage,
-               coalesce(r.confidence, '') AS confidence
-        ORDER BY relevance DESC
-        LIMIT $top_k
+               coalesce(r.confidence, '') AS confidence,
+               coalesce(r.run_id, '') AS run_id,
+               coalesce(r.ingested_at, '') AS ingested_at
+        LIMIT $fetch_limit
         """
 
         with self.driver.session() as session:
             result = session.run(
                 cypher,
                 keywords=keywords,
-                relationship_terms=relationship_terms,
-                top_k=top_k,
+                fetch_limit=self.FETCH_LIMIT,
             )
-            return [dict(record) for record in result]
+            candidates = [dict(record) for record in result]
+
+        # Stable sort on the negated score keeps Cypher's order as the
+        # tie-break, so equal-scoring results do not shuffle between calls.
+        candidates.sort(key=lambda triple: -score_triple(triple, keywords))
+        return candidates[:top_k]
 
     # Formats Neo4j triples for the Flutter assistant response.
     def format_output(self, triples: List[Dict]) -> str:
@@ -877,8 +953,8 @@ def main() -> None:
                         help="API port (default: 8000)")
     parser.add_argument("--approach", choices=["concept", "cypher"], default="concept",
                         help="Retrieval approach (default: concept)")
-    parser.add_argument("--top-k", type=int, default=10,
-                        help="Number of triples to return (default: 10)")
+    parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K,
+                        help=f"Number of triples to return (default: {DEFAULT_TOP_K})")
     args = parser.parse_args()
 
     # Verify that the KG file exists.
