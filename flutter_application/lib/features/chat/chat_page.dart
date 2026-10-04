@@ -5,6 +5,8 @@ import '../../models/chat_conversation.dart';
 import '../../models/chat_message.dart';
 import '../../services/chat_history_service.dart';
 import '../../services/chat_service.dart';
+import '../../services/speech_service.dart';
+import '../../services/tts_service.dart';
 
 // Hosts the conversation layout and coordinates user input with RAG.py.
 class ChatPage extends StatefulWidget {
@@ -38,13 +40,35 @@ class _ChatPageState extends State<ChatPage> {
   List<ChatConversation> _history = [];
   String? _conversationId;
   bool _isHistoryLoading = true;
+  final _tts = TtsService();
+  final _speech = SpeechService();
   bool _isLoading = false;
+  bool _autoSpeak = false;
+  int? _speakingIndex;
+  bool _speechAvailable = false;
+  bool _isListening = false;
 
+  // Loads saved chats and wires up TTS/voice-input callbacks.
   @override
   void initState() {
     super.initState();
     _historyService = widget.historyService ?? ChatHistoryService();
     _loadHistory();
+    _tts.onDone(() {
+      if (!mounted) return;
+      setState(() => _speakingIndex = null);
+    });
+    _speech
+        .init(
+          onListeningChanged: (listening) {
+            if (!mounted) return;
+            setState(() => _isListening = listening);
+          },
+        )
+        .then((available) {
+          if (!mounted) return;
+          setState(() => _speechAvailable = available);
+        });
   }
 
   Future<void> _loadHistory() async {
@@ -56,11 +80,13 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
-  // Releases controllers owned by the chat screen.
+  // Releases controllers and the speech engines owned by the screen.
   @override
   void dispose() {
     _inputController.dispose();
     _scrollController.dispose();
+    _tts.dispose();
+    _speech.dispose();
     super.dispose();
   }
 
@@ -84,6 +110,16 @@ class _ChatPageState extends State<ChatPage> {
     });
     await _saveCurrentConversation();
     _scrollToBottom();
+
+    if (_autoSpeak) {
+      _speak(_messages.length - 1, answer.text);
+    }
+  }
+
+  // Fills the composer with a suggested question and sends it right away.
+  void _useSuggestedPrompt(String prompt) {
+    _inputController.text = prompt;
+    _sendMessage();
   }
 
   Future<void> _saveCurrentConversation() async {
@@ -138,8 +174,57 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
+  // Speaks the message at [index] aloud, replacing any speech in progress.
+  Future<void> _speak(int index, String text) async {
+    setState(() => _speakingIndex = index);
+    await _tts.speak(text);
+  }
+
+  // Stops whatever the assistant is currently reading aloud.
+  Future<void> _stopSpeaking() async {
+    await _tts.stop();
+    if (!mounted) return;
+    setState(() => _speakingIndex = null);
+  }
+
+  // Reads message [index] aloud, or stops it if it's already speaking.
+  void _toggleSpeak(int index, String text) {
+    if (_speakingIndex == index) {
+      _stopSpeaking();
+    } else {
+      _speak(index, text);
+    }
+  }
+
+  // Toggles whether new assistant answers are read aloud automatically.
+  void _toggleAutoSpeak() {
+    setState(() => _autoSpeak = !_autoSpeak);
+    if (!_autoSpeak) {
+      _stopSpeaking();
+    }
+  }
+
+  // Starts or stops dictating the question by voice.
+  Future<void> _toggleListening() async {
+    if (!_speechAvailable) return;
+    if (_isListening) {
+      await _speech.stop();
+      return;
+    }
+    setState(() => _isListening = true);
+    await _speech.listen((text) {
+      setState(() {
+        _inputController.text = text;
+        _inputController.selection = TextSelection.collapsed(
+          offset: text.length,
+        );
+      });
+    });
+  }
+
   // Clears the current conversation and starts a fresh session.
   Future<void> _startNewChat() async {
+    _stopSpeaking();
     await _saveCurrentConversation();
     if (!mounted) return;
     setState(() {
@@ -198,6 +283,8 @@ class _ChatPageState extends State<ChatPage> {
                   onNewChat: _startNewChat,
                   onSignOut: widget.onSignOut,
                   onLanguageChanged: widget.onLanguageChanged,
+                  autoSpeak: _autoSpeak,
+                  onToggleAutoSpeak: _toggleAutoSpeak,
                 ),
                 Expanded(
                   child: _ConversationView(
@@ -206,12 +293,18 @@ class _ChatPageState extends State<ChatPage> {
                     isLoading: _isLoading,
                     onFeedback: _updateMessageFeedback,
                     strings: widget.strings,
+                    speakingIndex: _speakingIndex,
+                    onToggleSpeak: _toggleSpeak,
+                    onPromptTap: _useSuggestedPrompt,
                   ),
                 ),
                 _Composer(
                   controller: _inputController,
                   onSend: _sendMessage,
                   strings: widget.strings,
+                  speechAvailable: _speechAvailable,
+                  isListening: _isListening,
+                  onToggleListening: _toggleListening,
                 ),
               ],
             ),
@@ -226,20 +319,38 @@ class _ChatHeader extends StatelessWidget {
   const _ChatHeader({
     required this.onNewChat,
     required this.strings,
+    required this.autoSpeak,
+    required this.onToggleAutoSpeak,
     this.onSignOut,
     this.onLanguageChanged,
   });
 
   final Future<void> Function() onNewChat;
   final AppLocalizations strings;
+  final bool autoSpeak;
+  final VoidCallback onToggleAutoSpeak;
   final VoidCallback? onSignOut;
   final ValueChanged<String>? onLanguageChanged;
 
   // Builds the product identity and session controls.
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 22, 24, 12),
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: const BorderRadius.vertical(
+          bottom: Radius.circular(24),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: theme.colorScheme.primary.withValues(alpha: 0.08),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
       child: Row(
         children: [
           Builder(
@@ -249,23 +360,56 @@ class _ChatHeader extends StatelessWidget {
               icon: const Icon(Icons.menu_rounded),
             ),
           ),
+          const SizedBox(width: 4),
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [theme.colorScheme.primary, theme.colorScheme.secondary],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(
+              Icons.forum_rounded,
+              color: Colors.white,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 12),
           const Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   'Mandi/Garo ChatBot',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                ),
+                Text(
+                  'Ask about culture, climate & community',
+                  style: TextStyle(fontSize: 12, color: Color(0xFF8A93A0)),
                 ),
               ],
             ),
           ),
           if (onLanguageChanged != null)
             LanguagePicker(strings: strings, onChanged: onLanguageChanged!),
-          IconButton(
-            onPressed: onNewChat,
+          const SizedBox(width: 8),
+          _RoundIconButton(
+            icon: autoSpeak ? Icons.volume_up_rounded : Icons.volume_off_rounded,
+            active: autoSpeak,
+            tooltip: autoSpeak
+                ? 'Auto read-aloud is on: tap to turn off'
+                : 'Auto read-aloud is off: tap to turn on',
+            onPressed: onToggleAutoSpeak,
+          ),
+          const SizedBox(width: 8),
+          _RoundIconButton(
+            icon: Icons.add_comment_rounded,
             tooltip: strings.text('newChat'),
-            icon: const Icon(Icons.add_comment_outlined),
+            onPressed: onNewChat,
           ),
           if (onSignOut != null)
             IconButton(
@@ -367,6 +511,47 @@ class _HistoryDrawer extends StatelessWidget {
   }
 }
 
+// A small circular icon button with a tinted background, used for header
+// and composer actions to give the UI a friendlier, "buttony" feel.
+class _RoundIconButton extends StatelessWidget {
+  const _RoundIconButton({
+    required this.icon,
+    required this.onPressed,
+    required this.tooltip,
+    this.active = false,
+  });
+
+  final IconData icon;
+  final VoidCallback onPressed;
+  final String tooltip;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.primary;
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: active ? color.withValues(alpha: 0.15) : const Color(0xFFF1F1F6),
+        shape: const CircleBorder(),
+        child: InkWell(
+          onTap: onPressed,
+          customBorder: const CircleBorder(),
+          child: SizedBox(
+            width: 40,
+            height: 40,
+            child: Icon(
+              icon,
+              color: active ? color : const Color(0xFF5B6472),
+              size: 20,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ConversationView extends StatelessWidget {
   const _ConversationView({
     required this.messages,
@@ -374,6 +559,9 @@ class _ConversationView extends StatelessWidget {
     required this.isLoading,
     required this.onFeedback,
     required this.strings,
+    required this.speakingIndex,
+    required this.onToggleSpeak,
+    required this.onPromptTap,
   });
 
   final List<ChatMessage> messages;
@@ -387,11 +575,16 @@ class _ConversationView extends StatelessWidget {
   onFeedback;
 
   final AppLocalizations strings;
+  final int? speakingIndex;
+  final void Function(int index, String text) onToggleSpeak;
+  final void Function(String prompt) onPromptTap;
 
   // Builds the empty state, messages, and loading indicator.
   @override
   Widget build(BuildContext context) {
-    if (messages.isEmpty) return _EmptyState(strings: strings);
+    if (messages.isEmpty) {
+      return _EmptyState(strings: strings, onPromptTap: onPromptTap);
+    }
 
     return ListView.builder(
       controller: controller,
@@ -404,10 +597,15 @@ class _ConversationView extends StatelessWidget {
             child: _TypingIndicator(strings: strings),
           );
         }
+        final message = messages[index];
         return _MessageBubble(
-          message: messages[index],
+          message: message,
           messageIndex: index,
           onFeedback: onFeedback,
+          isSpeaking: speakingIndex == index,
+          onToggleSpeak: message.author == MessageAuthor.assistant
+              ? () => onToggleSpeak(index, message.text)
+              : null,
         );
       },
     );
@@ -415,13 +613,24 @@ class _ConversationView extends StatelessWidget {
 }
 
 class _EmptyState extends StatelessWidget {
-  const _EmptyState({required this.strings});
+  const _EmptyState({required this.strings, required this.onPromptTap});
 
   final AppLocalizations strings;
+
+  final void Function(String prompt) onPromptTap;
+
+  static const _examplePrompts = [
+    'What plants do the Garo people use for traditional medicine?',
+    'How is climate change affecting indigenous communities?',
+    "Tell me about the Garo people's matrilineal social system.",
+  ];
 
   // Builds the first-use prompt and example questions.
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final accents = [theme.colorScheme.primary, theme.colorScheme.secondary];
+
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(24, 48, 24, 24),
       child: Column(
@@ -430,12 +639,56 @@ class _EmptyState extends StatelessWidget {
             strings.text('askAnything'),
             style: TextStyle(
               fontSize: 28,
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w700,
               color: Color(0xFF17212B),
             ),
           ),
+          const SizedBox(height: 6),
+          const Text(
+            'Try one of these, or type your own question below.',
+            style: TextStyle(color: Color(0xFF8A93A0)),
+          ),
+          const SizedBox(height: 22),
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              for (var i = 0; i < _examplePrompts.length; i++)
+                _PromptChip(
+                  label: _examplePrompts[i],
+                  color: accents[i % accents.length],
+                  onTap: () => onPromptTap(_examplePrompts[i]),
+                ),
+            ],
+          ),
         ],
       ),
+    );
+  }
+}
+
+class _PromptChip extends StatelessWidget {
+  const _PromptChip({
+    required this.label,
+    required this.onTap,
+    required this.color,
+  });
+
+  final String label;
+  final VoidCallback onTap;
+  final Color color;
+
+  // Builds a visually compact, tappable example question.
+  @override
+  Widget build(BuildContext context) {
+    return ActionChip(
+      avatar: Icon(Icons.auto_awesome, size: 16, color: color),
+      label: Text(label),
+      onPressed: onTap,
+      backgroundColor: color.withValues(alpha: 0.08),
+      side: BorderSide(color: color.withValues(alpha: 0.25)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
     );
   }
 }
@@ -445,6 +698,8 @@ class _MessageBubble extends StatelessWidget {
     required this.message,
     required this.messageIndex,
     required this.onFeedback,
+    required this.isSpeaking,
+    required this.onToggleSpeak,
   });
 
   final ChatMessage message;
@@ -455,139 +710,216 @@ class _MessageBubble extends StatelessWidget {
     String comment,
   )
   onFeedback;
+  final bool isSpeaking;
+  final VoidCallback? onToggleSpeak;
 
-  // Builds a user or assistant message with verifiable source evidence.
+  // Builds a user or assistant message with optional sources and, for
+  // assistant replies, a button to read the message aloud.
   @override
   Widget build(BuildContext context) {
     final isUser = message.author == MessageAuthor.user;
+    final theme = Theme.of(context);
 
-    return Align(
-      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 720),
-        margin: const EdgeInsets.only(bottom: 14),
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: isUser ? const Color(0xFF17212B) : Colors.white,
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(18),
-            topRight: const Radius.circular(18),
-            bottomLeft: Radius.circular(isUser ? 18 : 4),
-            bottomRight: Radius.circular(isUser ? 4 : 18),
-          ),
-          border: isUser ? null : Border.all(color: const Color(0xFFE0E7E3)),
+    final bubble = Container(
+      constraints: const BoxConstraints(maxWidth: 680),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: isUser ? const Color(0xFF17212B) : Colors.white,
+        borderRadius: BorderRadius.only(
+          topLeft: const Radius.circular(18),
+          topRight: const Radius.circular(18),
+          bottomLeft: Radius.circular(isUser ? 18 : 4),
+          bottomRight: Radius.circular(isUser ? 4 : 18),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              message.text,
-              style: TextStyle(
-                color: isUser ? Colors.white : const Color(0xFF26343D),
-                height: 1.45,
-                fontSize: 15,
-              ),
-            ),
-            if (!isUser && message.sources.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              const Divider(color: Color(0xFFE0E7E3)),
-              Theme(
-                data: Theme.of(context)
-                    .copyWith(dividerColor: Colors.transparent),
-                child: ExpansionTile(
-                  tilePadding: EdgeInsets.zero,
-                  childrenPadding: EdgeInsets.zero,
-                  leading: const Icon(
-                    Icons.verified_outlined,
-                    color: Color(0xFF2E7D5B),
+        border: isUser ? null : Border.all(color: const Color(0xFFE0E7E3)),
+        boxShadow: isUser
+            ? null
+            : [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.03),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text(
+                  message.text,
+                  style: TextStyle(
+                    color: isUser ? Colors.white : const Color(0xFF26343D),
+                    height: 1.45,
+                    fontSize: 15,
                   ),
-                  title: Text(
-                    'View verified sources (${message.sources.length})',
-                    style: const TextStyle(
-                      color: Color(0xFF2E7D5B),
-                      fontWeight: FontWeight.w600,
-                      fontSize: 14,
-                    ),
-                  ),
-                  children: [
-                    for (var index = 0; index < message.sources.length; index++)
-                      _buildSourceCard(message.sources[index], index + 1),
-                  ],
                 ),
               ),
-            ],
-            if (!isUser) ...[
-              const SizedBox(height: 12),
-              const Divider(color: Color(0xFFE0E7E3)),
-              const Text(
-                'Was this response helpful?',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: Color(0xFF52616A),
-                ),
-              ),
-              const SizedBox(height: 4),
-              Row(
-                children: [
-                  IconButton(
-                    onPressed: () => onFeedback(
-                      messageIndex,
-                      MessageFeedback.helpful,
-                      message.feedbackComment,
-                    ),
-                    tooltip: 'Helpful',
-                    color: const Color(0xFF2E7D5B),
+              if (onToggleSpeak != null) ...[
+                const SizedBox(width: 4),
+                SizedBox(
+                  width: 32,
+                  height: 32,
+                  child: IconButton(
+                    padding: EdgeInsets.zero,
+                    visualDensity: VisualDensity.compact,
+                    onPressed: onToggleSpeak,
+                    tooltip: isSpeaking ? 'Stop reading aloud' : 'Read aloud',
                     icon: Icon(
-                      message.feedback == MessageFeedback.helpful
-                          ? Icons.thumb_up
-                          : Icons.thumb_up_outlined,
+                      isSpeaking
+                          ? Icons.stop_circle_rounded
+                          : Icons.volume_up_rounded,
+                      size: 20,
+                      color: isSpeaking
+                          ? theme.colorScheme.secondary
+                          : theme.colorScheme.primary,
                     ),
-                  ),
-                  IconButton(
-                    onPressed: () => onFeedback(
-                      messageIndex,
-                      MessageFeedback.notHelpful,
-                      message.feedbackComment,
-                    ),
-                    tooltip: 'Not helpful',
-                    color: const Color(0xFFC05A47),
-                    icon: Icon(
-                      message.feedback == MessageFeedback.notHelpful
-                          ? Icons.thumb_down
-                          : Icons.thumb_down_outlined,
-                    ),
-                  ),
-                  TextButton.icon(
-                    onPressed: () => _showCommentDialog(context),
-                    icon: const Icon(Icons.comment_outlined, size: 18),
-                    label: Text(
-                      message.feedbackComment.isEmpty
-                          ? 'Add comment'
-                          : 'Edit comment',
-                    ),
-                  ),
-                ],
-              ),
-              if (message.feedback != null)
-                const Text(
-                  'Thank you for your feedback.',
-                  style: TextStyle(fontSize: 12, color: Color(0xFF2E7D5B)),
-                ),
-              if (message.feedbackComment.isNotEmpty) ...[
-                const SizedBox(height: 6),
-                Text(
-                  'Comment: ${message.feedbackComment}',
-                  style: const TextStyle(
-                    fontSize: 12,
-                    fontStyle: FontStyle.italic,
-                    color: Color(0xFF52616A),
                   ),
                 ),
               ],
             ],
+          ),
+          if (!isUser && message.sources.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            const Divider(color: Color(0xFFE0E7E3)),
+            Theme(
+              data: Theme.of(context)
+                  .copyWith(dividerColor: Colors.transparent),
+              child: ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: EdgeInsets.zero,
+                leading: const Icon(
+                  Icons.verified_outlined,
+                  color: Color(0xFF2E7D5B),
+                ),
+                title: Text(
+                  'View verified sources (${message.sources.length})',
+                  style: const TextStyle(
+                    color: Color(0xFF2E7D5B),
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                ),
+                children: [
+                  for (var index = 0; index < message.sources.length; index++)
+                    _buildSourceCard(message.sources[index], index + 1),
+                ],
+              ),
+            ),
           ],
-        ),
+          if (!isUser) ...[
+            const SizedBox(height: 12),
+            const Divider(color: Color(0xFFE0E7E3)),
+            const Text(
+              'Was this response helpful?',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF52616A),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                IconButton(
+                  onPressed: () => onFeedback(
+                    messageIndex,
+                    MessageFeedback.helpful,
+                    message.feedbackComment,
+                  ),
+                  tooltip: 'Helpful',
+                  color: const Color(0xFF2E7D5B),
+                  icon: Icon(
+                    message.feedback == MessageFeedback.helpful
+                        ? Icons.thumb_up
+                        : Icons.thumb_up_outlined,
+                  ),
+                ),
+                IconButton(
+                  onPressed: () => onFeedback(
+                    messageIndex,
+                    MessageFeedback.notHelpful,
+                    message.feedbackComment,
+                  ),
+                  tooltip: 'Not helpful',
+                  color: const Color(0xFFC05A47),
+                  icon: Icon(
+                    message.feedback == MessageFeedback.notHelpful
+                        ? Icons.thumb_down
+                        : Icons.thumb_down_outlined,
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: () => _showCommentDialog(context),
+                  icon: const Icon(Icons.comment_outlined, size: 18),
+                  label: Text(
+                    message.feedbackComment.isEmpty
+                        ? 'Add comment'
+                        : 'Edit comment',
+                  ),
+                ),
+              ],
+            ),
+            if (message.feedback != null)
+              const Text(
+                'Thank you for your feedback.',
+                style: TextStyle(fontSize: 12, color: Color(0xFF2E7D5B)),
+              ),
+            if (message.feedbackComment.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                'Comment: ${message.feedbackComment}',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontStyle: FontStyle.italic,
+                  color: Color(0xFF52616A),
+                ),
+              ),
+            ],
+          ],
+        ],
+      ),
+    );
+
+    final content = isUser
+        ? bubble
+        : Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 30,
+                height: 30,
+                margin: const EdgeInsets.only(right: 8, top: 2),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      theme.colorScheme.primary,
+                      theme.colorScheme.secondary,
+                    ],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.auto_awesome,
+                  color: Colors.white,
+                  size: 15,
+                ),
+              ),
+              Flexible(child: bubble),
+            ],
+          );
+
+    return Align(
+      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 14),
+        child: content,
       ),
     );
   }
@@ -722,38 +1054,94 @@ class _Composer extends StatelessWidget {
     required this.controller,
     required this.onSend,
     required this.strings,
+    required this.speechAvailable,
+    required this.isListening,
+    required this.onToggleListening,
   });
 
   final TextEditingController controller;
   final VoidCallback onSend;
   final AppLocalizations strings;
+  final bool speechAvailable;
+  final bool isListening;
+  final VoidCallback onToggleListening;
 
-  // Builds the query input and send action.
+  // Builds the query input, optional voice-input control, and send action.
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           Expanded(
-            child: TextField(
-              controller: controller,
-              minLines: 1,
-              maxLines: 4,
-              textInputAction: TextInputAction.send,
-              onSubmitted: (_) => onSend(),
-              decoration: InputDecoration(
-                hintText: strings.text('askAnything'),
-                prefixIcon: Icon(Icons.search),
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(18),
+                boxShadow: [
+                  BoxShadow(
+                    color: theme.colorScheme.primary.withValues(alpha: 0.08),
+                    blurRadius: 14,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: TextField(
+                controller: controller,
+                minLines: 1,
+                maxLines: 4,
+                textInputAction: TextInputAction.send,
+                onSubmitted: (_) => onSend(),
+                decoration: InputDecoration(
+                  hintText: isListening
+                      ? 'Listening...'
+                      : strings.text('askAnything'),
+                  prefixIcon: const Icon(Icons.search),
+                  suffixIcon: speechAvailable
+                      ? IconButton(
+                          onPressed: onToggleListening,
+                          tooltip: isListening
+                              ? 'Stop listening'
+                              : 'Ask by voice',
+                          color: isListening
+                              ? theme.colorScheme.secondary
+                              : const Color(0xFF8A93A0),
+                          icon: Icon(
+                            isListening
+                                ? Icons.mic_rounded
+                                : Icons.mic_none_rounded,
+                          ),
+                        )
+                      : null,
+                ),
               ),
             ),
           ),
           const SizedBox(width: 10),
-          IconButton.filled(
-            onPressed: onSend,
-            tooltip: strings.text('sendQuestion'),
-            icon: const Icon(Icons.arrow_upward),
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [theme.colorScheme.primary, theme.colorScheme.secondary],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: theme.colorScheme.primary.withValues(alpha: 0.35),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: IconButton(
+              onPressed: onSend,
+              tooltip: strings.text('sendQuestion'),
+              icon: const Icon(Icons.arrow_upward_rounded, color: Colors.white),
+            ),
           ),
         ],
       ),

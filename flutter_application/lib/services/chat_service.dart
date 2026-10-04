@@ -43,8 +43,7 @@ class ChatService {
       }
 
       return _errorMessage(
-        'RAG.py returned HTTP ${response.statusCode}. '
-        'Check the backend terminal.',
+        'RAG.py returned HTTP ${response.statusCode}: ${_readError(response.body)}',
       );
     } catch (_) {
       return _errorMessage(
@@ -77,6 +76,17 @@ class ChatService {
     }
 
     return sources;
+  }
+
+  // Pulls the backend's error message out of a failed response.
+  String _readError(String body) {
+    try {
+      final payload = jsonDecode(body);
+      if (payload is Map && payload['error'] != null) {
+        return payload['error'].toString();
+      }
+    } catch (_) {}
+    return 'Check the backend terminal.';
   }
 
   // Explains why a live graph answer could not be displayed.
