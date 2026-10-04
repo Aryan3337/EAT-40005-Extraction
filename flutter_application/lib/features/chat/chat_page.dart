@@ -1,13 +1,29 @@
 import 'package:flutter/material.dart';
 
+import '../../app/app_localizations.dart';
+import '../../models/chat_conversation.dart';
 import '../../models/chat_message.dart';
+import '../../services/chat_history_service.dart';
 import '../../services/chat_service.dart';
 
 // Hosts the conversation layout and coordinates user input with RAG.py.
 class ChatPage extends StatefulWidget {
-  const ChatPage({super.key, required this.service});
+  const ChatPage({
+    super.key,
+    required this.service,
+    this.onSignOut,
+    this.userEmail = 'local-user',
+    this.historyService,
+    this.strings = const AppLocalizations('en'),
+    this.onLanguageChanged,
+  });
 
   final ChatService service;
+  final VoidCallback? onSignOut;
+  final String userEmail;
+  final ChatHistoryService? historyService;
+  final AppLocalizations strings;
+  final ValueChanged<String>? onLanguageChanged;
 
   // Creates the mutable conversation state.
   @override
@@ -18,7 +34,27 @@ class _ChatPageState extends State<ChatPage> {
   final _inputController = TextEditingController();
   final _scrollController = ScrollController();
   final _messages = <ChatMessage>[];
+  late final ChatHistoryService _historyService;
+  List<ChatConversation> _history = [];
+  String? _conversationId;
+  bool _isHistoryLoading = true;
   bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _historyService = widget.historyService ?? ChatHistoryService();
+    _loadHistory();
+  }
+
+  Future<void> _loadHistory() async {
+    final history = await _historyService.load(widget.userEmail);
+    if (!mounted) return;
+    setState(() {
+      _history = history;
+      _isHistoryLoading = false;
+    });
+  }
 
   // Releases controllers owned by the chat screen.
   @override
@@ -34,6 +70,7 @@ class _ChatPageState extends State<ChatPage> {
     if (question.isEmpty || _isLoading) return;
 
     setState(() {
+      _conversationId ??= DateTime.now().microsecondsSinceEpoch.toString();
       _messages.add(ChatMessage(text: question, author: MessageAuthor.user));
       _inputController.clear();
       _isLoading = true;
@@ -45,7 +82,29 @@ class _ChatPageState extends State<ChatPage> {
       _messages.add(answer);
       _isLoading = false;
     });
+    await _saveCurrentConversation();
     _scrollToBottom();
+  }
+
+  Future<void> _saveCurrentConversation() async {
+    if (_messages.isEmpty || _conversationId == null) return;
+    final firstUserMessage = _messages.firstWhere(
+      (message) => message.author == MessageAuthor.user,
+      orElse: () => _messages.first,
+    );
+    final conversation = ChatConversation(
+      id: _conversationId!,
+      title: firstUserMessage.text,
+      messages: List.unmodifiable(_messages),
+      updatedAt: DateTime.now(),
+    );
+    final updated = [
+      conversation,
+      ..._history.where((item) => item.id != conversation.id),
+    ]..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    await _historyService.save(widget.userEmail, updated);
+    if (!mounted) return;
+    setState(() => _history = updated);
   }
 
   // Moves the conversation to the latest message.
@@ -62,10 +121,39 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   // Clears the current conversation and starts a fresh session.
-  void _startNewChat() {
+  Future<void> _startNewChat() async {
+    await _saveCurrentConversation();
+    if (!mounted) return;
     setState(() {
       _messages.clear();
+      _conversationId = null;
       _isLoading = false;
+    });
+  }
+
+  Future<void> _openConversation(ChatConversation conversation) async {
+    await _saveCurrentConversation();
+    if (!mounted) return;
+    setState(() {
+      _conversationId = conversation.id;
+      _messages
+        ..clear()
+        ..addAll(conversation.messages);
+      _isLoading = false;
+    });
+    Navigator.of(context).pop();
+    _scrollToBottom();
+  }
+
+  Future<void> _deleteConversation(ChatConversation conversation) async {
+    await _historyService.delete(widget.userEmail, conversation.id);
+    if (!mounted) return;
+    setState(() {
+      _history.removeWhere((item) => item.id == conversation.id);
+      if (_conversationId == conversation.id) {
+        _messages.clear();
+        _conversationId = null;
+      }
     });
   }
 
@@ -73,21 +161,39 @@ class _ChatPageState extends State<ChatPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      drawer: _HistoryDrawer(
+        strings: widget.strings,
+        history: _history,
+        isLoading: _isHistoryLoading,
+        onOpen: _openConversation,
+        onDelete: _deleteConversation,
+        onNewChat: _startNewChat,
+      ),
       body: SafeArea(
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 1120),
             child: Column(
               children: [
-                _ChatHeader(onNewChat: _startNewChat),
+                _ChatHeader(
+                  strings: widget.strings,
+                  onNewChat: _startNewChat,
+                  onSignOut: widget.onSignOut,
+                  onLanguageChanged: widget.onLanguageChanged,
+                ),
                 Expanded(
                   child: _ConversationView(
                     messages: _messages,
                     controller: _scrollController,
                     isLoading: _isLoading,
+                    strings: widget.strings,
                   ),
                 ),
-                _Composer(controller: _inputController, onSend: _sendMessage),
+                _Composer(
+                  controller: _inputController,
+                  onSend: _sendMessage,
+                  strings: widget.strings,
+                ),
               ],
             ),
           ),
@@ -98,9 +204,17 @@ class _ChatPageState extends State<ChatPage> {
 }
 
 class _ChatHeader extends StatelessWidget {
-  const _ChatHeader({required this.onNewChat});
+  const _ChatHeader({
+    required this.onNewChat,
+    required this.strings,
+    this.onSignOut,
+    this.onLanguageChanged,
+  });
 
-  final VoidCallback onNewChat;
+  final Future<void> Function() onNewChat;
+  final AppLocalizations strings;
+  final VoidCallback? onSignOut;
+  final ValueChanged<String>? onLanguageChanged;
 
   // Builds the product identity and session controls.
   @override
@@ -109,6 +223,13 @@ class _ChatHeader extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(24, 22, 24, 12),
       child: Row(
         children: [
+          Builder(
+            builder: (context) => IconButton(
+              onPressed: () => Scaffold.of(context).openDrawer(),
+              tooltip: strings.text('chatHistory'),
+              icon: const Icon(Icons.menu_rounded),
+            ),
+          ),
           const Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -120,12 +241,108 @@ class _ChatHeader extends StatelessWidget {
               ],
             ),
           ),
+          if (onLanguageChanged != null)
+            LanguagePicker(strings: strings, onChanged: onLanguageChanged!),
           IconButton(
             onPressed: onNewChat,
-            tooltip: 'New chat',
+            tooltip: strings.text('newChat'),
             icon: const Icon(Icons.add_comment_outlined),
           ),
+          if (onSignOut != null)
+            IconButton(
+              onPressed: onSignOut,
+              tooltip: strings.text('signOut'),
+              icon: const Icon(Icons.logout_outlined),
+            ),
         ],
+      ),
+    );
+  }
+}
+
+class _HistoryDrawer extends StatelessWidget {
+  const _HistoryDrawer({
+    required this.strings,
+    required this.history,
+    required this.isLoading,
+    required this.onOpen,
+    required this.onDelete,
+    required this.onNewChat,
+  });
+
+  final AppLocalizations strings;
+  final List<ChatConversation> history;
+  final bool isLoading;
+  final Future<void> Function(ChatConversation conversation) onOpen;
+  final Future<void> Function(ChatConversation conversation) onDelete;
+  final Future<void> Function() onNewChat;
+
+  @override
+  Widget build(BuildContext context) {
+    return Drawer(
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 22, 12, 14),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      strings.text('chatHistory'),
+                      style: TextStyle(
+                        fontSize: 21,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: onNewChat,
+                    tooltip: strings.text('newChat'),
+                    icon: const Icon(Icons.add_comment_outlined),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: isLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : history.isEmpty
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Text(
+                          strings.text('savedConversations'),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      itemCount: history.length,
+                      itemBuilder: (context, index) {
+                        final conversation = history[index];
+                        return ListTile(
+                          leading: const Icon(Icons.chat_bubble_outline),
+                          title: Text(
+                            conversation.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: IconButton(
+                            onPressed: () => onDelete(conversation),
+                            tooltip: strings.text('deleteConversation'),
+                            icon: const Icon(Icons.delete_outline),
+                          ),
+                          onTap: () => onOpen(conversation),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -136,16 +353,18 @@ class _ConversationView extends StatelessWidget {
     required this.messages,
     required this.controller,
     required this.isLoading,
+    required this.strings,
   });
 
   final List<ChatMessage> messages;
   final ScrollController controller;
   final bool isLoading;
+  final AppLocalizations strings;
 
   // Builds the empty state, messages, and loading indicator.
   @override
   Widget build(BuildContext context) {
-    if (messages.isEmpty) return const _EmptyState();
+    if (messages.isEmpty) return _EmptyState(strings: strings);
 
     return ListView.builder(
       controller: controller,
@@ -153,9 +372,9 @@ class _ConversationView extends StatelessWidget {
       itemCount: messages.length + (isLoading ? 1 : 0),
       itemBuilder: (context, index) {
         if (index == messages.length) {
-          return const Padding(
-            padding: EdgeInsets.only(top: 12),
-            child: _TypingIndicator(),
+          return Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: _TypingIndicator(strings: strings),
           );
         }
         return _MessageBubble(message: messages[index]);
@@ -165,7 +384,9 @@ class _ConversationView extends StatelessWidget {
 }
 
 class _EmptyState extends StatelessWidget {
-  const _EmptyState();
+  const _EmptyState({required this.strings});
+
+  final AppLocalizations strings;
 
   // Builds the first-use prompt and example questions.
   @override
@@ -174,8 +395,8 @@ class _EmptyState extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(24, 48, 24, 24),
       child: Column(
         children: [
-          const Text(
-            'Ask me anything',
+          Text(
+            strings.text('askAnything'),
             style: TextStyle(
               fontSize: 28,
               fontWeight: FontWeight.w600,
@@ -228,33 +449,13 @@ class _MessageBubble extends StatelessWidget {
           ),
           border: isUser ? null : Border.all(color: const Color(0xFFE0E7E3)),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              message.text,
-              style: TextStyle(
-                color: isUser ? Colors.white : const Color(0xFF26343D),
-                height: 1.45,
-                fontSize: 15,
-              ),
-            ),
-            if (message.sources.isNotEmpty) ...[
-              const SizedBox(height: 14),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: message.sources
-                    .map(
-                      (source) => Chip(
-                        label: Text(source),
-                        visualDensity: VisualDensity.compact,
-                      ),
-                    )
-                    .toList(),
-              ),
-            ],
-          ],
+        child: Text(
+          message.text,
+          style: TextStyle(
+            color: isUser ? Colors.white : const Color(0xFF26343D),
+            height: 1.45,
+            fontSize: 15,
+          ),
         ),
       ),
     );
@@ -262,15 +463,17 @@ class _MessageBubble extends StatelessWidget {
 }
 
 class _TypingIndicator extends StatelessWidget {
-  const _TypingIndicator();
+  const _TypingIndicator({required this.strings});
+
+  final AppLocalizations strings;
 
   // Builds the response-in-progress state.
   @override
   Widget build(BuildContext context) {
-    return const Align(
+    return Align(
       alignment: Alignment.centerLeft,
       child: Text(
-        'Thinking ...',
+        strings.text('thinking'),
         style: TextStyle(color: Color(0xFF637078), fontStyle: FontStyle.italic),
       ),
     );
@@ -278,10 +481,15 @@ class _TypingIndicator extends StatelessWidget {
 }
 
 class _Composer extends StatelessWidget {
-  const _Composer({required this.controller, required this.onSend});
+  const _Composer({
+    required this.controller,
+    required this.onSend,
+    required this.strings,
+  });
 
   final TextEditingController controller;
   final VoidCallback onSend;
+  final AppLocalizations strings;
 
   // Builds the query input and send action.
   @override
@@ -298,8 +506,8 @@ class _Composer extends StatelessWidget {
               maxLines: 4,
               textInputAction: TextInputAction.send,
               onSubmitted: (_) => onSend(),
-              decoration: const InputDecoration(
-                hintText: 'Ask me anything',
+              decoration: InputDecoration(
+                hintText: strings.text('askAnything'),
                 prefixIcon: Icon(Icons.search),
               ),
             ),
@@ -307,7 +515,7 @@ class _Composer extends StatelessWidget {
           const SizedBox(width: 10),
           IconButton.filled(
             onPressed: onSend,
-            tooltip: 'Send question',
+            tooltip: strings.text('sendQuestion'),
             icon: const Icon(Icons.arrow_upward),
           ),
         ],
