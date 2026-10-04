@@ -24,6 +24,7 @@ import csv
 import re
 import sys
 import argparse
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import List, Dict, Any, Set, Tuple, Optional, Protocol
@@ -31,6 +32,8 @@ from collections import defaultdict
 from dotenv import load_dotenv
 import requests
 
+from admin_ingest import (check_admin_secret, ingest_pdf, read_queue,
+                          validate_upload)
 from llm_endpoint import resolve_llm_endpoint
 
 try:
@@ -840,6 +843,26 @@ class RAGQuerySkeleton(Protocol):
     def close(self) -> None: ...
 
 
+# Where admin uploads and the decision queue live.
+UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", "uploads"))
+
+# Papers in this corpus run well under 10 MB; the cap stops a single request
+# pulling an arbitrary amount into memory.
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+
+def _confidence_scorer(pdf_path: str):
+    """Scores an uploaded paper with the confidence framework.
+
+    Imported lazily so starting the API does not require spaCy, Ollama or the
+    framework's own import-time endpoint resolution -- the chatbot must come
+    up even when admin ingestion cannot run.
+    """
+    from confidence_framework import run_confidence_check
+
+    return run_confidence_check(pdf_path)
+
+
 # Creates an HTTP handler backed by the selected RAG retriever.
 def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesizer):
     class QueryHandler(BaseHTTPRequestHandler):
@@ -854,10 +877,18 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
             if self.path == "/health":
                 self._send_json(200, {"status": "ok"})
                 return
+            if self.path == "/admin/queue":
+                if not self._admin_authorised():
+                    return
+                self._send_json(200, {"queue": read_queue(UPLOADS_DIR)})
+                return
             self._send_json(404, {"error": "Not found"})
 
         # Handles questions sent by the Flutter client.
         def do_POST(self) -> None:
+            if self.path == "/admin/upload":
+                self._handle_admin_upload()
+                return
             if self.path != "/query":
                 self._send_json(404, {"error": "Not found"})
                 return
@@ -885,6 +916,70 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
             except (TypeError, ValueError, json.JSONDecodeError) as error:
                 self._send_json(400, {"error": f"Invalid request: {error}"})
 
+        # Refuses unless the request carries the shared admin secret. The
+        # Flutter admin role only decides which buttons render -- a role held
+        # in the browser is not access control -- so this is what actually
+        # protects an endpoint that spends inference time and writes files.
+        def _admin_authorised(self) -> bool:
+            expected = os.getenv("ADMIN_UPLOAD_SECRET")
+            if check_admin_secret(self.headers.get("X-Admin-Secret"), expected=expected):
+                return True
+            if not expected:
+                self._send_json(503, {"error":
+                    "ADMIN_UPLOAD_SECRET is not set on the server, so admin "
+                    "endpoints are disabled. Set it in .env."})
+            else:
+                self._send_json(401, {"error": "Admin secret missing or incorrect."})
+            return False
+
+        # Accepts a PDF as the raw request body, with its filename in a header.
+        # Raw bytes rather than multipart/form-data on purpose: the stdlib cgi
+        # module that parsed multipart was removed in Python 3.13, and a Flutter
+        # client posts bodyBytes just as easily.
+        def _handle_admin_upload(self) -> None:
+            if not self._admin_authorised():
+                return
+
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0:
+                self._send_json(400, {"error": "No file was uploaded."})
+                return
+            if length > MAX_UPLOAD_BYTES:
+                self._send_json(413, {"error":
+                    f"That file is {length} bytes; the limit is "
+                    f"{MAX_UPLOAD_BYTES}."})
+                return
+
+            data = self.rfile.read(length)
+            filename = self.headers.get("X-Filename", "")
+
+            # Validated synchronously so a bad upload gets an immediate 400
+            # rather than a 202 and silence.
+            try:
+                name = validate_upload(data, filename)
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+                return
+
+            # Scoring is an LLM job -- minutes per paper on local Ollama, with
+            # a 300s timeout per call -- so it cannot run inside the request.
+            # The admin polls /admin/queue for the verdict.
+            def score_in_background():
+                try:
+                    ingest_pdf(data, name, scorer=_confidence_scorer,
+                               uploads_dir=UPLOADS_DIR)
+                except Exception as error:
+                    print(f"Admin upload scoring failed for {name}: {error}")
+
+            threading.Thread(target=score_in_background, daemon=True).start()
+
+            self._send_json(202, {
+                "status": "scoring",
+                "paper": name,
+                "message": "Upload accepted and being scored. Poll /admin/queue "
+                           "for the verdict; this takes minutes per paper.",
+            })
+
         # Writes a JSON response with CORS enabled for local Flutter clients.
         def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
             body = json.dumps(payload).encode("utf-8")
@@ -899,7 +994,8 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
         def _send_cors_headers(self) -> None:
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Allow-Headers",
+                             "Content-Type, X-Admin-Secret, X-Filename")
 
         # Keeps routine request logs concise during local development.
         def log_message(self, format: str, *args: Any) -> None:
