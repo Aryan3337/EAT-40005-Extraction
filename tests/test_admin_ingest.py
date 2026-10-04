@@ -29,6 +29,7 @@ from admin_ingest import (
     check_admin_secret,
     decide,
     ingest_pdf,
+    read_queue,
     safe_pdf_name,
 )
 
@@ -341,3 +342,196 @@ def test_validate_upload_rejects_what_ingest_would_reject(data, filename):
 
     with pytest.raises(ValueError):
         validate_upload(data, filename)
+
+
+# -- manual review: reading a stored paper ------------------------------------
+
+
+def test_a_stored_paper_can_be_read_back(tmp_path):
+    from admin_ingest import read_paper_bytes
+
+    ingest_pdf(PDF_BYTES, "garo_4.pdf",
+               scorer=lambda path: FakeResult("MANUAL_REVIEW", total_score=65),
+               uploads_dir=tmp_path)
+
+    assert read_paper_bytes("garo_4.pdf", uploads_dir=tmp_path) == PDF_BYTES
+
+
+def test_reading_a_paper_that_was_never_stored_raises(tmp_path):
+    from admin_ingest import read_paper_bytes
+
+    with pytest.raises(FileNotFoundError):
+        read_paper_bytes("nope.pdf", uploads_dir=tmp_path)
+
+
+@pytest.mark.parametrize("hostile", [
+    "../../../../etc/passwd.pdf",
+    "..\..\windows\win.ini.pdf",
+    "/etc/shadow.pdf",
+])
+def test_a_hostile_name_cannot_read_outside_the_uploads_directory(tmp_path, hostile):
+    # The name comes from the client, so it is attacker-controlled. It must be
+    # sanitised on the way out as well as on the way in.
+    from admin_ingest import read_paper_bytes
+
+    with pytest.raises((FileNotFoundError, ValueError)):
+        read_paper_bytes(hostile, uploads_dir=tmp_path)
+
+
+# -- manual review: recording a human decision --------------------------------
+
+
+def test_approving_a_paper_moves_it_to_ready_to_extract(tmp_path):
+    from admin_ingest import record_manual_decision
+
+    ingest_pdf(PDF_BYTES, "garo_4.pdf",
+               scorer=lambda path: FakeResult("MANUAL_REVIEW", total_score=65),
+               uploads_dir=tmp_path)
+
+    outcome = record_manual_decision("garo_4.pdf", approve=True,
+                                     note="Read it, it is sound.",
+                                     uploads_dir=tmp_path)
+
+    assert outcome.decision is IngestDecision.READY_TO_EXTRACT
+    assert "Read it, it is sound." in " ".join(outcome.reasons)
+    assert outcome.stored_path is not None
+
+
+def test_rejecting_a_paper_moves_it_to_rejected(tmp_path):
+    from admin_ingest import record_manual_decision
+
+    ingest_pdf(PDF_BYTES, "garo_4.pdf",
+               scorer=lambda path: FakeResult("MANUAL_REVIEW", total_score=65),
+               uploads_dir=tmp_path)
+
+    outcome = record_manual_decision("garo_4.pdf", approve=False,
+                                     note="Not peer reviewed.",
+                                     uploads_dir=tmp_path)
+
+    assert outcome.decision is IngestDecision.REJECTED
+    assert "Not peer reviewed." in " ".join(outcome.reasons)
+
+
+def test_a_manual_rejection_keeps_the_file(tmp_path):
+    # Unlike an automatic rejection, which never stored the file at all, this
+    # one was already on disk and a person is making a judgement about it.
+    # Keeping it means the decision can be revisited; deleting on a human
+    # click cannot be undone.
+    from admin_ingest import record_manual_decision
+
+    ingest_pdf(PDF_BYTES, "garo_4.pdf",
+               scorer=lambda path: FakeResult("MANUAL_REVIEW", total_score=65),
+               uploads_dir=tmp_path)
+
+    record_manual_decision("garo_4.pdf", approve=False, note="no",
+                           uploads_dir=tmp_path)
+
+    assert (tmp_path / "papers" / "garo_4.pdf").exists()
+
+
+def test_a_manual_decision_says_it_was_made_by_a_person(tmp_path):
+    # Otherwise the queue cannot distinguish "the model scored this 80" from
+    # "a human overrode the model", which is exactly what an audit needs.
+    from admin_ingest import record_manual_decision
+
+    ingest_pdf(PDF_BYTES, "garo_4.pdf",
+               scorer=lambda path: FakeResult("MANUAL_REVIEW", total_score=65),
+               uploads_dir=tmp_path)
+
+    record_manual_decision("garo_4.pdf", approve=True, note="ok",
+                           uploads_dir=tmp_path)
+
+    entries = [json.loads(line) for line in
+               (tmp_path / "queue.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert entries[-1]["by"] == "manual_review"
+    assert entries[0].get("by") != "manual_review"
+
+
+def test_a_manual_decision_is_appended_not_substituted(tmp_path):
+    # The queue is an audit trail: the original verdict must survive.
+    from admin_ingest import record_manual_decision
+
+    ingest_pdf(PDF_BYTES, "garo_4.pdf",
+               scorer=lambda path: FakeResult("MANUAL_REVIEW", total_score=65),
+               uploads_dir=tmp_path)
+    record_manual_decision("garo_4.pdf", approve=True, note="ok",
+                           uploads_dir=tmp_path)
+
+    entries = [json.loads(line) for line in
+               (tmp_path / "queue.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(entries) == 2
+    assert entries[0]["decision"] == "held_for_review"
+    assert entries[1]["decision"] == "ready_to_extract"
+
+
+def test_deciding_on_a_paper_that_is_not_stored_raises(tmp_path):
+    from admin_ingest import record_manual_decision
+
+    with pytest.raises(FileNotFoundError):
+        record_manual_decision("ghost.pdf", approve=True, note="",
+                               uploads_dir=tmp_path)
+
+
+def test_a_note_is_optional(tmp_path):
+    from admin_ingest import record_manual_decision
+
+    ingest_pdf(PDF_BYTES, "garo_4.pdf",
+               scorer=lambda path: FakeResult("MANUAL_REVIEW", total_score=65),
+               uploads_dir=tmp_path)
+
+    outcome = record_manual_decision("garo_4.pdf", approve=True, note=None,
+                                     uploads_dir=tmp_path)
+
+    assert outcome.decision is IngestDecision.READY_TO_EXTRACT
+    assert any("review" in r.lower() for r in outcome.reasons)
+
+
+# -- the queue as the UI reads it ---------------------------------------------
+
+
+def test_current_queue_shows_only_the_latest_decision_per_paper(tmp_path):
+    # The raw queue is append-only, so after a manual decision a paper has two
+    # entries. Showing both would put it in two categories at once.
+    from admin_ingest import current_queue, record_manual_decision
+
+    ingest_pdf(PDF_BYTES, "garo_4.pdf",
+               scorer=lambda path: FakeResult("MANUAL_REVIEW", total_score=65),
+               uploads_dir=tmp_path)
+    record_manual_decision("garo_4.pdf", approve=True, note="ok",
+                           uploads_dir=tmp_path)
+
+    current = current_queue(tmp_path)
+
+    assert len(current) == 1
+    assert current[0]["decision"] == "ready_to_extract"
+    assert current[0]["by"] == "manual_review"
+
+
+def test_current_queue_keeps_distinct_papers_apart(tmp_path):
+    from admin_ingest import current_queue
+
+    for name, verdict in [("a.pdf", "APPROVED"), ("b.pdf", "REJECTED")]:
+        ingest_pdf(PDF_BYTES, name,
+                   scorer=lambda path, v=verdict: FakeResult(v, total_score=70),
+                   uploads_dir=tmp_path)
+
+    assert {e["paper"] for e in current_queue(tmp_path)} == {"a.pdf", "b.pdf"}
+
+
+def test_current_queue_is_empty_when_nothing_was_submitted(tmp_path):
+    from admin_ingest import current_queue
+
+    assert current_queue(tmp_path) == []
+
+
+def test_the_full_history_is_still_readable_for_audit(tmp_path):
+    # Collapsing is for display only. read_queue stays the audit trail.
+    from admin_ingest import record_manual_decision
+
+    ingest_pdf(PDF_BYTES, "garo_4.pdf",
+               scorer=lambda path: FakeResult("MANUAL_REVIEW", total_score=65),
+               uploads_dir=tmp_path)
+    record_manual_decision("garo_4.pdf", approve=False, note="no",
+                           uploads_dir=tmp_path)
+
+    assert len(read_queue(tmp_path)) == 2

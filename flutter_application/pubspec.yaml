@@ -42,6 +42,10 @@ dependencies:
   # screen. AdminPage takes its picker as an injected callback, so nothing
   # else in the app or its tests depends on this.
   file_picker: ^8.1.2
+  # Only used by lib/app/pdf_opener.dart, to open a reviewed PDF in a new
+  # tab. AdminPage takes its viewer as an injected callback, so nothing else
+  # depends on this.
+  web: ^1.1.0
 
 dev_dependencies:
   flutter_test:

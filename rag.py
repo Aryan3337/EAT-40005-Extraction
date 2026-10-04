@@ -25,6 +25,7 @@ import re
 import sys
 import argparse
 import threading
+from urllib.parse import parse_qs, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import List, Dict, Any, Set, Tuple, Optional, Protocol
@@ -32,7 +33,8 @@ from collections import defaultdict
 from dotenv import load_dotenv
 import requests
 
-from admin_ingest import (check_admin_secret, ingest_pdf, read_queue,
+from admin_ingest import (check_admin_secret, current_queue, ingest_pdf,
+                          read_paper_bytes, record_manual_decision,
                           validate_upload)
 from llm_endpoint import resolve_llm_endpoint
 
@@ -880,7 +882,10 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
             if self.path == "/admin/queue":
                 if not self._admin_authorised():
                     return
-                self._send_json(200, {"queue": read_queue(UPLOADS_DIR)})
+                self._send_json(200, {"queue": current_queue(UPLOADS_DIR)})
+                return
+            if self.path.startswith("/admin/paper"):
+                self._handle_paper_download()
                 return
             self._send_json(404, {"error": "Not found"})
 
@@ -888,6 +893,9 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
         def do_POST(self) -> None:
             if self.path == "/admin/upload":
                 self._handle_admin_upload()
+                return
+            if self.path == "/admin/review":
+                self._handle_manual_review()
                 return
             if self.path != "/query":
                 self._send_json(404, {"error": "Not found"})
@@ -979,6 +987,59 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 "message": "Upload accepted and being scored. Poll /admin/queue "
                            "for the verdict; this takes minutes per paper.",
             })
+
+        # Serves a stored PDF so a reviewer can read what they are judging.
+        # The paper name travels in the query string, which is fine -- it is
+        # not sensitive. The SECRET stays in a header, where it belongs.
+        def _handle_paper_download(self) -> None:
+            if not self._admin_authorised():
+                return
+
+            name = parse_qs(urlparse(self.path).query).get("name", [""])[0]
+            try:
+                data = read_paper_bytes(name, uploads_dir=UPLOADS_DIR)
+            except FileNotFoundError as error:
+                self._send_json(404, {"error": str(error)})
+                return
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+                return
+
+            self.send_response(200)
+            self._send_cors_headers()
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        # Records a person's approve/reject on a paper held for review.
+        def _handle_manual_review(self) -> None:
+            if not self._admin_authorised():
+                return
+
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                paper = str(payload.get("paper", "")).strip()
+                if not paper or "approve" not in payload:
+                    raise ValueError("paper and approve are both required")
+                approve = bool(payload["approve"])
+                note = payload.get("note")
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                self._send_json(400, {"error": f"Invalid request: {error}"})
+                return
+
+            try:
+                outcome = record_manual_decision(
+                    paper, approve=approve, note=note, uploads_dir=UPLOADS_DIR)
+            except FileNotFoundError as error:
+                self._send_json(404, {"error": str(error)})
+                return
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+                return
+
+            self._send_json(200, outcome.to_json())
 
         # Writes a JSON response with CORS enabled for local Flutter clients.
         def _send_json(self, status: int, payload: Dict[str, Any]) -> None:

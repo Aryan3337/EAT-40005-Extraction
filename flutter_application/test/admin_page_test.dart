@@ -57,11 +57,12 @@ void main() {
   // lets pumpAndSettle settle. The live-update group opts in and drives the
   // clock with pump() instead.
   Future<void> pumpPage(WidgetTester tester, AdminService service,
-      {PdfPicker? picker, Duration? pollInterval}) async {
+      {PdfPicker? picker, Duration? pollInterval, PdfViewer? viewer}) async {
     await tester.pumpWidget(MaterialApp(
       home: AdminPage(
         service: service,
         pickPdf: picker ?? () async => null,
+        viewPdf: viewer,
         pollInterval: pollInterval,
       ),
     ));
@@ -292,6 +293,154 @@ void main() {
       expect(find.text('garo_4.pdf'), findsOneWidget);
 
       await tester.pumpWidget(const SizedBox.shrink());
+    });
+  });
+
+  group('manual review', () {
+    testWidgets('a paper under review offers view, approve and reject',
+        (tester) async {
+      await pumpPage(tester, AdminService(client: queueOf([
+        _entry(paper: 'maybe.pdf', decision: 'held_for_review'),
+      ]), secret: 's'), viewer: (name, bytes) async {});
+
+      await openCategory(tester, 'Manual review');
+
+      expect(find.text('View paper'), findsOneWidget);
+      expect(find.widgetWithText(FilledButton, 'Approve'), findsOneWidget);
+      expect(find.widgetWithText(OutlinedButton, 'Reject'), findsOneWidget);
+    });
+
+    testWidgets('an approved paper offers neither approve nor reject',
+        (tester) async {
+      await pumpPage(tester, AdminService(client: queueOf([
+        _entry(paper: 'done.pdf'),
+      ]), secret: 's'), viewer: (name, bytes) async {});
+
+      await openCategory(tester, 'Approved');
+
+      expect(find.widgetWithText(FilledButton, 'Approve'), findsNothing);
+      expect(find.widgetWithText(OutlinedButton, 'Reject'), findsNothing);
+    });
+
+    testWidgets('without a viewer the app does not offer to show the paper',
+        (tester) async {
+      // A build that cannot render a PDF must hide the button rather than
+      // present one that silently does nothing.
+      await pumpPage(tester, AdminService(client: queueOf([
+        _entry(paper: 'maybe.pdf', decision: 'held_for_review'),
+      ]), secret: 's'));
+
+      await openCategory(tester, 'Manual review');
+
+      expect(find.text('View paper'), findsNothing);
+    });
+
+    testWidgets('a rejected paper is not offered for viewing', (tester) async {
+      // An automatically rejected paper was never stored, so there is nothing
+      // on the server to fetch.
+      await pumpPage(tester, AdminService(client: queueOf([
+        _entry(paper: 'gone.pdf', decision: 'rejected', storedPath: null),
+      ]), secret: 's'), viewer: (name, bytes) async {});
+
+      await openCategory(tester, 'Rejected');
+
+      expect(find.text('View paper'), findsNothing);
+    });
+
+    testWidgets('viewing fetches the bytes and hands them to the viewer',
+        (tester) async {
+      Uint8List? shown;
+      final client = _FakeClient((request) {
+        if (request.url.path == '/admin/paper') {
+          return http.Response.bytes(_pdf, 200);
+        }
+        return _json(200, {'queue': [
+          _entry(paper: 'maybe.pdf', decision: 'held_for_review'),
+        ]});
+      });
+
+      await pumpPage(tester, AdminService(client: client, secret: 's'),
+          viewer: (name, bytes) async => shown = bytes);
+      await openCategory(tester, 'Manual review');
+
+      await tester.tap(find.text('View paper'));
+      await tester.pumpAndSettle();
+
+      expect(shown, _pdf);
+    });
+
+    testWidgets('approving asks why, then submits it', (tester) async {
+      Map<String, dynamic>? submitted;
+      final client = _FakeClient((request) {
+        if (request.method == 'POST' && request is http.Request) {
+          submitted = jsonDecode(request.body) as Map<String, dynamic>;
+          return _json(200, {});
+        }
+        return _json(200, {'queue': [
+          _entry(paper: 'maybe.pdf', decision: 'held_for_review'),
+        ]});
+      });
+
+      await pumpPage(tester, AdminService(client: client, secret: 's'),
+          viewer: (name, bytes) async {});
+      await openCategory(tester, 'Manual review');
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Approve'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Approve maybe.pdf'), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField).last, 'Read it, sound.');
+      await tester.tap(find.widgetWithText(FilledButton, 'Approve').last);
+      await tester.pumpAndSettle();
+
+      expect(submitted?['paper'], 'maybe.pdf');
+      expect(submitted?['approve'], isTrue);
+      expect(submitted?['note'], 'Read it, sound.');
+    });
+
+    testWidgets('rejecting submits approve=false', (tester) async {
+      Map<String, dynamic>? submitted;
+      final client = _FakeClient((request) {
+        if (request.method == 'POST' && request is http.Request) {
+          submitted = jsonDecode(request.body) as Map<String, dynamic>;
+          return _json(200, {});
+        }
+        return _json(200, {'queue': [
+          _entry(paper: 'maybe.pdf', decision: 'held_for_review'),
+        ]});
+      });
+
+      await pumpPage(tester, AdminService(client: client, secret: 's'),
+          viewer: (name, bytes) async {});
+      await openCategory(tester, 'Manual review');
+
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Reject'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Reject').last);
+      await tester.pumpAndSettle();
+
+      expect(submitted?['approve'], isFalse);
+    });
+
+    testWidgets('cancelling the dialog submits nothing', (tester) async {
+      var posts = 0;
+      final client = _FakeClient((request) {
+        if (request.method == 'POST') posts++;
+        return _json(200, {'queue': [
+          _entry(paper: 'maybe.pdf', decision: 'held_for_review'),
+        ]});
+      });
+
+      await pumpPage(tester, AdminService(client: client, secret: 's'),
+          viewer: (name, bytes) async {});
+      await openCategory(tester, 'Manual review');
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Approve'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+
+      expect(posts, 0);
     });
   });
 }

@@ -18,6 +18,11 @@ class PickedPdf {
 
 typedef PdfPicker = Future<PickedPdf?> Function();
 
+/// Shows a PDF the app already holds. Injected for the same reason as the
+/// picker: the real one uses web-only APIs, and this screen's tests must
+/// not need them.
+typedef PdfViewer = Future<void> Function(String filename, Uint8List bytes);
+
 // Lets an admin submit a paper for confidence scoring and see what the server
 // decided.
 //
@@ -34,12 +39,18 @@ class AdminPage extends StatefulWidget {
     super.key,
     required this.service,
     required this.pickPdf,
+    this.viewPdf,
     this.onClose,
     this.pollInterval = const Duration(seconds: 5),
   });
 
   final AdminService service;
   final PdfPicker pickPdf;
+
+  /// Null means this build cannot display a PDF, so the review screen
+  /// hides "View paper" rather than offering a button that does nothing.
+  final PdfViewer? viewPdf;
+
   final VoidCallback? onClose;
 
   /// How often to re-read the queue. Scoring takes minutes and finishes
@@ -142,6 +153,46 @@ class _AdminPageState extends State<AdminPage> {
         _error = error.message;
       });
     }
+  }
+
+  Future<void> _viewPaper(String paper) async {
+    final viewer = widget.viewPdf;
+    if (viewer == null) return;
+    try {
+      final bytes = await widget.service.fetchPaper(paper);
+      await viewer(paper, bytes);
+    } on AdminException catch (error) {
+      if (!mounted) return;
+      _say(error.message);
+    }
+  }
+
+  /// Approve or reject a paper a person has actually read. The note is
+  /// optional but asked for: a decision with no reason recorded is useless to
+  /// whoever reads the queue afterwards, and the queue is the audit trail.
+  Future<void> _review(IngestEntry entry, {required bool approve}) async {
+    final note = await showDialog<String>(
+      context: context,
+      builder: (context) => _ReviewDialog(paper: entry.paper, approve: approve),
+    );
+    if (note == null) return; // cancelled
+
+    try {
+      await widget.service.submitReview(entry.paper, approve: approve, note: note);
+      if (!mounted) return;
+      setState(() => _openCategory = null);
+      _say('${entry.paper} ${approve ? 'approved' : 'rejected'}.');
+      await _refreshQueue(quietly: true);
+    } on AdminException catch (error) {
+      if (!mounted) return;
+      _say(error.message);
+    }
+  }
+
+  void _say(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 5)),
+    );
   }
 
   void _notYetWired(String paper) {
@@ -290,13 +341,23 @@ class _AdminPageState extends State<AdminPage> {
     return ListView.builder(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
       itemCount: entries.length,
-      itemBuilder: (context, index) => _PaperTile(
-        entry: entries[index],
-        category: _categoryFor(decision),
-        onExtract: decision == IngestDecision.readyToExtract
-            ? () => _notYetWired(entries[index].paper)
-            : null,
-      ),
+      itemBuilder: (context, index) {
+        final entry = entries[index];
+        final underReview = decision == IngestDecision.heldForReview;
+        return _PaperTile(
+          entry: entry,
+          category: _categoryFor(decision),
+          onExtract: decision == IngestDecision.readyToExtract
+              ? () => _notYetWired(entry.paper)
+              : null,
+          // Only where the file is still on the server to be read.
+          onView: widget.viewPdf != null && entry.isStored
+              ? () => _viewPaper(entry.paper)
+              : null,
+          onApprove: underReview ? () => _review(entry, approve: true) : null,
+          onReject: underReview ? () => _review(entry, approve: false) : null,
+        );
+      },
     );
   }
 }
@@ -418,11 +479,17 @@ class _PaperTile extends StatelessWidget {
     required this.entry,
     required this.category,
     this.onExtract,
+    this.onView,
+    this.onApprove,
+    this.onReject,
   });
 
   final IngestEntry entry;
   final _Category category;
   final VoidCallback? onExtract;
+  final VoidCallback? onView;
+  final VoidCallback? onApprove;
+  final VoidCallback? onReject;
 
   @override
   Widget build(BuildContext context) {
@@ -476,6 +543,26 @@ class _PaperTile extends StatelessWidget {
                     style: small,
                   ),
                 ),
+                if (onView != null)
+                  TextButton.icon(
+                    onPressed: onView,
+                    icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
+                    label: const Text('View paper'),
+                  ),
+                if (onReject != null) ...[
+                  const SizedBox(width: 8),
+                  OutlinedButton(
+                    onPressed: onReject,
+                    child: const Text('Reject'),
+                  ),
+                ],
+                if (onApprove != null) ...[
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: onApprove,
+                    child: const Text('Approve'),
+                  ),
+                ],
                 if (onExtract != null)
                   FilledButton.icon(
                     onPressed: onExtract,
@@ -517,6 +604,65 @@ class _Banner extends StatelessWidget {
           Expanded(child: Text(text)),
         ],
       ),
+    );
+  }
+}
+
+
+// Asks for the reason behind a manual decision.
+class _ReviewDialog extends StatefulWidget {
+  const _ReviewDialog({required this.paper, required this.approve});
+
+  final String paper;
+  final bool approve;
+
+  @override
+  State<_ReviewDialog> createState() => _ReviewDialogState();
+}
+
+class _ReviewDialogState extends State<_ReviewDialog> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final verb = widget.approve ? 'Approve' : 'Reject';
+    return AlertDialog(
+      title: Text('$verb ${widget.paper}?'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(widget.approve
+              ? 'It moves to Approved and is queued for extraction.'
+              : 'It moves to Rejected. The file is kept, so this can be '
+                  'revisited.'),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            maxLines: 3,
+            decoration: const InputDecoration(
+              labelText: 'Why? (recorded in the queue)',
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(_controller.text.trim()),
+          child: Text(verb),
+        ),
+      ],
     );
   }
 }

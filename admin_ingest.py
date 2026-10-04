@@ -242,7 +242,76 @@ def ingest_pdf(data: bytes, filename: str, *, scorer, uploads_dir) -> IngestOutc
     return outcome
 
 
-def _append_to_queue(uploads_dir: Path, outcome: IngestOutcome) -> Path:
+def _papers_dir(uploads_dir) -> Path:
+    return Path(uploads_dir) / "papers"
+
+
+def stored_paper_path(paper: str, uploads_dir) -> Path:
+    """Where a stored paper lives, with the name sanitised on the way OUT too.
+
+    The name comes from the client on a read, just as it did on the upload, so
+    it is attacker-controlled in both directions. Running it back through
+    safe_pdf_name and then confirming the resolved path really sits inside the
+    uploads directory means a traversal cannot read an arbitrary file off the
+    server.
+    """
+    papers = _papers_dir(uploads_dir).resolve()
+    candidate = (papers / safe_pdf_name(paper)).resolve()
+    if not candidate.is_relative_to(papers):
+        raise ValueError(f"{paper!r} resolves outside the uploads directory.")
+    return candidate
+
+
+def read_paper_bytes(paper: str, *, uploads_dir) -> bytes:
+    """The stored PDF, so a reviewer can read what they are judging."""
+    path = stored_paper_path(paper, uploads_dir)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{paper!r} is not stored. An automatically rejected paper is not "
+            f"kept, so there is nothing to show."
+        )
+    return path.read_bytes()
+
+
+def record_manual_decision(paper: str, *, approve: bool, note, uploads_dir) -> IngestOutcome:
+    """Record a person's decision on a paper that was held for review.
+
+    Appended, never substituted: the queue is an audit trail and the original
+    machine verdict has to survive next to the human one. `by="manual_review"`
+    is what lets a reader tell "the model scored this 80" from "a person
+    overrode the model".
+
+    A manual rejection KEEPS the file, unlike an automatic one which never
+    stored it. The paper is already on disk and a person is making a judgement
+    about it; keeping it means the decision can be revisited, and deleting on
+    a single click cannot be undone.
+    """
+    path = stored_paper_path(paper, uploads_dir)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{paper!r} is not stored, so there is nothing to decide on."
+        )
+
+    decision = (IngestDecision.READY_TO_EXTRACT if approve
+                else IngestDecision.REJECTED)
+    verb = "Approved" if approve else "Rejected"
+    reasons = [f"{verb} by manual review."]
+    if note and str(note).strip():
+        reasons.append(str(note).strip())
+
+    outcome = IngestOutcome(
+        decision=decision,
+        paper=safe_pdf_name(paper),
+        outcome=f"MANUAL_{'APPROVED' if approve else 'REJECTED'}",
+        reasons=reasons,
+        stored_path=str(path),
+    )
+    _append_to_queue(Path(uploads_dir), outcome, by="manual_review")
+    return outcome
+
+
+def _append_to_queue(uploads_dir: Path, outcome: IngestOutcome,
+                     by: str = "confidence_framework") -> Path:
     """Append-only log of every decision, including rejections.
 
     A rejected file is discarded but its decision is not: an admin has to be
@@ -252,9 +321,27 @@ def _append_to_queue(uploads_dir: Path, outcome: IngestOutcome) -> Path:
     queue_path = uploads_dir / "queue.jsonl"
     entry = outcome.to_json()
     entry["at"] = datetime.now(timezone.utc).isoformat()
+    entry["by"] = by
     with open(queue_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
     return queue_path
+
+
+def current_queue(uploads_dir) -> list[dict]:
+    """The queue as the admin screen should show it: one row per paper.
+
+    read_queue is append-only and keeps every decision ever made, which is
+    what an audit needs. For display that is wrong: after a manual review a
+    paper has two entries and would appear in two categories at once. Later
+    entries win, so a human decision supersedes the machine one and a
+    re-upload supersedes its predecessor.
+    """
+    latest: dict[str, dict] = {}
+    for entry in read_queue(uploads_dir):
+        paper = entry.get("paper")
+        if paper:
+            latest[paper] = entry
+    return list(latest.values())
 
 
 def read_queue(uploads_dir) -> list[dict]:

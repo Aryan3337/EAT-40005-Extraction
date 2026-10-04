@@ -8,6 +8,7 @@ import '../features/auth/login_page.dart';
 import '../services/admin_service.dart';
 import '../services/auth_service.dart';
 import '../services/chat_service.dart';
+import 'pdf_opener.dart';
 import 'pdf_picker.dart';
 
 class KnowledgeGraphApp extends StatefulWidget {
@@ -163,6 +164,7 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
           ? AdminPage(
               service: AdminService(secret: _adminSecret),
               pickPdf: pickPdfFile,
+              viewPdf: openPdfInNewTab,
               onClose: () => setState(() => _showingAdmin = false),
             )
           : ChatPage(

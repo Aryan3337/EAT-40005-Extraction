@@ -97,6 +97,62 @@ class AdminService {
         .toList();
   }
 
+  // The stored PDF, so a reviewer can read what they are judging. The paper
+  // name travels in the query string -- it is not sensitive -- while the
+  // secret stays in a header.
+  Future<Uint8List> fetchPaper(String paper) async {
+    final uri = Uri.parse('${endpoint.replaceAll(RegExp(r'/$'), '')}/admin/paper')
+        .replace(queryParameters: {'name': paper});
+
+    http.Response response;
+    try {
+      response = await _client.get(uri, headers: _authHeaders);
+    } catch (_) {
+      throw AdminException(
+        'Cannot reach the API at $endpoint. Start it with '
+        '"python rag.py --serve" and try again.',
+      );
+    }
+
+    if (response.statusCode == 404) {
+      throw const AdminException(
+        'That paper is not stored on the server, so there is nothing to show. '
+        'An automatically rejected paper is never kept.',
+      );
+    }
+    if (response.statusCode != 200) {
+      throw AdminException(_errorFor(response));
+    }
+    return response.bodyBytes;
+  }
+
+  // Records a person's approve/reject on a paper held for review. The server
+  // appends it rather than replacing the machine verdict, so the audit trail
+  // keeps both.
+  Future<void> submitReview(String paper, {required bool approve, String? note}) async {
+    http.Response response;
+    try {
+      response = await _client.post(
+        Uri.parse('${endpoint.replaceAll(RegExp(r'/$'), '')}/admin/review'),
+        headers: {..._authHeaders, 'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'paper': paper,
+          'approve': approve,
+          if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
+        }),
+      );
+    } catch (_) {
+      throw AdminException(
+        'Cannot reach the API at $endpoint. Start it with '
+        '"python rag.py --serve" and try again.',
+      );
+    }
+
+    if (response.statusCode != 200) {
+      throw AdminException(_errorFor(response));
+    }
+  }
+
   Map<String, dynamic> _decode(String body) {
     try {
       final decoded = jsonDecode(body);
