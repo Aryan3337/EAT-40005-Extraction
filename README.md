@@ -369,6 +369,26 @@ recall loss over hallucination risk:
   removed) LLM verify pass's plausibility judgment alone isn't reliable (see
   below) — it judged "does this relate to the sentence", not "does the
   sentence actually say this".
+
+  **Update, 2026-10-04: the gate now also bounds the citation's length.** A
+  `sentence_ref` longer than `MAX_SENTENCE_REF_CHARS` (200) is flagged as a
+  paragraph rather than the single sentence the triple was read from. Reason:
+  word-presence grounding gets *easier* to satisfy the longer the citation
+  runs, so the gate as originally written rewarded verbose citations. On the
+  2026-09-29 `garo_1.pdf` run that was a live defect, not a theoretical one —
+  4 of 17 surviving triples shared one 772-char, five-sentence paragraph as
+  their citation and all 4 passed grounding, while the *correctly* cited
+  population triple (`POPULATION -> 76,846`, cited to "There are only 76,846
+  Garo people in bangladesh") was rejected for quoting too tightly. The bound
+  is a rule inside this gate, not a new gate. Measured on that run: it flags
+  35 of 315 pre-gate rows (sole reason for 14 of them) and takes survivors
+  17 -> 13, removing exactly the 4 paragraph-cited rows and nothing else;
+  known defects among survivors go 6/17 (35%) -> 2/13 (15%). Gates still run
+  in ~1.3s. Note the 200-char ceiling does also flag some genuinely
+  single-sentence citations (the longest honest ones in the corpus run
+  233-356 chars); none survived the other gates, and over-rejecting a precise
+  citation costs recall while under-rejecting a verbose one ships a wrong
+  fact, so the bound deliberately errs toward rejection.
 - **`--quote-check`** (off by default, requires `--pdf`): a deterministic,
   LLM-free hard gate — the triple's `sentence_ref` must be a genuine, verbatim
   quote from its own page of `--pdf` (see `verification/quote_check.py`),
