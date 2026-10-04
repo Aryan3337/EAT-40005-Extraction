@@ -17,12 +17,23 @@ LLM Triple Extraction (Ollama + DeepSeek R1 7B)
         ↓
 Deduplication
         ↓
-Validation Gate (structure check + research-artifact flagging)
+Validation Gate (structure check + research-artifact exclusion)
+        ↓
+Subject-Specificity Correction (dependency parse, automatic)
+        ↓
+Verification Gates  ← hard gate, drops anything not provably cited
+  1. well-formedness
+  2. grounding (+ citation-length bound)
+  3. quote-genuineness (verbatim against the source PDF page)
         ↓
 Neo4j Upload
         ↓
 Knowledge Graph
 ```
+
+Everything from the validation gate down runs locally and costs nothing: no
+LLM call is made after extraction. The verification gates are a hard gate, not
+an advisory flag — see [The verification gates in `main.py`](#the-verification-gates-in-mainpy).
 
 ---
 
@@ -101,8 +112,10 @@ docker compose exec app python main.py papers/your_paper.pdf
 2. Per-chunk extraction output (`Chunk 1/50...`, `parsed N triples`)
 3. Deduplication summary
 4. **`Running validation gate...`** — every triple is checked for structural correctness; invalid ones are individually rejected (not the whole batch), and you'll see a count like `Validation: 12 passed, 3 rejected.`
-5. Any **`[WARN]`** lines flagging triples that look like research-methodology artifacts (interview/participant language) rather than real cultural content — these aren't blocked, just flagged for manual review
-6. A local CSV backup saved to `output/<paper_name>_kg.csv`
+5. Any **`[FILTERED]`** lines naming triples that matched research-methodology artifacts (interview/participant language) rather than real cultural content — these are **excluded**, not merely warned about
+6. A local CSV backup of the full pre-gate set saved to `output/<paper_name>_kg.csv`
+7. **`Running verification gates...`** — the three deterministic gates (see below). Expect a steep drop here: on the measured `garo_1` corpus roughly 300 extracted triples come out as 13
+8. `output/<paper_name>_kg_refined.csv` (what will be uploaded) and one `output/<paper_name>_kg_<gate>_flags.csv` per gate that rejected anything, each row carrying the reason it was rejected
 7. Upload confirmation: `Uploaded N triples to Neo4j.`
 
 **If you see `Validation: 0 passed` or very few triples survive:** this is a known issue, not something you broke. See **Known Issues** below.
@@ -114,6 +127,47 @@ docker compose down
 ```
 
 Your downloaded model and `.env` config are preserved — starting again won't require re-downloading anything.
+
+---
+
+## The verification gates in `main.py`
+
+Since 2026-10-04 `main.py` runs three deterministic, LLM-free gates between
+extraction and the Neo4j upload, via `verification/gate.py`:
+
+1. **Well-formedness** (`verification/wellformedness_check.py`) — entity and
+   predicate shape; also catches a Subject and Object that restate the same
+   concept.
+2. **Grounding** (`verification/grounding_check.py`) — every word of the
+   Subject and Object must appear in the triple's own `sentence_ref`, and that
+   citation must be at most 200 characters, so it is a sentence rather than a
+   whole paragraph.
+3. **Quote-genuineness** (`verification/quote_check.py`) — the `sentence_ref`
+   must be a real, verbatim quote from its own page of the source PDF.
+
+They are a **hard gate**: a flagged triple is dropped, never held for review,
+because this graph feeds a fully autonomous chatbot with no human in the loop.
+A triple can be flagged by more than one gate, and it is recorded under each —
+the flag files are an audit trail, not a first-match-wins dispatch. The whole
+pass is free and takes about a second per few hundred rows.
+
+| Flag | Effect |
+| --- | --- |
+| `--no-gates` | Skip all three and upload whatever clears the older structural checks, as this script did before the gates were wired in |
+| `--dry-run` | Do everything except the Neo4j upload; the CSVs are still written |
+
+```bash
+python main.py papers/your_paper.pdf --dry-run      # see the numbers, upload nothing
+python main.py papers/your_paper.pdf --no-gates     # pre-2026-10-04 behaviour
+```
+
+> **On the measured numbers.** The "300 → 13" figures in this README and in the
+> results doc were produced with the `extraction_broad_v2` prompt
+> (`prompts/extraction_broad_v2.txt`), which the now-removed `main_hardened.py`
+> swapped in. `main.py` uses `kg_extractor.py`'s own built-in prompt, so its
+> yield will differ. The gates themselves behave identically either way; only
+> what they are fed changes. Use `test_extraction_prompt_config.py` to compare
+> prompts without touching the production path.
 
 ---
 
@@ -276,6 +330,179 @@ docker compose exec app python test_extraction_variants.py papers/garo_1.pdf 3 -
 
 ---
 
+## Comparing extraction/verification configurations (strict prompt, deterministic gates)
+
+Three configurations can now be compared on the same ground-truth pages, using the
+harness in `eval/` and `prompts/` (see
+`docs/superpowers/specs/2026-09-21-extraction-verification-design.md` for the full
+design). None of this touches Neo4j.
+
+1. Run each configuration against a page you have ground truth for (e.g. page 3) and
+   save the output CSV:
+   - **(A) Current live prompt** (unchanged): `python test_extraction.py papers/garo_1.pdf 3`
+   - **(B) Strict tacit-only prompt**: `python test_extraction_prompt_config.py papers/garo_1.pdf 3 --prompt extraction_strict_tacit_v1`
+   - **(C) Broad-v2 + gates**: `python test_extraction_prompt_config.py papers/garo_1.pdf 3 --prompt extraction_broad_v2`,
+     then `python run_verification_pipeline.py output/<the_csv_from_broad_v2> --wellformedness-check --grounding-check --quote-check --pdf papers/garo_1.pdf`.
+     `test_extraction_prompt_config.py` (unlike `test_extraction_variants.py`) always
+     preserves the model's `SENTENCE REF` line into a `sentence_ref` column, which the
+     grounding and quote gates both read.
+2. Score each resulting CSV against the ground truth. Each CSV must already be scoped
+   to the pages passed via `--pages` — `eval/run_eval.py` does not filter rows by page
+   itself:
+   ```bash
+   python -m eval.run_eval output/<csv_from_A> --pages 3 --label "A: live prompt"
+   python -m eval.run_eval output/<csv_from_B> --pages 3 --label "B: strict tacit-only"
+   python -m eval.run_eval output/<csv_from_C>_refined.csv --pages 3 --label "C: broad-v2 + gates"
+   ```
+3. Compare the rows in `eval/results.csv` (git-tracked) for precision/recall/F1
+   (strict + lenient), `gt_miss_rate`, and triples/page. Check
+   `output/<...>_wellformedness_flags.csv`, `_grounding_flags.csv`, and
+   `_quote_flags.csv` for anything worth a manual look.
+
+   **`gt_miss_rate` is not a hallucination rate.** It's `1 - precision_strict`:
+   the fraction of extracted triples with no *exact* string match to a row in
+   the ground-truth workbook. A triple can miss here for being genuinely wrong,
+   or for being real but phrased differently, using a coarser/finer subject
+   than the human annotator chose, or covering something the ground-truth
+   sheet simply didn't enumerate -- all observed in practice (e.g. the
+   strict-tacit prompt's `GaroCommunity -WEARS-> Saree` vs. the ground truth's
+   `GaroWomen -WEARS-> sarees`: same fact, coarser subject, still counted as a
+   miss). For an actual grounding-based hallucination measure -- does each
+   triple's own cited sentence_ref genuinely appear on its page, and does the
+   triple's Subject/Object actually appear in that citation -- use
+   `eval/hallucination.py`'s `compute_hallucination_rate()`, or pass `--pdf` to
+   `eval/run_eval.py` to log it (as `hallucination_rate` + `citation_coverage`)
+   alongside the ground-truth comparison. Always read `hallucination_rate`
+   next to `citation_coverage`: a low coverage means the extraction path isn't
+   populating `sentence_ref` at all (the live prompt's `test_extraction.py`
+   path does this -- 0/35 on garo_1 page 3), so the rate has no evidence
+   behind it, not that everything is fabricated.
+4. `run_verification_pipeline.py` needs no Ollama connection at all: every gate it
+   runs is deterministic and LLM-free. Only the extraction step ahead of it calls a
+   model.
+
+### No-human-review hardening (autonomous chatbot target)
+
+> **Removed 2026-09-29 (1 of 2): the direction/ontology check** (`--direction-check`,
+> `verification/direction_check.py`, `verification/predicate_directions.py`).
+> Measured per-gate over the full 303-row `garo_1` dry run, it flagged **0
+> rows and uniquely flagged 0**. Its curated lexicon covered 4 predicates
+> (`PROHIBITS`, `REQUIRES`, `GOVERNS`, `TEACHES`) against the **110 distinct
+> predicates** the corpus actually produced, and firing required the subject
+> AND the object to look swapped simultaneously. The gates carrying the load
+> are `--grounding-check` (99 unique catches) and `--quote-check` (45);
+> `--wellformedness-check` contributed 1. Passages below dated before this
+> that mention `--direction-check` are historical measurements, left as
+> recorded. The code is recoverable from git history if a future corpus makes
+> it earn its place.
+
+> **Removed 2026-09-29 (2 of 2): the two-step LLM verify pass**
+> (`--verify`, `--verify-samples`, `verification/verify_pass.py`,
+> `prompts/verify_tacit_evidence_v1.txt`, and the `_reviewed_out.csv`
+> output). It was already opt-in, showed no measured reduction in
+> hallucination rate beyond the deterministic gates on this corpus, and cost
+> 8+ hours of CPU-Ollama time on a single paper. Removing it is the largest
+> single code reduction in the harness and changes default behaviour by
+> nothing, since it was already off by default. `pruner/llm_judge.py` remains
+> a live, separate implementation of the same idea if an LLM judge is wanted
+> again. Passages below that describe verify bands, thresholds or sampling
+> are historical, left as recorded.
+
+This pipeline feeds a fully autonomous chatbot with no human curation step, so a
+false positive here reaches an end user directly. Four things bias it toward
+recall loss over hallucination risk:
+
+- **The deterministic checks are a hard gate on `_refined.csv`**, not just an
+  audit-trail side channel — a flagged row is excluded from `_refined.csv`,
+  and the flag is still recorded in its own `_<check>_flags.csv` for
+  inspection; it just no longer doubles as an allow-list.
+- **`--grounding-check`** (off by default): a deterministic, LLM-free hard gate
+  — every word of a triple's Subject and Object (see `verification/grounding_check.py`)
+  must appear in its own `sentence_ref`, case-insensitively; no `sentence_ref`
+  at all fails closed. Added after full-corpus validation showed the (since
+  removed) LLM verify pass's plausibility judgment alone isn't reliable (see
+  below) — it judged "does this relate to the sentence", not "does the
+  sentence actually say this".
+
+  **Update, 2026-10-04: the gate now also bounds the citation's length.** A
+  `sentence_ref` longer than `MAX_SENTENCE_REF_CHARS` (200) is flagged as a
+  paragraph rather than the single sentence the triple was read from. Reason:
+  word-presence grounding gets *easier* to satisfy the longer the citation
+  runs, so the gate as originally written rewarded verbose citations. On the
+  2026-09-29 `garo_1.pdf` run that was a live defect, not a theoretical one —
+  4 of 17 surviving triples shared one 772-char, five-sentence paragraph as
+  their citation and all 4 passed grounding, while the *correctly* cited
+  population triple (`POPULATION -> 76,846`, cited to "There are only 76,846
+  Garo people in bangladesh") was rejected for quoting too tightly. The bound
+  is a rule inside this gate, not a new gate. Measured on that run: it flags
+  35 of 315 pre-gate rows (sole reason for 14 of them) and takes survivors
+  17 -> 13, removing exactly the 4 paragraph-cited rows and nothing else;
+  known defects among survivors go 6/17 (35%) -> 2/13 (15%). Gates still run
+  in ~1.3s. Note the 200-char ceiling does also flag some genuinely
+  single-sentence citations (the longest honest ones in the corpus run
+  233-356 chars); none survived the other gates, and over-rejecting a precise
+  citation costs recall while under-rejecting a verbose one ships a wrong
+  fact, so the bound deliberately errs toward rejection.
+- **`--quote-check`** (off by default, requires `--pdf`): a deterministic,
+  LLM-free hard gate — the triple's `sentence_ref` must be a genuine, verbatim
+  quote from its own page of `--pdf` (see `verification/quote_check.py`),
+  tolerant of a `...`-truncated quote (each segment either side of the
+  ellipsis must independently be genuine). Catches a failure mode
+  `--grounding-check` structurally can't: a triple whose Subject/Object words
+  are all present in *some* sentence, but where that sentence itself was
+  invented or blended from two different real sentences (a fabricated or
+  imprecise citation wrapped around an otherwise-plausible claim). Found
+  during a manual audit of the strict-tacit-only prompt's output — a triple
+  can look "grounded" against its own citation while the citation itself
+  isn't real.
+- **`--wellformedness-check` also flags tautological Subject/Object pairs**
+  (see `verification/wellformedness_check.py`'s `_check_tautology`) — e.g.
+  "Types of baskets" `HAS_TYPE` "Different types of baskets" restates the same
+  concept rather than expressing a real relationship. Subject/Object word sets
+  are compared after stripping qualifier words ("different", "various", "the",
+  "of", etc.); an exact match after stripping is flagged.
+
+There is deliberately no "held for human review" path in this pipeline — a
+triple flagged by any enabled check is dropped, not queued. Every dropped row
+is still recorded in the flag file of whichever gate caught it, but nothing
+downstream reads those automatically.
+
+**Full-corpus validation (2026-09-24):** running the hardened pipeline on
+page 3 alone scored a 0% `gt_miss_rate` (2 kept, both correct) — but that was a
+2-sample artifact. Across all 7 ground-truth pages (148 GT triples), it
+scored 18 kept / **89% `gt_miss_rate`** (strict precision 0.11). Adding
+`--grounding-check` on top brought that down to 3 kept / **33%
+`gt_miss_rate`** (strict precision 0.67) — a large improvement, but not zero.
+The one remaining false positive in that run was a malformed, tautological
+entity pair ("Types of baskets" `HAS_TYPE` "Different types of baskets").
+Adding the tautology check to `check_wellformedness` (above) catches exactly
+that case: full-corpus result with direction + wellformedness + grounding
+all enabled is 2 kept / **0% `gt_miss_rate`** (strict precision 1.00, recall
+0.01 — 2/148 GT triples). Given the product goal (a fully autonomous chatbot
+with zero tolerance for returning false information, and no human review
+step), this low-recall/zero-`gt_miss_rate` trade is the intended and accepted
+outcome, not a shortfall to fix. Always validate any threshold/gate change
+against the full ground-truth corpus (all 7 pages), not a single page — see
+`eval/results.csv` for the `"C-hardened..."`-labeled rows.
+
+**These are `gt_miss_rate` numbers, not hallucination rates** (see the caveat
+above) — re-scoring the same files with `eval/hallucination.py`'s real,
+grounding-based check (independent of the ground-truth workbook, so it also
+works on papers with no ground truth at all) tells a related but distinct
+story: raw candidates were 91% flagged, the direction+wellformedness-only
+stage (18 kept) was still 83% flagged, but the moment `--grounding-check`
+enters the gate the flagged rate drops straight to **0%** (3 kept, and stays
+0% at 2 kept after adding the tautology check) — the *same* deterministic
+grounding gate that was tuned against `gt_miss_rate` independently zeroes out
+the real, text-grounded hallucination rate too. Re-running this whole
+pipeline on a second, unrelated paper (`garo_2.pdf`, 22 pages, no ground
+truth) replicates it: 268 raw candidates, 91.8% flagged; 18 gate-survivors,
+22.2% flagged; 2 final kept (after the LLM verify pass), one flagged for a
+trivial one-word paraphrase in its own quote ("This study..." extracted as
+"The study..."), not a fabrication.
+
+---
+
 ## Known Issues
 
 - **Low/zero triple counts after validation:** DeepSeek R1 7B doesn't always follow the requested `(Subject)-[PREDICATE]->(Object)` output format — sometimes it writes plain prose instead. When this happens, the parser can't extract a real triple and falls back to a placeholder, which the validation gate now correctly rejects. This shows up as most or all chunks getting rejected in Step 6. **This is a known, pre-existing bug, not something a fresh checkout or your setup is doing wrong.** If you hit this consistently, flag it in the group chat rather than trying to fix it solo — it's being tracked.
@@ -320,7 +547,16 @@ pip install -r requirements.txt
 ### 5. Run
 
 ```bash
-python main.py papers/your_paper.pdf
+python main.py papers/your_paper.pdf              # gated, then uploads
+python main.py papers/your_paper.pdf --dry-run    # gated, uploads nothing
+python main.py papers/your_paper.pdf --no-gates   # pre-2026-10-04 behaviour
+```
+
+Running outside Docker also needs the spaCy model the subject-specificity step
+depends on, which the Dockerfile installs for you:
+
+```bash
+python -m spacy download en_core_web_sm
 ```
 
 ---

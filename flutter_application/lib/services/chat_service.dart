@@ -19,10 +19,11 @@ class ChatService {
     if (defaultTargetPlatform == TargetPlatform.android) {
       return 'http://10.0.2.2:8000/query';
     }
+
     return 'http://127.0.0.1:8000/query';
   }
 
-  // Queries RAG.py and maps its response into a displayable chat message.
+  // Queries RAG.py and maps its answer and evidence into a chat message.
   Future<ChatMessage> ask(String question) async {
     try {
       final response = await _client.post(
@@ -33,35 +34,53 @@ class ChatService {
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
         final payload = jsonDecode(response.body) as Map<String, dynamic>;
+
         return ChatMessage(
           text: payload['answer'] as String? ?? 'The graph returned no answer.',
           author: MessageAuthor.assistant,
-          //sources: _readSources(payload['sources']),
+          sources: _readSources(payload['triples']),
         );
       }
 
       return _errorMessage(
-        'RAG.py returned HTTP ${response.statusCode}. Check the backend terminal.',
+        'RAG.py returned HTTP ${response.statusCode}. '
+        'Check the backend terminal.',
       );
     } catch (_) {
       return _errorMessage(
-        'Cannot reach RAG.py at $endpoint. Start the RAG API and try again.',
+        'Cannot reach RAG.py at $endpoint. '
+        'Start the RAG API and try again.',
       );
     }
   }
 
-  // Normalizes optional source records from the API response.
-  List<String> _readSources(dynamic value) {
+  // Converts knowledge-graph triples into evidence shown beneath the answer.
+  List<SourceEvidence> _readSources(dynamic value) {
     if (value is! List) return const [];
-    return value.map((source) => source.toString()).toList();
+
+    final sources = <SourceEvidence>[];
+
+    for (final item in value) {
+      if (item is! Map) continue;
+
+      final source = SourceEvidence.fromJson(Map<String, dynamic>.from(item));
+
+      final hasTriple =
+          source.subject.isNotEmpty &&
+          source.predicate.isNotEmpty &&
+          source.object.isNotEmpty;
+      final hasSupportingText = source.supportingText.isNotEmpty;
+
+      if (hasTriple || hasSupportingText) {
+        sources.add(source);
+      }
+    }
+
+    return sources;
   }
 
   // Explains why a live graph answer could not be displayed.
   ChatMessage _errorMessage(String text) {
-    return ChatMessage(
-      author: MessageAuthor.assistant,
-      text: text,
-      //sources: const ['RAG.py connection'],
-    );
+    return ChatMessage(author: MessageAuthor.assistant, text: text);
   }
 }
