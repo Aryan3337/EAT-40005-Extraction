@@ -1,17 +1,15 @@
-// Tests for the admin paper-admission flow: AdminService and AdminPage.
+// Tests for AdminService and IngestEntry -- the HTTP layer and the queue row.
 //
-// None of these import file_picker. AdminPage takes its picker as an injected
-// callback precisely so the screen is testable without a file dialog, and so a
-// problem resolving that package cannot take the test suite down with it.
+// The AdminPage widget tests live in admin_page_test.dart. Neither file
+// imports file_picker: AdminPage takes its picker as an injected callback, so
+// a problem resolving that package cannot take the suite down with it.
 
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
-import 'package:flutter_application/features/admin/admin_page.dart';
 import 'package:flutter_application/models/ingest_entry.dart';
 import 'package:flutter_application/services/admin_service.dart';
 
@@ -198,134 +196,6 @@ void main() {
 
     test('a missing score reads as a dash rather than null', () {
       expect(IngestEntry.fromJson(_entry(score: null)).scoreLabel, '—');
-    });
-  });
-
-  group('AdminPage', () {
-    Future<void> pumpPage(WidgetTester tester, AdminService service,
-        {PdfPicker? picker}) async {
-      await tester.pumpWidget(MaterialApp(
-        home: AdminPage(
-          service: service,
-          pickPdf: picker ?? () async => null,
-        ),
-      ));
-      await tester.pumpAndSettle();
-    }
-
-    testWidgets('shows the queue, newest first', (tester) async {
-      final client = _FakeClient((_) => _json(200, {
-        'queue': [_entry(paper: 'older.pdf'), _entry(paper: 'newer.pdf')],
-      }));
-      await pumpPage(tester, AdminService(client: client, secret: 's'));
-
-      expect(find.text('newer.pdf'), findsOneWidget);
-      expect(find.text('older.pdf'), findsOneWidget);
-    });
-
-    testWidgets('says so when nothing has been submitted', (tester) async {
-      final client = _FakeClient((_) => _json(200, {'queue': []}));
-      await pumpPage(tester, AdminService(client: client, secret: 's'));
-
-      expect(find.text('No papers have been submitted yet.'), findsOneWidget);
-    });
-
-    testWidgets('surfaces an unreachable API instead of an empty list',
-        (tester) async {
-      await pumpPage(tester, AdminService(client: _ExplodingClient(), secret: 's'));
-
-      expect(find.textContaining('Cannot reach the API'), findsOneWidget);
-    });
-
-    testWidgets('a scoring failure is labelled as not a judgement',
-        (tester) async {
-      // The whole point of the fourth decision: an admin must not read an
-      // unreachable model as their paper being rejected.
-      final client = _FakeClient((_) => _json(200, {
-        'queue': [
-          _entry(decision: 'scoring_failed', score: 5,
-                 reasons: ['Scoring did not complete -- model unreachable.']),
-        ],
-      }));
-      await pumpPage(tester, AdminService(client: client, secret: 's'));
-
-      expect(find.text('Scoring did not run'), findsOneWidget);
-
-      await tester.tap(find.text('garo_4.pdf'));
-      await tester.pumpAndSettle();
-      expect(find.textContaining('not a judgement on the paper'), findsOneWidget);
-    });
-
-    testWidgets('a rejected paper is shown as discarded', (tester) async {
-      final client = _FakeClient((_) => _json(200, {
-        'queue': [
-          _entry(decision: 'rejected', score: 40, storedPath: null,
-                 reasons: ['Scored below the approval threshold.']),
-        ],
-      }));
-      await pumpPage(tester, AdminService(client: client, secret: 's'));
-
-      expect(find.textContaining('Rejected — not stored'), findsOneWidget);
-
-      await tester.tap(find.text('garo_4.pdf'));
-      await tester.pumpAndSettle();
-      expect(find.textContaining('file was discarded'), findsOneWidget);
-    });
-
-    testWidgets('cancelling the file dialog uploads nothing', (tester) async {
-      var uploads = 0;
-      final client = _FakeClient((request) {
-        if (request.method == 'POST') uploads++;
-        return _json(200, {'queue': []});
-      });
-      await pumpPage(tester, AdminService(client: client, secret: 's'),
-          picker: () async => null);
-
-      await tester.tap(find.text('Choose a PDF'));
-      await tester.pumpAndSettle();
-
-      expect(uploads, 0);
-    });
-
-    testWidgets('a successful upload shows the server message and refreshes',
-        (tester) async {
-      var queueFetches = 0;
-      final client = _FakeClient((request) {
-        if (request.method == 'POST') {
-          return _json(202, {'paper': 'garo_4.pdf',
-                             'message': 'Upload accepted and being scored.'});
-        }
-        queueFetches++;
-        return _json(200, {'queue': []});
-      });
-      await pumpPage(tester, AdminService(client: client, secret: 's'),
-          picker: () async => PickedPdf(filename: 'garo_4.pdf', bytes: _pdf));
-
-      expect(queueFetches, 1);
-
-      await tester.tap(find.text('Choose a PDF'));
-      await tester.pumpAndSettle();
-
-      expect(find.textContaining('being scored'), findsOneWidget);
-      expect(queueFetches, 2, reason: 'the queue should refresh after upload');
-    });
-
-    testWidgets('a failed upload shows the reason and does not clear the queue',
-        (tester) async {
-      final client = _FakeClient((request) {
-        if (request.method == 'POST') {
-          return _json(401, {'error': 'Admin secret missing or incorrect.'});
-        }
-        return _json(200, {'queue': [_entry(paper: 'existing.pdf')]});
-      });
-      await pumpPage(tester, AdminService(client: client, secret: 'wrong'),
-          picker: () async => PickedPdf(filename: 'garo_4.pdf', bytes: _pdf));
-
-      await tester.tap(find.text('Choose a PDF'));
-      await tester.pumpAndSettle();
-
-      expect(find.textContaining('secret'), findsOneWidget);
-      expect(find.text('existing.pdf'), findsOneWidget);
     });
   });
 }
