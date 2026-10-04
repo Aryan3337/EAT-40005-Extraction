@@ -38,6 +38,10 @@ dependencies:
   speech_to_text: ^7.4.0
   http: ^1.5.0
   shared_preferences: ^2.5.3
+  # Only used by lib/app/pdf_picker.dart, for the admin paper-admission
+  # screen. AdminPage takes its picker as an injected callback, so nothing
+  # else in the app or its tests depends on this.
+  file_picker: ^8.1.2
 
 dev_dependencies:
   flutter_test:

@@ -16,6 +16,7 @@ class ChatPage extends StatefulWidget {
     this.historyService,
     this.strings = const AppLocalizations('en'),
     this.onLanguageChanged,
+    this.onOpenAdmin,
   });
 
   final ChatService service;
@@ -24,6 +25,11 @@ class ChatPage extends StatefulWidget {
   final ChatHistoryService? historyService;
   final AppLocalizations strings;
   final ValueChanged<String>? onLanguageChanged;
+
+  // Non-null only for an admin session, which is what renders the entry point
+  // to the paper-admission screen. This is presentation, not access control:
+  // the server's shared secret authorises the requests.
+  final VoidCallback? onOpenAdmin;
 
   // Creates the mutable conversation state.
   @override
@@ -198,6 +204,7 @@ class _ChatPageState extends State<ChatPage> {
                   onNewChat: _startNewChat,
                   onSignOut: widget.onSignOut,
                   onLanguageChanged: widget.onLanguageChanged,
+                  onOpenAdmin: widget.onOpenAdmin,
                 ),
                 Expanded(
                   child: _ConversationView(
@@ -228,12 +235,14 @@ class _ChatHeader extends StatelessWidget {
     required this.strings,
     this.onSignOut,
     this.onLanguageChanged,
+    this.onOpenAdmin,
   });
 
   final Future<void> Function() onNewChat;
   final AppLocalizations strings;
   final VoidCallback? onSignOut;
   final ValueChanged<String>? onLanguageChanged;
+  final VoidCallback? onOpenAdmin;
 
   // Builds the product identity and session controls.
   @override
@@ -262,6 +271,12 @@ class _ChatHeader extends StatelessWidget {
           ),
           if (onLanguageChanged != null)
             LanguagePicker(strings: strings, onChanged: onLanguageChanged!),
+          if (onOpenAdmin != null)
+            IconButton(
+              onPressed: onOpenAdmin,
+              tooltip: 'Paper admission',
+              icon: const Icon(Icons.admin_panel_settings_outlined),
+            ),
           IconButton(
             onPressed: onNewChat,
             tooltip: strings.text('newChat'),

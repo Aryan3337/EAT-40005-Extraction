@@ -1,0 +1,133 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
+
+import '../models/ingest_entry.dart';
+
+// Talks to rag.py's admin endpoints.
+//
+// The admin role in AuthService only decides which buttons render. This secret
+// is what actually authorises the request: the server checks it with a
+// constant-time compare and refuses when it is unset, so a deployment that
+// forgot to configure one has the endpoints disabled rather than open.
+class AdminService {
+  AdminService({http.Client? client, String? endpoint, required this.secret})
+    : endpoint = endpoint ?? _defaultEndpoint,
+      _client = client ?? http.Client();
+
+  final http.Client _client;
+  final String endpoint;
+  final String secret;
+
+  // Same host rules as ChatService: the Android emulator reaches the host
+  // machine at 10.0.2.2, everything else at loopback.
+  static String get _defaultEndpoint {
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      return 'http://10.0.2.2:8000';
+    }
+    return 'http://127.0.0.1:8000';
+  }
+
+  Map<String, String> get _authHeaders => {'X-Admin-Secret': secret};
+
+  // Sends the PDF as the raw request body with its name in a header. Raw bytes
+  // rather than multipart because the stdlib module that parsed multipart was
+  // removed in Python 3.13, and this is just as easy from here.
+  //
+  // Returns as soon as the server accepts it. The verdict is NOT known yet --
+  // scoring takes minutes, so it runs server-side in the background and the
+  // caller polls fetchQueue().
+  Future<UploadAck> uploadPdf({
+    required Uint8List bytes,
+    required String filename,
+  }) async {
+    http.Response response;
+    try {
+      response = await _client.post(
+        Uri.parse('${endpoint.replaceAll(RegExp(r'/$'), '')}/admin/upload'),
+        headers: {..._authHeaders, 'X-Filename': filename},
+        body: bytes,
+      );
+    } catch (_) {
+      throw AdminException(
+        'Cannot reach the API at $endpoint. Start it with '
+        '"python rag.py --serve" and try again.',
+      );
+    }
+
+    if (response.statusCode == 202) {
+      final payload = _decode(response.body);
+      return UploadAck(
+        paper: payload['paper']?.toString() ?? filename,
+        message: payload['message']?.toString() ?? 'Upload accepted.',
+      );
+    }
+    throw AdminException(_errorFor(response));
+  }
+
+  Future<List<IngestEntry>> fetchQueue() async {
+    http.Response response;
+    try {
+      response = await _client.get(
+        Uri.parse('${endpoint.replaceAll(RegExp(r'/$'), '')}/admin/queue'),
+        headers: _authHeaders,
+      );
+    } catch (_) {
+      throw AdminException(
+        'Cannot reach the API at $endpoint. Start it with '
+        '"python rag.py --serve" and try again.',
+      );
+    }
+
+    if (response.statusCode != 200) {
+      throw AdminException(_errorFor(response));
+    }
+
+    final payload = _decode(response.body);
+    final rows = payload['queue'];
+    if (rows is! List) return const [];
+
+    // Newest first: an admin who just uploaded wants to see that row.
+    return rows
+        .whereType<Map>()
+        .map((row) => IngestEntry.fromJson(Map<String, dynamic>.from(row)))
+        .toList()
+        .reversed
+        .toList();
+  }
+
+  Map<String, dynamic> _decode(String body) {
+    try {
+      final decoded = jsonDecode(body);
+      return decoded is Map ? Map<String, dynamic>.from(decoded) : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  // Turns a status code into something an admin can act on, preferring the
+  // server's own message when it sent one.
+  String _errorFor(http.Response response) {
+    final serverMessage = _decode(response.body)['error']?.toString();
+
+    switch (response.statusCode) {
+      case 401:
+        return serverMessage ??
+            'The admin secret was missing or incorrect. It must match '
+                'ADMIN_UPLOAD_SECRET on the server.';
+      case 503:
+        return serverMessage ??
+            'Admin uploads are disabled: ADMIN_UPLOAD_SECRET is not set on '
+                'the server. Set it in .env and restart the API.';
+      case 413:
+        return serverMessage ?? 'That file is too large to upload.';
+      case 400:
+        return serverMessage ?? 'The server rejected that file.';
+      default:
+        return serverMessage ??
+            'The server returned HTTP ${response.statusCode}.';
+    }
+  }
+}
