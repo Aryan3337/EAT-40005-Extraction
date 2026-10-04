@@ -25,6 +25,12 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
   bool _showingAdmin = false;
   String _adminSecret = '';
 
+  // showDialog needs a context BELOW MaterialApp -- one that can see the
+  // Navigator and MaterialLocalizations it provides. This State builds
+  // MaterialApp, so its own context sits above both and throws. The key gives
+  // us a context from inside.
+  final _navigatorKey = GlobalKey<NavigatorState>();
+
   static const _adminSecretKey = 'admin.secret';
 
   @override
@@ -53,8 +59,10 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
   // fail with a 401 nobody can act on.
   Future<void> _openAdmin() async {
     if (_adminSecret.isEmpty) {
+      final dialogContext = _navigatorKey.currentContext;
+      if (dialogContext == null) return;
       final entered = await showDialog<String>(
-        context: context,
+        context: dialogContext,
         builder: (context) => const _AdminSecretDialog(),
       );
       if (entered == null || entered.isEmpty) return;
@@ -121,6 +129,7 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
     final strings = AppLocalizations(_languageCode);
 
     return MaterialApp(
+      navigatorKey: _navigatorKey,
       title: 'Mandi/Garo ChatBot',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
