@@ -19,4 +19,3 @@ def test_load_prompt_strict_tacit_has_no_leftover_placeholder():
     result = build_prompt("Example passage.")
     assert "Example passage." in result
     assert "{passage}" not in result
-

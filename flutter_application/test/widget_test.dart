@@ -45,11 +45,11 @@ void main() {
     final service = AuthService();
 
     final validSession = await service.signIn(
-      email: 'admin',
-      password: 'admin123',
+      email: AuthService.demoUsername,
+      password: AuthService.demoPassword,
       rememberMe: false,
     );
-    expect(validSession.email, 'admin');
+    expect(validSession.email, AuthService.demoUsername);
 
     expect(
       () => service.signIn(
