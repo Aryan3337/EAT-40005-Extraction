@@ -29,7 +29,7 @@ import csv
 from pathlib import Path
 
 from eval.hallucination import load_page_texts
-from verification.gate import apply_gates
+from verification.gate import apply_gates, page_number_from_source_section
 
 
 def load_rows(csv_path: str) -> list[dict]:
@@ -38,8 +38,10 @@ def load_rows(csv_path: str) -> list[dict]:
 
 
 def write_rows(path: Path, fieldnames: list[str], rows: list[dict]) -> None:
+    # extrasaction="ignore" so a key added for gating only -- the derived
+    # page_number below -- doesn't widen the output schema. Matches main.py.
     with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
@@ -54,6 +56,19 @@ def run(csv_path: str, run_wellformed: bool,
     enforces cannot drift apart."""
     rows = load_rows(csv_path)
     fieldnames = list(rows[0].keys()) if rows else ["subject", "predicate", "object"]
+
+    # kg_extractor.py emits source_section="Page 3", never a page_number
+    # column, so a real output/<paper>_kg.csv has no page number for the
+    # quote gate to look up -- and the gate fails closed, rejecting every
+    # row. main.py derives it before gating; so must this, or the two
+    # callers disagree on the same input. Measured on garo_2: 0 kept here
+    # against main.py's 24. A page_number already in the CSV always wins.
+    if run_quote_check:
+        for row in rows:
+            if not (row.get("page_number") or "").strip():
+                row["page_number"] = page_number_from_source_section(
+                    row.get("source_section", "")
+                )
 
     outcome = apply_gates(
         rows,

@@ -134,3 +134,42 @@ def test_run_verification_pipeline_quote_check_requires_page_texts(tmp_path):
         assert False, "expected a ValueError"
     except ValueError as e:
         assert "page_texts" in str(e)
+
+
+def test_quote_check_derives_page_number_from_source_section(tmp_path):
+    # Every other quote-check test here hand-writes a page_number column, but
+    # kg_extractor.py never emits one: a real output/<paper>_kg.csv carries
+    # source_section="Page 3" instead. main.py derives page_number from it
+    # before gating; this pipeline has to do the same, or the quote gate
+    # fails closed on every row and refined comes out empty. Measured on the
+    # real garo_2 corpus: 0 kept here against main.py's 24.
+    csv_path = tmp_path / "from_extractor.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["subject", "predicate", "object", "source_section", "sentence_ref"])
+        writer.writerow(["GaroMen", "WEARS", "Lungis", "Page 3", "<Garo men wear lungis.>"])
+
+    summary = run(
+        str(csv_path), run_wellformed=False,
+        run_quote_check=True, page_texts={3: "Garo men wear lungis."},
+    )
+
+    assert summary["refined"] == 1
+    assert summary["quote_flags"] == 0
+
+
+def test_an_explicit_page_number_column_still_wins(tmp_path):
+    # Deriving must not clobber a page_number a caller already supplied --
+    # run_page_pipeline.py writes one directly.
+    csv_path = tmp_path / "both_columns.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["page_number", "subject", "predicate", "object", "source_section", "sentence_ref"])
+        writer.writerow(["3", "GaroMen", "WEARS", "Lungis", "Page 99", "<Garo men wear lungis.>"])
+
+    summary = run(
+        str(csv_path), run_wellformed=False,
+        run_quote_check=True, page_texts={3: "Garo men wear lungis."},
+    )
+
+    assert summary["refined"] == 1
