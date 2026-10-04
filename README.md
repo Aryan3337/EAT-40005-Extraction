@@ -276,7 +276,7 @@ docker compose exec app python test_extraction_variants.py papers/garo_1.pdf 3 -
 
 ---
 
-## Comparing extraction/verification configurations (strict prompt, two-step verify)
+## Comparing extraction/verification configurations (strict prompt, deterministic gates)
 
 Three configurations can now be compared on the same ground-truth pages, using the
 harness in `eval/` and `prompts/` (see
@@ -287,23 +287,23 @@ design). None of this touches Neo4j.
    save the output CSV:
    - **(A) Current live prompt** (unchanged): `python test_extraction.py papers/garo_1.pdf 3`
    - **(B) Strict tacit-only prompt**: `python test_extraction_prompt_config.py papers/garo_1.pdf 3 --prompt extraction_strict_tacit_v1`
-   - **(C) Broad-v2 + verify**: `python test_extraction_prompt_config.py papers/garo_1.pdf 3 --prompt extraction_broad_v2`,
-     then `python run_verification_pipeline.py output/<the_csv_from_broad_v2> --verify --direction-check --wellformedness-check`.
+   - **(C) Broad-v2 + gates**: `python test_extraction_prompt_config.py papers/garo_1.pdf 3 --prompt extraction_broad_v2`,
+     then `python run_verification_pipeline.py output/<the_csv_from_broad_v2> --wellformedness-check --grounding-check --quote-check --pdf papers/garo_1.pdf`.
      `test_extraction_prompt_config.py` (unlike `test_extraction_variants.py`) always
-     preserves the model's `SENTENCE REF` line into a `sentence_ref` column, since (C)'s
-     output is always fed to `--verify`.
+     preserves the model's `SENTENCE REF` line into a `sentence_ref` column, which the
+     grounding and quote gates both read.
 2. Score each resulting CSV against the ground truth. Each CSV must already be scoped
    to the pages passed via `--pages` — `eval/run_eval.py` does not filter rows by page
    itself:
    ```bash
    python -m eval.run_eval output/<csv_from_A> --pages 3 --label "A: live prompt"
    python -m eval.run_eval output/<csv_from_B> --pages 3 --label "B: strict tacit-only"
-   python -m eval.run_eval output/<csv_from_C>_refined.csv --pages 3 --label "C: broad-v2 + verify"
+   python -m eval.run_eval output/<csv_from_C>_refined.csv --pages 3 --label "C: broad-v2 + gates"
    ```
 3. Compare the rows in `eval/results.csv` (git-tracked) for precision/recall/F1
    (strict + lenient), `gt_miss_rate`, and triples/page. Check
-   `output/<...>_reviewed_out.csv`, `_direction_flags.csv`, and
-   `_wellformedness_flags.csv` for anything worth a manual look.
+   `output/<...>_wellformedness_flags.csv`, `_grounding_flags.csv`, and
+   `_quote_flags.csv` for anything worth a manual look.
 
    **`gt_miss_rate` is not a hallucination rate.** It's `1 - precision_strict`:
    the fraction of extracted triples with no *exact* string match to a row in
@@ -323,35 +323,52 @@ design). None of this touches Neo4j.
    populating `sentence_ref` at all (the live prompt's `test_extraction.py`
    path does this -- 0/35 on garo_1 page 3), so the rate has no evidence
    behind it, not that everything is fabricated.
-4. `run_verification_pipeline.py --verify` requires Ollama reachable at
-   `OLLAMA_VERIFY_URL` (defaults to `http://localhost:11434/api/generate`; inside the
-   `app` container use `http://ollama:11434/api/generate`, same convention as
-   `OLLAMA_URL` elsewhere in this project).
+4. `run_verification_pipeline.py` needs no Ollama connection at all: every gate it
+   runs is deterministic and LLM-free. Only the extraction step ahead of it calls a
+   model.
 
 ### No-human-review hardening (autonomous chatbot target)
 
+> **Removed 2026-09-29 (1 of 2): the direction/ontology check** (`--direction-check`,
+> `verification/direction_check.py`, `verification/predicate_directions.py`).
+> Measured per-gate over the full 303-row `garo_1` dry run, it flagged **0
+> rows and uniquely flagged 0**. Its curated lexicon covered 4 predicates
+> (`PROHIBITS`, `REQUIRES`, `GOVERNS`, `TEACHES`) against the **110 distinct
+> predicates** the corpus actually produced, and firing required the subject
+> AND the object to look swapped simultaneously. The gates carrying the load
+> are `--grounding-check` (99 unique catches) and `--quote-check` (45);
+> `--wellformedness-check` contributed 1. Passages below dated before this
+> that mention `--direction-check` are historical measurements, left as
+> recorded. The code is recoverable from git history if a future corpus makes
+> it earn its place.
+
+> **Removed 2026-09-29 (2 of 2): the two-step LLM verify pass**
+> (`--verify`, `--verify-samples`, `verification/verify_pass.py`,
+> `prompts/verify_tacit_evidence_v1.txt`, and the `_reviewed_out.csv`
+> output). It was already opt-in, showed no measured reduction in
+> hallucination rate beyond the deterministic gates on this corpus, and cost
+> 8+ hours of CPU-Ollama time on a single paper. Removing it is the largest
+> single code reduction in the harness and changes default behaviour by
+> nothing, since it was already off by default. `pruner/llm_judge.py` remains
+> a live, separate implementation of the same idea if an LLM judge is wanted
+> again. Passages below that describe verify bands, thresholds or sampling
+> are historical, left as recorded.
+
 This pipeline feeds a fully autonomous chatbot with no human curation step, so a
-false positive here reaches an end user directly. Three things bias it toward
+false positive here reaches an end user directly. Four things bias it toward
 recall loss over hallucination risk:
 
-- **`--direction-check` and `--wellformedness-check` are a hard gate on
-  `_refined.csv`**, not just an audit-trail side channel — a flagged row is
-  excluded from `_refined.csv` even if the verify pass bands it "keep". The
-  flag is still recorded in `_direction_flags.csv` / `_wellformedness_flags.csv`
-  for inspection; it just no longer doubles as an allow-list.
-- **`verify_pass.VERIFY_HIGH_THRESHOLD` is 0.85** (raised from 0.7): only
-  strongly-evidenced triples band to "keep".
-- **`--verify-samples N` (default 3)** resamples the judge model N times per
-  triple and requires unanimous "keep" across all N runs; any disagreement
-  falls back to the worst band seen. Zero marginal cost on local Ollama, so
-  this is a cheap way to trade recall for a lower `gt_miss_rate`. Pass
-  `--verify-samples 1` to disable resampling (single call per triple, as before).
+- **The deterministic checks are a hard gate on `_refined.csv`**, not just an
+  audit-trail side channel — a flagged row is excluded from `_refined.csv`,
+  and the flag is still recorded in its own `_<check>_flags.csv` for
+  inspection; it just no longer doubles as an allow-list.
 - **`--grounding-check`** (off by default): a deterministic, LLM-free hard gate
   — every word of a triple's Subject and Object (see `verification/grounding_check.py`)
   must appear in its own `sentence_ref`, case-insensitively; no `sentence_ref`
-  at all fails closed. Added after full-corpus validation showed the verify
-  pass's plausibility judgment alone isn't reliable (see below) — it judges
-  "does this relate to the sentence", not "does the sentence actually say this".
+  at all fails closed. Added after full-corpus validation showed the (since
+  removed) LLM verify pass's plausibility judgment alone isn't reliable (see
+  below) — it judged "does this relate to the sentence", not "does the
+  sentence actually say this".
 - **`--quote-check`** (off by default, requires `--pdf`): a deterministic,
   LLM-free hard gate — the triple's `sentence_ref` must be a genuine, verbatim
   quote from its own page of `--pdf` (see `verification/quote_check.py`),
@@ -372,10 +389,9 @@ recall loss over hallucination risk:
   "of", etc.); an exact match after stripping is flagged.
 
 There is deliberately no "held for human review" path in this pipeline — a
-triple that isn't unanimously and confidently "keep" (and ungated by every
-enabled check) is dropped, not queued. `_reviewed_out.csv` remains only as
-an audit log of the verify pass's "review" band; nothing downstream reads
-it automatically.
+triple flagged by any enabled check is dropped, not queued. Every dropped row
+is still recorded in the flag file of whichever gate caught it, but nothing
+downstream reads those automatically.
 
 **Full-corpus validation (2026-09-24):** running the hardened pipeline on
 page 3 alone scored a 0% `gt_miss_rate` (2 kept, both correct) — but that was a

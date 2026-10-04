@@ -20,8 +20,3 @@ def test_load_prompt_strict_tacit_has_no_leftover_placeholder():
     assert "Example passage." in result
     assert "{passage}" not in result
 
-
-def test_verify_prompt_template_has_expected_placeholders():
-    text = load_prompt_template("verify_tacit_evidence_v1")
-    for placeholder in ("{source_sentence}", "{subject}", "{predicate}", "{object}"):
-        assert placeholder in text

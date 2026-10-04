@@ -14,8 +14,8 @@ reassignment (kg_extractor.py is never edited on disk).
 Unlike test_extraction_variants.py, this script's output CSV includes a
 sentence_ref column (the model's own "// SENTENCE REF:" line, preserved
 verbatim by kg_extractor.parse_ollama_blocks()) -- required because this
-output may be fed to `run_verification_pipeline.py --verify`, which judges
-each triple against its sentence_ref (see that script's shape check).
+output may be fed to `run_verification_pipeline.py`, whose grounding and
+quote gates both check each triple against its sentence_ref.
 
 USAGE:
     python test_extraction_prompt_config.py papers/garo_1.pdf 3 --prompt extraction_strict_tacit_v1

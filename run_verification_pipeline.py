@@ -1,23 +1,36 @@
 #!/usr/bin/env python3
-"""Takes an already-produced extraction CSV and optionally runs the verify
-pass, direction check, and/or well-formedness check on it. Never imports
+"""Takes an already-produced extraction CSV and runs the deterministic
+well-formedness, grounding and/or quote checks on it. Never imports
 neo4j_loader, never calls add_triples(). See
 docs/superpowers/specs/2026-09-21-extraction-verification-design.md §7.5.
 
     python run_verification_pipeline.py output/garo_1_page3_variantA.csv \\
-        --direction-check --wellformedness-check --verify
+        --wellformedness-check --grounding-check --quote-check --pdf papers/garo_1.pdf
+
+Every gate here is deterministic and LLM-free: the whole pass runs in about a
+second over a few hundred rows. Two checks from the original design were
+REMOVED on 2026-09-29, both recoverable from git history:
+
+- The direction/ontology check (section 6.1 of that spec). Over the full
+  303-row garo_1 dry run it flagged 0 rows and uniquely flagged 0: its
+  curated lexicon covered 4 predicates against the 110 distinct predicates
+  the corpus actually produced, and firing required the subject AND the
+  object to look swapped simultaneously.
+- The two-step LLM verify pass (section 5), along with the --verify /
+  --verify-samples flags and the _reviewed_out.csv output. It was already
+  opt-in, contributed no measured reduction in hallucination rate on this
+  corpus beyond the deterministic gates, and cost 8+ hours of CPU-Ollama
+  time on a single paper. If an LLM judge is wanted again, pruner/llm_judge.py
+  is a live, separate implementation of the same idea.
 """
 
 import argparse
 import csv
-import sys
 from pathlib import Path
 
 from eval.hallucination import load_page_texts
-from verification.direction_check import check_direction
 from verification.grounding_check import check_grounding
 from verification.quote_check import check_quote_genuine
-from verification.verify_pass import JudgeFn, judge_with_ollama, verify_triple
 from verification.wellformedness_check import check_wellformedness
 
 
@@ -38,8 +51,7 @@ def write_rows(path: Path, fieldnames: list[str], rows: list[dict]) -> None:
             writer.writerow(row)
 
 
-def run(csv_path: str, run_verify: bool, run_direction: bool, run_wellformed: bool,
-        judge_fn: JudgeFn = judge_with_ollama, verify_samples: int = 1,
+def run(csv_path: str, run_wellformed: bool,
         run_grounding: bool = False, run_quote_check: bool = False,
         page_texts: dict[int, str] | None = None) -> dict:
     if run_quote_check and page_texts is None:
@@ -52,22 +64,7 @@ def run(csv_path: str, run_verify: bool, run_direction: bool, run_wellformed: bo
     rows = load_rows(csv_path)
     fieldnames = list(rows[0].keys()) if rows else ["subject", "predicate", "object"]
 
-    if run_verify and rows and not any(_sentence_for_row(row) for row in rows):
-        print(
-            "WARNING: --verify was requested, but no row in "
-            f"{csv_path!r} has a non-empty 'sentence_ref' or 'passage' "
-            "column. The verify pass will judge every triple against an "
-            "empty source sentence, so its keep/review/reject results are "
-            "unlikely to be meaningful. This input CSV should come from a "
-            "script whose output preserves the original SENTENCE REF value "
-            "(see kg_extractor.py's output shape) as a 'sentence_ref' "
-            "column.",
-            file=sys.stderr,
-        )
-
     refined: list[dict] = []
-    reviewed_out: list[dict] = []
-    direction_flags: list[dict] = []
     wellformedness_flags: list[dict] = []
     grounding_flags: list[dict] = []
     quote_flags: list[dict] = []
@@ -76,14 +73,6 @@ def run(csv_path: str, run_verify: bool, run_direction: bool, run_wellformed: bo
         subject, predicate, obj = row["subject"], row["predicate"], row["object"]
 
         hard_gated = False
-
-        if run_direction:
-            direction_result = check_direction(subject, predicate, obj)
-            if direction_result.flagged:
-                hard_gated = True
-                flagged_row = dict(row)
-                flagged_row["flag_reason"] = direction_result.reason or ""
-                direction_flags.append(flagged_row)
 
         if run_wellformed:
             wellformedness_result = check_wellformedness(subject, predicate, obj)
@@ -110,38 +99,17 @@ def run(csv_path: str, run_verify: bool, run_direction: bool, run_wellformed: bo
                 flagged_row["flag_reason"] = "; ".join(quote_result.reasons)
                 quote_flags.append(flagged_row)
 
-        # Direction/wellformedness/grounding checks are a hard gate on
-        # refined, not just an audit-trail side channel: this pipeline feeds
-        # a fully autonomous chatbot with no human review step, so a flagged
-        # row must never reach refined regardless of the verify band.
-        if run_verify:
-            result = verify_triple(
-                subject, predicate, obj, _sentence_for_row(row), judge_fn,
-                n_samples=verify_samples,
-            )
-            if result.band == "keep":
-                if not hard_gated:
-                    refined.append(row)
-            elif result.band == "review":
-                reviewed_row = dict(row)
-                reviewed_row["verify_reason"] = result.reason
-                reviewed_row["verify_confidence"] = result.confidence
-                reviewed_out.append(reviewed_row)
-            # "reject" band: dropped, not written anywhere -- same as main.py's
-            # existing validation gate, rejection is implicit via absence.
-        elif not hard_gated:
+        # These checks are a hard gate on refined, not just an audit-trail
+        # side channel: this pipeline feeds a fully autonomous chatbot with
+        # no human review step, so a flagged row must never reach refined.
+        # Rejection is implicit via absence from refined, and every rejected
+        # row is recorded in the flag file of whichever gate caught it.
+        if not hard_gated:
             refined.append(row)
 
     stem = Path(csv_path).stem
     out_dir = Path(csv_path).parent
     write_rows(out_dir / f"{stem}_refined.csv", fieldnames, refined)
-    if reviewed_out:
-        write_rows(
-            out_dir / f"{stem}_reviewed_out.csv",
-            fieldnames + ["verify_reason", "verify_confidence"], reviewed_out,
-        )
-    if direction_flags:
-        write_rows(out_dir / f"{stem}_direction_flags.csv", fieldnames + ["flag_reason"], direction_flags)
     if wellformedness_flags:
         write_rows(out_dir / f"{stem}_wellformedness_flags.csv", fieldnames + ["flag_reason"], wellformedness_flags)
     if grounding_flags:
@@ -151,8 +119,6 @@ def run(csv_path: str, run_verify: bool, run_direction: bool, run_wellformed: bo
 
     return {
         "refined": len(refined),
-        "reviewed_out": len(reviewed_out),
-        "direction_flags": len(direction_flags),
         "wellformedness_flags": len(wellformedness_flags),
         "grounding_flags": len(grounding_flags),
         "quote_flags": len(quote_flags),
@@ -161,11 +127,9 @@ def run(csv_path: str, run_verify: bool, run_direction: bool, run_wellformed: bo
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run verification/direction/well-formedness checks on an extraction CSV."
+        description="Run the deterministic well-formedness/grounding/quote checks on an extraction CSV."
     )
     parser.add_argument("csv_path")
-    parser.add_argument("--verify", action="store_true", help="Run the LLM verify pass (requires Ollama).")
-    parser.add_argument("--direction-check", action="store_true")
     parser.add_argument("--wellformedness-check", action="store_true")
     parser.add_argument(
         "--grounding-check", action="store_true",
@@ -184,12 +148,6 @@ def main() -> None:
         help="Path to the source PDF. Required by --quote-check, which checks each "
              "row's sentence_ref against its own page_number's text in this file.",
     )
-    parser.add_argument(
-        "--verify-samples", type=int, default=3,
-        help="Resample the verify judge this many times per triple and require unanimous "
-             "'keep' (self-consistency). Zero marginal cost on local Ollama; trades recall "
-             "for lower hallucination rate. Default 3; pass 1 to disable resampling.",
-    )
     args = parser.parse_args()
 
     if args.quote_check and not args.pdf:
@@ -198,8 +156,8 @@ def main() -> None:
     page_texts = load_page_texts(args.pdf) if args.pdf else None
 
     summary = run(
-        args.csv_path, args.verify, args.direction_check, args.wellformedness_check,
-        verify_samples=args.verify_samples, run_grounding=args.grounding_check,
+        args.csv_path, args.wellformedness_check,
+        run_grounding=args.grounding_check,
         run_quote_check=args.quote_check, page_texts=page_texts,
     )
     print(summary)
