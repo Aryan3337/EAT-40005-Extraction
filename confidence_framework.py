@@ -67,6 +67,24 @@ OLLAMA_URL      = resolve_llm_endpoint(
 )
 OLLAMA_MODEL    = "mistral:7b"
 
+# How many tokens the model may use for its reply. It has to emit a COMPLETE
+# JSON object scoring four criteria, each with a justification sentence.
+#
+# This was 256, which was not enough, and the failure was silent. Measured on
+# garo_1.pdf chunk 1 with mistral:7b: 256 produced 876 characters that stopped
+# mid-object with no closing brackets, so parse_model_response returned None,
+# the chunk was skipped ("parse error (skipped)"), and with every chunk of
+# every paper skipped all four model-scored criteria fell to 0 -- leaving only
+# the two code-based criteria and a total around 5/100, reported as REJECTED.
+#
+# That is what the 5,5,5 scores in confidence_logs/rejected/ actually are. They
+# were read as an unreachable Ollama; the model was answering fine and being
+# cut off. It fired on every paper, not intermittently.
+#
+# 1024 was measured on the same chunk: 1561 characters, parses, all 4 criteria
+# returned. Costs roughly 30s more per chunk (50s -> 82s).
+MODEL_RESPONSE_TOKEN_BUDGET = 1024
+
 REJECT_THRESHOLD = 60   # score <  60        → REJECTED
 REVIEW_THRESHOLD = 75   # score 60–75        → MANUAL REVIEW
                         # score >  75        → APPROVED
@@ -285,7 +303,7 @@ def call_ollama(system_prompt: str, user_prompt: str, retries: int = 2) -> Optio
                     "stream": False,
                     "options": {
                         "temperature": 0.1,   # low temp for consistent scoring
-                        "num_predict": 256,
+                        "num_predict": MODEL_RESPONSE_TOKEN_BUDGET,
                     }
                 },
                 timeout=300   # longer timeout — full paper evaluation takes time
