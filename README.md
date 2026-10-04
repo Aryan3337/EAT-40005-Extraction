@@ -88,6 +88,45 @@ This downloads ~4.7GB and can take several minutes depending on your connection.
 docker compose exec ollama ollama list
 ```
 
+### The verification gates in `main.py`
+
+Since 2026-10-04 `main.py` runs three deterministic, LLM-free gates between
+extraction and the Neo4j upload, via `verification/gate.py`:
+
+1. **Well-formedness** (`verification/wellformedness_check.py`) — entity and
+   predicate shape; also catches a Subject and Object that restate the same
+   concept.
+2. **Grounding** (`verification/grounding_check.py`) — every word of the
+   Subject and Object must appear in the triple's own `sentence_ref`, and that
+   citation must be at most 200 characters, so it is a sentence rather than a
+   whole paragraph.
+3. **Quote-genuineness** (`verification/quote_check.py`) — the `sentence_ref`
+   must be a real, verbatim quote from its own page of the source PDF.
+
+They are a **hard gate**: a flagged triple is dropped, never held for review,
+because this graph feeds a fully autonomous chatbot with no human in the loop.
+A triple can be flagged by more than one gate, and it is recorded under each —
+the flag files are an audit trail, not a first-match-wins dispatch. The whole
+pass is free and takes about a second per few hundred rows.
+
+| Flag | Effect |
+| --- | --- |
+| `--no-gates` | Skip all three and upload whatever clears the older structural checks, as this script did before the gates were wired in |
+| `--dry-run` | Do everything except the Neo4j upload; the CSVs are still written |
+
+```bash
+python main.py papers/your_paper.pdf --dry-run      # see the numbers, upload nothing
+python main.py papers/your_paper.pdf --no-gates     # pre-2026-10-04 behaviour
+```
+
+> **On the measured numbers.** The "300 → 13" figures in this README and in the
+> results doc were produced with the `extraction_broad_v2` prompt
+> (`prompts/extraction_broad_v2.txt`), which the now-removed `main_hardened.py`
+> swapped in. `main.py` uses `kg_extractor.py`'s own built-in prompt, so its
+> yield will differ. The gates themselves behave identically either way; only
+> what they are fed changes. Use `test_extraction_prompt_config.py` to compare
+> prompts without touching the production path.
+
 ### Step 6: Add a paper and run extraction
 
 Drop a PDF into the `papers/` folder in the project root (this folder is gitignored — PDFs stay local, they don't get committed). Then run:
@@ -101,8 +140,10 @@ docker compose exec app python main.py papers/your_paper.pdf
 2. Per-chunk extraction output (`Chunk 1/50...`, `parsed N triples`)
 3. Deduplication summary
 4. **`Running validation gate...`** — every triple is checked for structural correctness; invalid ones are individually rejected (not the whole batch), and you'll see a count like `Validation: 12 passed, 3 rejected.`
-5. Any **`[WARN]`** lines flagging triples that look like research-methodology artifacts (interview/participant language) rather than real cultural content — these aren't blocked, just flagged for manual review
-6. A local CSV backup saved to `output/<paper_name>_kg.csv`
+5. Any **`[FILTERED]`** lines naming triples that matched research-methodology artifacts (interview/participant language) rather than real cultural content — these are **excluded**, not merely warned about
+6. A local CSV backup of the full pre-gate set saved to `output/<paper_name>_kg.csv`
+7. **`Running verification gates...`** — the three deterministic gates (see below). Expect a steep drop here: on the measured `garo_1` corpus roughly 300 extracted triples come out as 13
+8. `output/<paper_name>_kg_refined.csv` (what will be uploaded) and one `output/<paper_name>_kg_<gate>_flags.csv` per gate that rejected anything, each row carrying the reason it was rejected
 7. Upload confirmation: `Uploaded N triples to Neo4j.`
 
 **If you see `Validation: 0 passed` or very few triples survive:** this is a known issue, not something you broke. See **Known Issues** below.
