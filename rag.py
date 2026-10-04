@@ -797,6 +797,12 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 })
             except (TypeError, ValueError, json.JSONDecodeError) as error:
                 self._send_json(400, {"error": f"Invalid request: {error}"})
+            except Exception as error:
+                print(f"Query backend error: {error}")
+                self._send_json(
+                    502,
+                    {"error": "Knowledge graph query failed. Check Neo4j URI and network/DNS."},
+                )
 
         # Writes a JSON response with CORS enabled for local Flutter clients.
         def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
