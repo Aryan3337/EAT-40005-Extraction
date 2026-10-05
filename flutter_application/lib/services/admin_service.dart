@@ -1,9 +1,10 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../models/ingest_entry.dart';
+import 'api_config.dart';
 
 // Talks to rag.py's admin endpoints.
 //
@@ -13,21 +14,12 @@ import '../models/ingest_entry.dart';
 // forgot to configure one has the endpoints disabled rather than open.
 class AdminService {
   AdminService({http.Client? client, String? endpoint, required this.secret})
-    : endpoint = endpoint ?? _defaultEndpoint,
+    : endpoint = endpoint ?? apiBaseUrl,
       _client = client ?? http.Client();
 
   final http.Client _client;
   final String endpoint;
   final String secret;
-
-  // Same host rules as ChatService: the Android emulator reaches the host
-  // machine at 10.0.2.2, everything else at loopback.
-  static String get _defaultEndpoint {
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      return 'http://10.0.2.2:8000';
-    }
-    return 'http://127.0.0.1:8000';
-  }
 
   Map<String, String> get _authHeaders => {'X-Admin-Secret': secret};
 

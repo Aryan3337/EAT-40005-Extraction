@@ -1,0 +1,6 @@
+# core.autocrlf=true (common on Windows dev machines) converts LF to CRLF on
+# checkout for every text file by default. That breaks a shell script's
+# shebang line and its behavior when run -- scripts/setup_hosting.sh is
+# meant to be executed, not just read, so it needs real LF endings
+# regardless of the checking-out machine's autocrlf setting.
+*.sh text eol=lf

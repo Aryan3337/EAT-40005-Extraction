@@ -1,0 +1,15 @@
+# The subset of requirements.txt that rag.py's HTTP API actually imports
+# at serve time (rag.py, admin_ingest.py, confidence_framework.py,
+# llm_endpoint.py, config.py). Deliberately excludes spacy, rapidfuzz and
+# openpyxl -- those belong to the extraction/review pipeline (main.py,
+# subject_specificity.py, review_cli.py), not the served API, and spacy's
+# en_core_web_sm download alone adds real image size and build time that a
+# free-tier host's build minutes should not pay for.
+#
+# Keep in sync with requirements.txt by hand -- there is no tooling that
+# enforces this split, so if the API gains a new import, add it here too.
+requests
+neo4j
+python-dotenv
+pdfplumber
+wordninja

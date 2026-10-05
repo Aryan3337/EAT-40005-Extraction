@@ -155,3 +155,36 @@ def test_require_external_opt_in_passes_when_explicitly_allowed(monkeypatch):
 
     monkeypatch.setenv("ALLOW_EXTERNAL_LLM", "1")
     require_external_llm_opt_in("OpenAI")  # must not raise
+
+
+# -- the pinned trusted host (the no-funding hosted-demo tunnel) --------------
+
+
+def test_a_pinned_trusted_host_is_allowed(monkeypatch):
+    monkeypatch.setenv("TRUSTED_LLM_HOST", "laptop.tailxxxx.ts.net")
+    url = "https://laptop.tailxxxx.ts.net/api/generate"
+    assert resolve_llm_endpoint(url) == url
+
+
+def test_the_pin_is_exact_not_a_substring_or_suffix_match(monkeypatch):
+    # The same "parsed host, never a substring" discipline as the rest of
+    # this module -- otherwise an attacker-chosen subdomain of the pinned
+    # host, or a host that merely contains it, would also pass.
+    monkeypatch.setenv("TRUSTED_LLM_HOST", "laptop.tailxxxx.ts.net")
+    for host in [
+        "evil.laptop.tailxxxx.ts.net",
+        "laptop.tailxxxx.ts.net.evil.com",
+        "notlaptop.tailxxxx.ts.net",
+    ]:
+        assert not is_private_host(host)
+
+
+def test_an_unrelated_external_host_is_still_refused_when_a_pin_is_set(monkeypatch):
+    # Pinning one host must not loosen the check for everything else.
+    monkeypatch.setenv("TRUSTED_LLM_HOST", "laptop.tailxxxx.ts.net")
+    with pytest.raises(ExternalLLMRefused):
+        resolve_llm_endpoint("https://api.openai.com/v1/chat/completions")
+
+
+def test_no_pin_set_means_no_host_is_trusted_by_this_mechanism():
+    assert not is_private_host("laptop.tailxxxx.ts.net")

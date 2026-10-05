@@ -15,7 +15,7 @@ error and no slowdown, which is why it never showed up as a complaint. At 20
 more papers it becomes an arbitrary 10 of roughly 200.
 """
 
-from rag import DEFAULT_TOP_K, dedupe_triples, question_keywords, score_triple
+from rag import DEFAULT_TOP_K, dedupe_triples, question_keywords, resolve_port, score_triple
 
 
 def _triple(**overrides):
@@ -146,3 +146,22 @@ def test_facts_that_differ_in_any_field_are_both_kept():
 
 def test_an_empty_list_stays_empty():
     assert dedupe_triples([]) == []
+
+
+# -- resolve_port ---------------------------------------------------------
+
+
+def test_an_explicit_port_wins_over_the_environment(monkeypatch):
+    monkeypatch.setenv("PORT", "9999")
+    assert resolve_port(8080) == 8080
+
+
+def test_the_platforms_injected_port_is_used_when_none_is_given(monkeypatch):
+    # Render, Railway and Fly.io all inject $PORT for a web service.
+    monkeypatch.setenv("PORT", "9999")
+    assert resolve_port(None) == 9999
+
+
+def test_the_default_is_8000_when_neither_is_set(monkeypatch):
+    monkeypatch.delenv("PORT", raising=False)
+    assert resolve_port(None) == 8000

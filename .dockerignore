@@ -8,3 +8,8 @@ papers/
 output/
 *.csv
 *.json
+# The hosted API serves these cached answers (see
+# generate_demo_answer_cache.py) and needs the production graph CSVs for
+# the --kg fallback -- negations must come after the excludes above.
+!data/demo_answer_cache.json
+!data/production_graph/*.csv

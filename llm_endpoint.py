@@ -27,6 +27,14 @@ ALLOW_EXTERNAL_LLM=1 overrides it. That exists for the funded private-hosting
 discussion, where a model may legitimately run on a paid instance -- it has
 to be deliberate and visible, never a default.
 
+TRUSTED_LLM_HOST pins exactly one external hostname as trusted -- narrower
+than ALLOW_EXTERNAL_LLM=1, which accepts any external host. This is for the
+no-funding hosted demo: the API runs in the cloud, but inference stays on
+the team's own laptop, reached back over a tunnel (e.g. a Tailscale Funnel
+hostname) rather than a paid instance. The hostname is still infrastructure
+the team controls, not a third-party model provider; pinning it exactly
+means a copy-pasted unrelated external URL is still refused.
+
 NOT COVERED: kg_filter.py and script.py also build Ollama URLs and are not
 routed through here. kg_filter.py is unwired (imported by nothing) and both
 are teammates' files on the main branch; they are listed as a known gap
@@ -87,7 +95,11 @@ def is_private_host(host: str) -> bool:
         return True
 
     # mDNS / local-network suffixes.
-    return host.endswith(".local") or host.endswith(".internal")
+    if host.endswith(".local") or host.endswith(".internal"):
+        return True
+
+    pinned = os.getenv("TRUSTED_LLM_HOST", "").strip().strip("[]").rstrip(".").lower()
+    return bool(pinned) and host == pinned
 
 
 def _external_allowed(allow_external: bool | None) -> bool:

@@ -109,6 +109,17 @@ def score_triple(triple: Dict[str, Any], keywords: List[str]) -> int:
     return score
 
 
+def resolve_port(explicit_port: Optional[int]) -> int:
+    """The port to serve on: an explicit --port always wins; otherwise a
+    hosting platform's injected $PORT (Render, Railway, Fly.io all set
+    this), falling back to 8000 if neither is set -- unchanged local
+    development behaviour.
+    """
+    if explicit_port is not None:
+        return explicit_port
+    return int(os.environ.get("PORT", 8000))
+
+
 def dedupe_triples(triples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Drop duplicate facts -- same (subject, predicate, object) cited from
     several passages -- keeping the first (i.e. highest-ranked, if the
@@ -1170,13 +1181,17 @@ def main() -> None:
                         help="Read Entity relationships directly from Neo4j")
     parser.add_argument("--host", default="127.0.0.1",
                         help="API host (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8000,
-                        help="API port (default: 8000)")
+    # default=None, not 8000: lets a hosting platform's injected $PORT win
+    # when --port is not given explicitly, while an explicit --port (local
+    # development) still wins over $PORT.
+    parser.add_argument("--port", type=int, default=None,
+                        help="API port (default: $PORT, or 8000 if that is also unset)")
     parser.add_argument("--approach", choices=["concept", "cypher"], default="concept",
                         help="Retrieval approach (default: concept)")
     parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K,
                         help=f"Number of triples to return (default: {DEFAULT_TOP_K})")
     args = parser.parse_args()
+    args.port = resolve_port(args.port)
 
     # Verify that the KG file exists.
     if args.neo4j and not args.serve:
