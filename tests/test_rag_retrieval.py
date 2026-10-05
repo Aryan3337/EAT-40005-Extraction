@@ -15,7 +15,7 @@ error and no slowdown, which is why it never showed up as a complaint. At 20
 more papers it becomes an arbitrary 10 of roughly 200.
 """
 
-from rag import DEFAULT_TOP_K, question_keywords, score_triple
+from rag import DEFAULT_TOP_K, dedupe_triples, question_keywords, score_triple
 
 
 def _triple(**overrides):
@@ -119,3 +119,30 @@ def test_the_default_top_k_exceeds_the_measured_match_count():
     # 13 of 16 garo_1 triples match "garo", so a top_k of 10 silently
     # discarded real evidence on the most obvious question anyone would ask.
     assert DEFAULT_TOP_K > 13
+
+
+# -- dedupe_triples ------------------------------------------------------------
+
+
+def test_identical_facts_from_different_passages_are_collapsed():
+    first = _triple(sentence_ref="Passage one mentions it.")
+    second = _triple(sentence_ref="Passage two mentions it too.")
+    assert dedupe_triples([first, second]) == [first]
+
+
+def test_the_first_occurrence_is_kept_not_the_last():
+    # The caller sorts by score before deduping, so "first" means
+    # highest-ranked -- this just locks in that dedupe does not reorder.
+    best = _triple(sentence_ref="best")
+    worst = _triple(sentence_ref="worst")
+    assert dedupe_triples([best, worst]) == [best]
+
+
+def test_facts_that_differ_in_any_field_are_both_kept():
+    a = _triple(object="Bengali")
+    b = _triple(object="English")
+    assert dedupe_triples([a, b]) == [a, b]
+
+
+def test_an_empty_list_stays_empty():
+    assert dedupe_triples([]) == []

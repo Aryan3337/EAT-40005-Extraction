@@ -26,6 +26,10 @@
 	<string>$(PRODUCT_COPYRIGHT)</string>
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>This app uses the microphone so you can ask questions by voice.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>This app uses speech recognition to turn your voice into a question.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

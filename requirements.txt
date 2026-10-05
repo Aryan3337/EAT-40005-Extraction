@@ -6,3 +6,4 @@ rapidfuzz
 spacy
 openpyxl
 pytest
+wordninja
