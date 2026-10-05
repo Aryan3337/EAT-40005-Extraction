@@ -722,6 +722,16 @@ class Neo4jRAGSkeleton:
         self.driver.close()
 
     # Converts retrieved graph evidence into a concise, grounded answer.
+# Benchmarked on this machine's CPU Ollama: deepseek-r1:7b (the default
+# model) took 40.8s and mistral:7b took 40.3s for a real synthesis call. The
+# old timeout=30 was below both, so every real answer timed out and silently
+# fell back to the templated response -- a bug, not a deliberate tradeoff.
+# 90s clears both with headroom for a slow first call, while still failing
+# well short of mistral-small3.1's measured 151.3s if that model is ever
+# selected (a different, deliberately slow, model choice).
+ANSWER_SYNTHESIS_TIMEOUT_SECONDS = 90
+
+
 class AnswerSynthesizer:
     def __init__(self, ollama_url: Optional[str] = None, model: Optional[str] = None):
         # Answer synthesis sends sentence_ref -- verbatim paper text -- to
@@ -748,7 +758,7 @@ class AnswerSynthesizer:
                     "stream": False,
                     "options": {"temperature": 0.2, "num_predict": 400},
                 },
-                timeout=30,
+                timeout=ANSWER_SYNTHESIS_TIMEOUT_SECONDS,
             )
             if response.status_code == 200:
                 text = response.json().get("response", "").strip()
