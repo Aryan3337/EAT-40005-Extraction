@@ -689,6 +689,17 @@ class Neo4jRAGSkeleton:
 # different, deliberately slow, model choice).
 ANSWER_SYNTHESIS_TIMEOUT_SECONDS = 90
 
+# How long to wait for Ollama to even ACCEPT a connection, separate from how
+# long to wait for it to finish generating (above). This matters once the
+# hosted demo architecture is live: the hosted API's OLLAMA_URL points at a
+# Tailscale Funnel tunnel to a team laptop that is only turned on during the
+# live demo. The rest of the time nothing is listening there, so every
+# uncached question would otherwise make a real visitor wait the full 90s
+# before falling back to the template. A short connect timeout fails fast
+# when nothing is there, while still allowing the full 90s once a real
+# connection is made and generation has actually started.
+ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS = 10
+
 # Pre-computed answers for the demo's scripted questions (chat_page.dart's
 # _examplePrompts). WHY: even after the timeout fix and the model switch
 # above, measured 2026-10-05 showed real synthesis calls still taking 90s+
@@ -755,7 +766,7 @@ class AnswerSynthesizer:
                     "stream": False,
                     "options": {"temperature": 0.2, "num_predict": 400},
                 },
-                timeout=ANSWER_SYNTHESIS_TIMEOUT_SECONDS,
+                timeout=(ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS, ANSWER_SYNTHESIS_TIMEOUT_SECONDS),
             )
             if response.status_code == 200:
                 text = response.json().get("response", "").strip()

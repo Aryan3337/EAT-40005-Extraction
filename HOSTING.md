@@ -4,7 +4,20 @@ No funding for compute as of 2026-10-05: the API runs in the cloud, but LLM
 inference stays on a team laptop, reached back over a Tailscale Funnel. This
 is the demo/POC architecture; a funded, laptop-independent setup (Ollama
 running on the hosting platform itself) is a post-demo discussion if the
-project is picked up.
+project is picked up. A full VM-hosted alternative was costed out (~$10-19/
+month for a budget CPU VM at this traffic level) and logged in the project
+doc for that future conversation, not pursued now.
+
+**Operating model: the laptop and the tunnel are OFF by default.** The
+hosted link is meant to work standalone, permanently, with nobody watching
+it -- that is the actual handover deliverable. Turn the laptop's Ollama and
+`tailscale funnel 11434` on only for the live demo presentation itself (or a
+reviewer's live session), so unscripted questions get real AI answers
+exactly when someone is watching; turn it back off afterward. The rest of
+the time, the site still works perfectly for the three cached demo
+questions and all retrieval/citations -- only a brand-new, unscripted
+question quietly gets the templated fallback instead of live AI prose
+while the tunnel is off, which is normal, not a failure.
 
 ## Architecture
 
@@ -40,6 +53,11 @@ of the architecture.
 - `llm_endpoint.py`'s `TRUSTED_LLM_HOST` -- pins exactly one external
   hostname (the Tailscale Funnel address) as trusted, narrower than
   `ALLOW_EXTERNAL_LLM=1` (which would accept any external host).
+- `rag.py`'s `ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS = 10` -- a short
+  connect timeout separate from the 90s generation timeout, so a question
+  asked while the tunnel is off (the normal state) fails fast and falls
+  back to the template in ~10s, not 90s. Verified live against a
+  deliberately unreachable address.
 - `flutter_application/lib/services/api_config.dart` -- `apiBaseUrl` reads
   `--dart-define=API_BASE_URL=...` at build time; falls back to loopback
   addresses for local development, unchanged from before.
@@ -77,10 +95,11 @@ need to share a domain.
 
 ## Known tradeoffs of this architecture (say this at the demo if asked)
 
-- If the laptop or the Funnel is down, live LLM synthesis for anything
-  outside the three cached demo questions silently falls back to the
-  templated answer -- gracefully, not an error, but worth knowing before
-  someone asks an off-script question.
+- The laptop/Funnel being off is the NORMAL state, not a failure -- live LLM
+  synthesis for anything outside the three cached demo questions falls back
+  to the templated answer within ~10s (not 90s, since the connect-timeout
+  fix), gracefully, not an error. Worth knowing before someone asks an
+  off-script question outside a live-demo window.
 - The admin confidence check also needs the laptop's Ollama reachable;
   `admin_ingest.py` already reports "Scoring didn't run" rather than a false
   rejection if it is not (see the confidence-framework bug writeup from

@@ -17,7 +17,12 @@ consistent across every benchmark run, so it is now the default model.
 
 import requests
 
-from rag import ANSWER_SYNTHESIS_TIMEOUT_SECONDS, AnswerSynthesizer, load_demo_answer_cache
+from rag import (
+    ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS,
+    ANSWER_SYNTHESIS_TIMEOUT_SECONDS,
+    AnswerSynthesizer,
+    load_demo_answer_cache,
+)
 
 
 def _triple(**overrides):
@@ -60,7 +65,17 @@ def test_the_configured_timeout_is_the_one_actually_sent(monkeypatch):
     synthesizer = AnswerSynthesizer(ollama_url="http://localhost:11434/api/generate", answer_cache={})
     synthesizer.answer("What language do the Garo speak?", [_triple()])
 
-    assert captured["timeout"] == ANSWER_SYNTHESIS_TIMEOUT_SECONDS
+    assert captured["timeout"] == (ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS, ANSWER_SYNTHESIS_TIMEOUT_SECONDS)
+
+
+def test_the_connect_timeout_is_short_so_a_dark_tunnel_fails_fast():
+    # The hosted demo's OLLAMA_URL points at a Tailscale Funnel tunnel to a
+    # laptop that is only turned on during the live demo. The rest of the
+    # time nothing is listening there, so this has to be short -- not the
+    # full 90s -- or every uncached question makes a real visitor wait a
+    # minute and a half before seeing the templated fallback.
+    assert ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS <= 15
+    assert ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS < ANSWER_SYNTHESIS_TIMEOUT_SECONDS
 
 
 def test_a_timeout_still_falls_back_to_the_templated_answer(monkeypatch):
