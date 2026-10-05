@@ -353,17 +353,24 @@ funded decision, not a configuration change.
 
 ## 20. The CSV fallback path ranks differently from the graph path
 
-`rag.py` has two retrievers and they do not agree.
+**Fixed, 2026-10-05:** `ConceptRetriever.retrieve` now scores through the
+same `question_keywords`/`score_triple` function `Neo4jRAGSkeleton.query`
+uses, and its `top_k` default was raised to `DEFAULT_TOP_K` (25) to match.
+The length-rewards-verbosity scoring described below is gone. Left as
+recorded for the dated measurement; see `rag.py`'s `ConceptRetriever` and
+`tests/test_concept_retriever.py`.
+
+`rag.py` had two retrievers and they did not agree.
 
 `Neo4jRAGSkeleton` uses `question_keywords` and `score_triple`, weighting a
 match by where it lands, with `DEFAULT_TOP_K = 25`.
 
 `ConceptRetriever` — the CSV-backed path used by `--kg`, which is the
-rehearsed fallback for when AuraDB is unavailable — has its own independent
-ranking, still defaults to `top_k = 10`, and by its own docstring scores on
+rehearsed fallback for when AuraDB is unavailable — had its own independent
+ranking, still defaulted to `top_k = 10`, and by its own docstring scored on
 "length of the `sentence_ref` (longer = more context)".
 
-**That rewards verbose citations**, which is precisely the pathology
+**That rewarded verbose citations**, which is precisely the pathology
 `MAX_SENTENCE_REF_CHARS` was added to `grounding_check` to stop on the
 extraction side. The fallback you would switch to under pressure on demo
-morning is the one with the worse ranking.
+morning was the one with the worse ranking.

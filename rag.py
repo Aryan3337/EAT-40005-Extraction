@@ -310,8 +310,9 @@ Return only the query, no explanation."""
 
 class ConceptRetriever:
     """
-    Retrieves triples by extracting known entities from the question using word‑boundary matching.
-    If no entities are found, it falls back to matching predicates or searching the sentence_ref fields.
+    Retrieves triples by scoring every triple against the question's content
+    words -- the same question_keywords/score_triple ranking
+    Neo4jRAGSkeleton.query uses on the graph path.
 
     This approach is fast, deterministic, and does not require an LLM.
     It is the recommended primary retrieval strategy.
@@ -319,15 +320,14 @@ class ConceptRetriever:
 
     def __init__(self, kg: KnowledgeGraph):
         self.kg = kg
-        # Common stopwords to ignore when extracting keywords.
-        self.stopwords = {'what', 'is', 'are', 'the', 'of', 'in', 'for', 'on', 'at', 'to', 'with',
-                          'by', 'from', 'up', 'about', 'do', 'does', 'did', 'have', 'has', 'had',
-                          'how', 'why', 'when', 'where', 'which', 'who', 'whom', 'whose'}
 
     def _extract_entities(self, question: str) -> Set[str]:
         """
         Find known entities from the KG that appear in the question as whole words.
         This avoids partial matches (e.g., 'Garo' should not match 'GaroWomen').
+        Used by RetrieverComparator for its diagnostic entity count; retrieve()
+        no longer needs it, since score_triple already rewards a subject/object
+        match over one that merely appears in a source sentence.
         """
         question_lower = question.lower()
         entities = set()
@@ -336,84 +336,31 @@ class ConceptRetriever:
                 entities.add(entity)
         return entities
 
-    def _extract_keywords(self, question: str) -> List[str]:
-        """
-        Extract meaningful keywords (words with at least 3 letters, excluding stopwords).
-        These are used for predicate matching and sentence search fallbacks.
-        """
-        question_lower = question.lower()
-        words = re.findall(r'\b[a-z][a-z]{2,}\b', question_lower)
-        return [w for w in words if w not in self.stopwords]
+    def retrieve(self, question: str, top_k: int = DEFAULT_TOP_K) -> List[Dict]:
+        """Scores every triple against the question's content words and
+        returns the highest-ranked, deduped matches.
 
-    def _match_predicates(self, question: str) -> List[Dict]:
+        Previously this had its own three-stage fallback (known-entity
+        match, then predicate keyword match, then sentence_ref search) with
+        its own scoring: 2 points per entity match, 1 per predicate keyword,
+        plus a bonus for the LENGTH of sentence_ref ("longer = more
+        context"). That rewarded verbose citations -- precisely the
+        pathology MAX_SENTENCE_REF_CHARS exists to stop on the extraction
+        side -- and ranked this CSV fallback differently from the graph
+        path it is meant to stand in for. Scoring now goes through the same
+        score_triple() the graph path uses, so a question gets the same
+        answer whether or not AuraDB happens to be reachable.
         """
-        Find triples whose predicate contains any of the keywords extracted from the question.
-        This is useful when the question does not mention a known entity but does describe a relationship.
-        """
-        keywords = self._extract_keywords(question)
-        results = []
-        for t in self.kg.triples:
-            pred = t['predicate'].lower()
-            if any(kw in pred or pred in kw for kw in keywords):
-                results.append(t)
-        return results
+        keywords = question_keywords(question)
+        if not keywords:
+            return []
 
-    def _search_sentences(self, question: str) -> List[Dict]:
-        """
-        Final fallback: search the sentence_ref fields of all triples for keywords.
-        This can retrieve triples whose source sentence contains the relevant terms,
-        even if the triple itself does not directly match the question.
-        """
-        keywords = self._extract_keywords(question)
-        results = []
-        for t in self.kg.triples:
-            sent = t.get('sentence_ref', '').lower()
-            if sent and any(kw in sent for kw in keywords):
-                results.append(t)
-        return results
-
-    def retrieve(self, question: str, top_k: int = 10) -> List[Dict]:
-        """
-        Main retrieval pipeline:
-            1. Attempt to extract known entities from the question.
-            2. If entities are found, retrieve all triples containing them and rank by relevance.
-            3. If no entities, try matching predicates.
-            4. If still nothing, search sentence references.
-
-        Ranking is based on:
-            - Number of entity matches (weighted 2 points each).
-            - Keyword matches in the predicate (1 point each).
-            - Length of the sentence_ref (longer = more context).
-        """
-        entities = self._extract_entities(question)
-        if entities:
-            results = self.kg.get_triples_by_entities(entities)
-            scored = []
-            for t in results:
-                score = 0
-                subj = t['subject'].lower()
-                obj = t['object'].lower()
-                for ent in entities:
-                    if ent in subj or ent in obj:
-                        score += 2
-                pred_lower = t['predicate'].lower()
-                for kw in self._extract_keywords(question):
-                    if kw in pred_lower:
-                        score += 1
-                # Add a small bonus for longer sentence references (more informative).
-                score += len(t.get('sentence_ref', '')) / 200
-                scored.append((score, t))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            return [t for _, t in scored[:top_k]]
-
-        # No entities found – try predicate matching.
-        pred_results = self._match_predicates(question)
-        if pred_results:
-            return pred_results[:top_k]
-
-        # Final fallback – search sentence references.
-        sent_results = self._search_sentences(question)
-        return sent_results[:top_k]
+        scored = [(score_triple(triple, keywords), triple) for triple in self.kg.triples]
+        # Stable sort on the negated score keeps the CSV's row order as the
+        # tie-break, so equal-scoring results do not shuffle between calls.
+        scored.sort(key=lambda pair: -pair[0])
+        matches = [triple for score, triple in scored if score > 0]
+        return dedupe_triples(matches)[:top_k]
 
 
 # ============================================================================
@@ -585,7 +532,7 @@ class RAGSkeleton:
         # return re.sub(r'\bGaro\b', 'Garo people', question, flags=re.IGNORECASE)
         return question
 
-    def query(self, question: str, top_k: int = 10) -> List[Dict]:
+    def query(self, question: str, top_k: int = DEFAULT_TOP_K) -> List[Dict]:
         """Main entry: question in → triples out."""
         normalized = self.normalize_question(question)
         return self.retriever.retrieve(normalized, top_k)
