@@ -36,7 +36,7 @@ import requests
 from admin_ingest import (check_admin_secret, current_queue, ingest_pdf,
                           read_paper_bytes, record_manual_decision,
                           validate_upload)
-from llm_endpoint import resolve_llm_endpoint
+from llm_endpoint import ollama_tunnel_headers, resolve_llm_endpoint
 
 try:
     from neo4j import GraphDatabase  # type: ignore[import-not-found]
@@ -766,6 +766,7 @@ class AnswerSynthesizer:
                     "stream": False,
                     "options": {"temperature": 0.2, "num_predict": 400},
                 },
+                headers=ollama_tunnel_headers(),
                 timeout=(ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS, ANSWER_SYNTHESIS_TIMEOUT_SECONDS),
             )
             if response.status_code == 200:

@@ -188,3 +188,20 @@ def test_an_unrelated_external_host_is_still_refused_when_a_pin_is_set(monkeypat
 
 def test_no_pin_set_means_no_host_is_trusted_by_this_mechanism():
     assert not is_private_host("laptop.tailxxxx.ts.net")
+
+
+# -- ollama_tunnel_headers (sending side of the proxy's auth gate) -----------
+
+
+def test_the_tunnel_secret_is_sent_as_the_expected_header(monkeypatch):
+    from llm_endpoint import OLLAMA_TUNNEL_SECRET_HEADER, ollama_tunnel_headers
+
+    monkeypatch.setenv("OLLAMA_TUNNEL_SECRET", "a-long-random-value")
+    assert ollama_tunnel_headers() == {OLLAMA_TUNNEL_SECRET_HEADER: "a-long-random-value"}
+
+
+def test_no_configured_secret_sends_no_header(monkeypatch):
+    from llm_endpoint import ollama_tunnel_headers
+
+    monkeypatch.delenv("OLLAMA_TUNNEL_SECRET", raising=False)
+    assert ollama_tunnel_headers() == {}

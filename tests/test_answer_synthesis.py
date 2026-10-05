@@ -54,7 +54,7 @@ def test_the_default_model_has_no_reasoning_token_overhead():
 def test_the_configured_timeout_is_the_one_actually_sent(monkeypatch):
     captured = {}
 
-    def fake_post(url, json, timeout):
+    def fake_post(url, json, timeout, headers=None):
         captured["timeout"] = timeout
         raise requests.Timeout("simulated")
 
@@ -82,7 +82,7 @@ def test_a_timeout_still_falls_back_to_the_templated_answer(monkeypatch):
     # The fallback path itself is a pre-existing feature; this just locks in
     # that raising the timeout did not remove the safety net for the case
     # where Ollama is genuinely slower than even the new ceiling.
-    def fake_post(url, json, timeout):
+    def fake_post(url, json, timeout, headers=None):
         raise requests.Timeout("simulated")
 
     monkeypatch.setattr("rag.requests.post", fake_post)
@@ -99,7 +99,7 @@ def test_a_response_within_the_timeout_is_used_as_is(monkeypatch):
         def json(self):
             return {"response": "The Garo are bilingual in Bengali."}
 
-    def fake_post(url, json, timeout):
+    def fake_post(url, json, timeout, headers=None):
         return FakeResponse()
 
     monkeypatch.setattr("rag.requests.post", fake_post)
@@ -113,7 +113,7 @@ def test_a_response_within_the_timeout_is_used_as_is(monkeypatch):
 
 
 def test_a_cached_question_short_circuits_the_live_call(monkeypatch):
-    def fake_post(url, json, timeout):
+    def fake_post(url, json, timeout, headers=None):
         raise AssertionError("Ollama should not be called for a cached question")
 
     monkeypatch.setattr("rag.requests.post", fake_post)
@@ -137,7 +137,7 @@ def test_cache_lookup_ignores_case_and_surrounding_whitespace():
 
 
 def test_an_uncached_question_is_not_affected_by_a_nonempty_cache(monkeypatch):
-    def fake_post(url, json, timeout):
+    def fake_post(url, json, timeout, headers=None):
         raise requests.Timeout("simulated")
 
     monkeypatch.setattr("rag.requests.post", fake_post)

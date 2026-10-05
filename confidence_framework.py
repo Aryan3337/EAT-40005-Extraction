@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 import requests
 
-from llm_endpoint import resolve_llm_endpoint
+from llm_endpoint import ollama_tunnel_headers, resolve_llm_endpoint
 import pdfplumber
 
 # ============================================================
@@ -306,6 +306,7 @@ def call_ollama(system_prompt: str, user_prompt: str, retries: int = 2) -> Optio
                         "num_predict": MODEL_RESPONSE_TOKEN_BUDGET,
                     }
                 },
+                headers=ollama_tunnel_headers(),
                 timeout=300   # longer timeout — full paper evaluation takes time
             )
             if response.status_code == 200:

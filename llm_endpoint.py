@@ -35,6 +35,15 @@ hostname) rather than a paid instance. The hostname is still infrastructure
 the team controls, not a third-party model provider; pinning it exactly
 means a copy-pasted unrelated external URL is still refused.
 
+That tunnel hostname is PUBLIC once Funnel is on, though, and Ollama itself
+has no password -- see ollama_tunnel_proxy.py, which sits in front of it and
+only forwards a request carrying OLLAMA_TUNNEL_SECRET (header
+OLLAMA_TUNNEL_SECRET_HEADER below). ollama_tunnel_headers() is the sending
+side of that: every call site that might be talking to the tunnel (rag.py's
+AnswerSynthesizer, confidence_framework.py's call_ollama) attaches it. It is
+a plain dict, empty when OLLAMA_TUNNEL_SECRET is not set, which is the
+normal case for a local, non-tunnelled Ollama that was never asked for it.
+
 NOT COVERED: kg_filter.py and script.py also build Ollama URLs and are not
 routed through here. kg_filter.py is unwired (imported by nothing) and both
 are teammates' files on the main branch; they are listed as a known gap
@@ -43,11 +52,22 @@ rather than edited here.
 
 import ipaddress
 import os
+from typing import Dict
 from urllib.parse import urlparse
 
 ALLOW_EXTERNAL_ENV = "ALLOW_EXTERNAL_LLM"
 _PERMITTED_SCHEMES = {"http", "https"}
 _FALSEY = {"", "0", "false", "no", "off"}
+
+OLLAMA_TUNNEL_SECRET_HEADER = "X-Tunnel-Secret"
+
+
+def ollama_tunnel_headers() -> Dict[str, str]:
+    """The shared-secret header ollama_tunnel_proxy.py requires once Funnel
+    is on. Empty when OLLAMA_TUNNEL_SECRET isn't set -- the normal case for
+    a local, non-tunnelled Ollama, which was never asked for this header."""
+    secret = os.environ.get("OLLAMA_TUNNEL_SECRET", "")
+    return {OLLAMA_TUNNEL_SECRET_HEADER: secret} if secret else {}
 
 
 class ExternalLLMRefused(RuntimeError):
