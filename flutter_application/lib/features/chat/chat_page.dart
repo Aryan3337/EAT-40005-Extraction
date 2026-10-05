@@ -634,10 +634,17 @@ class _EmptyState extends StatelessWidget {
 
   final void Function(String prompt) onPromptTap;
 
+  // Checked against the live graph 2026-10-05: the previous three prompts
+  // (medicinal plants, climate change, matrilineal social system) returned
+  // zero relevant triples -- the corpus covers language maintenance,
+  // demographics, housing and community-facing problems, not those topics.
+  // These three were verified to each retrieve well-grounded, on-topic
+  // evidence. Content coverage for the original topics is someone else's
+  // in-progress work, not fixed here.
   static const _examplePrompts = [
-    'What plants do the Garo people use for traditional medicine?',
-    'How is climate change affecting indigenous communities?',
-    "Tell me about the Garo people's matrilineal social system.",
+    'Where do the Garo live?',
+    'What language do the Garo speak?',
+    'What challenges does the Garo community face?',
   ];
 
   // Builds the first-use prompt and example questions.

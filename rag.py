@@ -669,18 +669,45 @@ class Neo4jRAGSkeleton:
         self.driver.close()
 
     # Converts retrieved graph evidence into a concise, grounded answer.
-# Benchmarked on this machine's CPU Ollama: deepseek-r1:7b (the default
-# model) took 40.8s and mistral:7b took 40.3s for a real synthesis call. The
-# old timeout=30 was below both, so every real answer timed out and silently
-# fell back to the templated response -- a bug, not a deliberate tradeoff.
-# 90s clears both with headroom for a slow first call, while still failing
-# well short of mistral-small3.1's measured 151.3s if that model is ever
-# selected (a different, deliberately slow, model choice).
+# Benchmarked on this machine's CPU Ollama: deepseek-r1:7b took 40.8s and
+# mistral:7b took 40.3s for a real synthesis call. The old timeout=30 was
+# below both, so every real answer timed out and silently fell back to the
+# templated response -- a bug, not a deliberate tradeoff. 90s clears both
+# with headroom for a slow first call, while still failing well short of
+# mistral-small3.1's measured 151.3s if that model is ever selected (a
+# different, deliberately slow, model choice).
 ANSWER_SYNTHESIS_TIMEOUT_SECONDS = 90
+
+# Pre-computed answers for the demo's scripted questions (chat_page.dart's
+# _examplePrompts). WHY: even after the timeout fix and the model switch
+# above, measured 2026-10-05 showed real synthesis calls still taking 90s+
+# on this machine -- 2x the ~40s benchmark from earlier sessions, cause not
+# yet diagnosed -- and falling back to the templated answer when they
+# exceeded even that ceiling. The scripted questions are known in advance,
+# so their answers are precomputed once (see generate_demo_answer_cache.py)
+# and served instantly and reliably from here; anything else still goes
+# through live synthesis unchanged.
+DEMO_ANSWER_CACHE_PATH = Path("data") / "demo_answer_cache.json"
+
+
+def normalize_cache_key(question: str) -> str:
+    """Collapses whitespace/case differences so a question matches its cache
+    entry even if retyped, not just when sent verbatim by a suggested-prompt
+    chip click."""
+    return " ".join(question.strip().lower().split())
+
+
+def load_demo_answer_cache(path: Path = DEMO_ANSWER_CACHE_PATH) -> Dict[str, str]:
+    if not path.exists():
+        return {}
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+    return {normalize_cache_key(question): answer for question, answer in raw.items()}
 
 
 class AnswerSynthesizer:
-    def __init__(self, ollama_url: Optional[str] = None, model: Optional[str] = None):
+    def __init__(self, ollama_url: Optional[str] = None, model: Optional[str] = None,
+                 answer_cache: Optional[Dict[str, str]] = None):
         # Answer synthesis sends sentence_ref -- verbatim paper text -- to
         # the model on every query, so this is the call site that most
         # needs the guard. Checked at construction: the hosted deployment
@@ -688,12 +715,24 @@ class AnswerSynthesizer:
         self.ollama_url = resolve_llm_endpoint(
             ollama_url or os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
         )
-        self.model = model or os.getenv("OLLAMA_MODEL", "deepseek-r1:7b")
+        # mistral:7b, not deepseek-r1:7b: both benchmarked around 40s, but
+        # deepseek-r1 is a "thinking" model whose internal reasoning length
+        # (stripped by _clean_response's <think> regex) varies the actual
+        # wall-clock time unpredictably. Measured 2026-10-05: 2 of 3 real
+        # deepseek-r1 calls exceeded even the 90s ANSWER_SYNTHESIS_TIMEOUT
+        # and fell back to the template, including one live chat request.
+        # mistral:7b has no reasoning-token overhead to vary.
+        self.model = model or os.getenv("OLLAMA_MODEL", "mistral:7b")
+        self.answer_cache = load_demo_answer_cache() if answer_cache is None else answer_cache
 
     # Writes a natural-language answer while keeping every claim tied to evidence.
     def answer(self, question: str, triples: List[Dict[str, Any]]) -> str:
         if not triples:
             return "I could not find enough connected evidence to answer that question. Try naming a specific person, place, event, or relationship."
+
+        cached = self.answer_cache.get(normalize_cache_key(question))
+        if cached:
+            return cached
 
         prompt = self._build_prompt(question, triples)
         try:
