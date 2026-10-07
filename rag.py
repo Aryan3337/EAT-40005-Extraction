@@ -897,13 +897,20 @@ Answer the user's question using only the evidence below.
 The Mandi people are the same community as the Garo people (they call themselves
 A·chik Mande), so treat "Mandi", "Mande", "A·chik" and "Garo" as the same people.
 Do not invent facts, names, dates, or explanations that are not supported.
+    Answer ONLY the question asked. Use evidence that directly answers it; ignore
+    evidence about other topics even if it is about the same subject -- a question
+    about health status should not discuss language, location, or unrelated challenges.
+    Do not restate background facts (where they live, what they are also called)
+    unless the question asks for them.
     If the question asks what an entity is, begin with a direct definition and then add
     one or two supported details such as location, language, or community identity.
     Translate graph identifiers such as GaroCommunity into natural language such as
-    "the Garo community". Write 1-3 natural paragraphs. Do not mention prompts,
-    models, retrieval, graph triples, or JSON.
-    Answer the specific question first and omit evidence that does not help answer it.
-    If the evidence is incomplete, say what is known and briefly acknowledge the limitation.
+    "the Garo community". Write 1-2 short sentences for a simple factual question; use
+    more only if the question genuinely requires several distinct facts. Do not mention
+    prompts, models, retrieval, graph triples, or page numbers.
+    Only add a sentence about incomplete evidence if the evidence truly does not answer
+    the question. If it does answer the question, answer it plainly and stop -- do not
+    add a closing disclaimer out of habit.
 
 User question:
 {question}

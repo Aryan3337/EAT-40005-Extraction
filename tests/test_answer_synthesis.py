@@ -123,6 +123,36 @@ def test_the_synthesis_prompt_is_capped_to_the_top_n_triples(monkeypatch):
     assert captured["triples"] == many_triples[:SYNTHESIS_EVIDENCE_LIMIT]
 
 
+def test_the_prompt_tells_the_model_to_ignore_off_topic_evidence():
+    # Live-tested 2026-10-07: asked "What is the health status of the Garo
+    # community?" with 10 retrieved triples, only 1 of which was about
+    # health -- the rest were language/location/unrelated-challenges facts.
+    # The model narrated almost all of them (85 words, 4 sentences) for a
+    # question whose real answer is one word ("good"). Lowering the evidence
+    # count alone did NOT fix it (word count went UP with only 4 triples);
+    # the fix that worked was telling the model explicitly to ignore
+    # off-topic evidence and stop padding -- verified live: the same
+    # question with the same 10 triples dropped to a 9-word answer.
+    synthesizer = AnswerSynthesizer(ollama_url="http://localhost:11434/api/generate", answer_cache={})
+    prompt = synthesizer._build_prompt("What is the health status of the Garo community?", [_triple()])
+
+    assert "ignore" in prompt.lower()
+    assert "short sentence" in prompt.lower()
+
+
+def test_the_prompt_does_not_demand_a_disclaimer_for_a_fully_answered_question():
+    # The other half of the same live finding: the model was adding a
+    # boilerplate "further research might be necessary" hedge to EVERY
+    # answer, even a single high-confidence fact that fully answers the
+    # question. Traced to the old prompt's unconditional "if the evidence is
+    # incomplete, acknowledge the limitation" line being applied out of
+    # habit rather than when actually needed.
+    synthesizer = AnswerSynthesizer(ollama_url="http://localhost:11434/api/generate", answer_cache={})
+    prompt = synthesizer._build_prompt("What is the health status of the Garo community?", [_triple()])
+
+    assert "out of habit" in prompt.lower()
+
+
 def test_a_bare_connection_failure_is_retried(monkeypatch):
     # Live-tested 2026-10-07 against the real hosted tunnel: with the laptop
     # and Funnel genuinely up and every layer individually confirmed healthy,
