@@ -1,0 +1,3 @@
+extraction_number,paper,subject,predicate,object,source_section,confidence,passage,sentence_ref,source_file,page_number
+53,antepartum_care,LenguraUnion,HAS MEDICINE HealthCareUptake,privilegedHouseholdIncome,Page 7,High,"// PASSAGE: ir
+- (LenguraUnion)-[HAS MEDICINE HealthCareUptake]->( privilegedHouseholdIncome)","""Lengura Union with privileged household income sta...""",Uptake of antepartum care services in a matrilineal-matrilocal society - a study of Garo indigenous women in Bangladesh.pdf,7
