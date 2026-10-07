@@ -19,6 +19,7 @@ import requests
 
 from rag import (
     ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS,
+    ANSWER_SYNTHESIS_CONNECTION_RETRIES,
     ANSWER_SYNTHESIS_TIMEOUT_SECONDS,
     SYNTHESIS_EVIDENCE_LIMIT,
     AnswerSynthesizer,
@@ -120,6 +121,73 @@ def test_the_synthesis_prompt_is_capped_to_the_top_n_triples(monkeypatch):
 
     assert len(captured["triples"]) == SYNTHESIS_EVIDENCE_LIMIT
     assert captured["triples"] == many_triples[:SYNTHESIS_EVIDENCE_LIMIT]
+
+
+def test_a_bare_connection_failure_is_retried(monkeypatch):
+    # Live-tested 2026-10-07 against the real hosted tunnel: with the laptop
+    # and Funnel genuinely up and every layer individually confirmed healthy,
+    # 1 of 3 identical requests still failed to connect at all in well under
+    # a second, while the other 2 succeeded with real generation moments
+    # apart. The proxy's own log showed no trace of the failed attempt ever
+    # arriving -- the drop is in the network path, not this code -- so one
+    # retry is enough to mask a single transient blip.
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"response": "Second attempt succeeded."}
+
+    def fake_post(url, json, timeout, headers=None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise requests.ConnectionError("simulated transient drop")
+        return FakeResponse()
+
+    monkeypatch.setattr("rag.requests.post", fake_post)
+    synthesizer = AnswerSynthesizer(ollama_url="http://localhost:11434/api/generate", answer_cache={})
+    answer = synthesizer.answer("What language do the Garo speak?", [_triple()])
+
+    assert answer == "Second attempt succeeded."
+    assert len(calls) == 2
+
+
+def test_a_persistent_connection_failure_still_falls_back(monkeypatch):
+    calls = []
+
+    def fake_post(url, json, timeout, headers=None):
+        calls.append(1)
+        raise requests.ConnectionError("simulated persistent drop")
+
+    monkeypatch.setattr("rag.requests.post", fake_post)
+    synthesizer = AnswerSynthesizer(ollama_url="http://localhost:11434/api/generate", answer_cache={})
+    answer = synthesizer.answer("What language do the Garo speak?", [_triple()])
+
+    assert "bilingual" in answer.lower()
+    # Exactly the original attempt plus the configured number of retries --
+    # not an unbounded loop.
+    assert len(calls) == ANSWER_SYNTHESIS_CONNECTION_RETRIES + 1
+
+
+def test_a_slow_but_connected_timeout_is_not_retried(monkeypatch):
+    # Retrying a bare connection failure is cheap (fails in well under a
+    # second). Retrying a full generation timeout would double a 130s wait
+    # for a visitor who is already watching a long spinner -- this locks in
+    # that only ConnectionError triggers a retry, not the broader Timeout a
+    # slow-but-connected generation raises.
+    calls = []
+
+    def fake_post(url, json, timeout, headers=None):
+        calls.append(1)
+        raise requests.Timeout("simulated slow generation")
+
+    monkeypatch.setattr("rag.requests.post", fake_post)
+    synthesizer = AnswerSynthesizer(ollama_url="http://localhost:11434/api/generate", answer_cache={})
+    answer = synthesizer.answer("What language do the Garo speak?", [_triple()])
+
+    assert "bilingual" in answer.lower()
+    assert len(calls) == 1
 
 
 def test_a_response_within_the_timeout_is_used_as_is(monkeypatch):

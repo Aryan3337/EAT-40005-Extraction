@@ -776,6 +776,22 @@ SYNTHESIS_EVIDENCE_LIMIT = 10
 # connection is made and generation has actually started.
 ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS = 10
 
+# How many times to retry a request that failed to connect at all (not one
+# that connected and then ran out of time generating -- see answer() for the
+# distinction). WHY: live-tested 2026-10-07 against the real hosted tunnel
+# with the laptop/Funnel genuinely up and every layer individually confirmed
+# healthy (Ollama, the authenticating proxy, Funnel itself) -- one request in
+# three still failed to connect at all in well under a second, while the
+# next two identical requests succeeded with real generation. The proxy's own
+# log showed no trace of the failed attempt ever arriving, so the drop is
+# somewhere in the Render-to-Funnel network path itself, not in this code.
+# One retry is enough to mask a single transient blip without materially
+# changing the worst case: retrying a connection failure (fast) is cheap;
+# retrying a full generation timeout would double a 130s wait, which is why
+# this only catches ConnectionError, not the broader Timeout/RequestException
+# that a slow-but-connected generation can raise.
+ANSWER_SYNTHESIS_CONNECTION_RETRIES = 1
+
 # Pre-computed answers for the demo's scripted questions (chat_page.dart's
 # _examplePrompts). WHY: even after the timeout fix and the model switch
 # above, measured 2026-10-05 showed real synthesis calls still taking 90s+
@@ -833,24 +849,34 @@ class AnswerSynthesizer:
             return cached
 
         prompt = self._build_prompt(question, triples[:SYNTHESIS_EVIDENCE_LIMIT])
-        try:
-            response = requests.post(
-                self.ollama_url,
-                json={
-                    "model": self.model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"temperature": 0.2, "num_predict": 400},
-                },
-                headers=ollama_tunnel_headers(),
-                timeout=(ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS, ANSWER_SYNTHESIS_TIMEOUT_SECONDS),
-            )
-            if response.status_code == 200:
-                text = response.json().get("response", "").strip()
-                if text:
-                    return self._clean_response(text)
-        except (requests.RequestException, ValueError, KeyError) as error:
-            print(f"Answer synthesis unavailable: {error}")
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.2, "num_predict": 400},
+        }
+        # Retries only a bare connection failure (see ANSWER_SYNTHESIS_CONNECTION_RETRIES
+        # for why), never a slow-but-connected generation that ran out of time.
+        for attempt in range(ANSWER_SYNTHESIS_CONNECTION_RETRIES + 1):
+            try:
+                response = requests.post(
+                    self.ollama_url,
+                    json=payload,
+                    headers=ollama_tunnel_headers(),
+                    timeout=(ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS, ANSWER_SYNTHESIS_TIMEOUT_SECONDS),
+                )
+            except requests.ConnectionError as error:
+                print(f"Answer synthesis connection failed (attempt {attempt + 1}): {error}")
+                continue
+            except (requests.RequestException, ValueError, KeyError) as error:
+                print(f"Answer synthesis unavailable: {error}")
+                break
+            else:
+                if response.status_code == 200:
+                    text = response.json().get("response", "").strip()
+                    if text:
+                        return self._clean_response(text)
+                break
 
         return self._fallback_answer(triples)
 
