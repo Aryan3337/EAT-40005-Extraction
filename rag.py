@@ -932,38 +932,104 @@ Answer:"""
         subject = self._humanize_entity(triple.get("subject", "This entity"))
         raw_predicate = str(triple.get("predicate", ""))
         predicate_key = raw_predicate.upper().replace(" ", "_")
-        obj = self._humanize_entity(triple.get("object", "another entity"))
-        subject_lower = subject.lower()
+        # as_subject=False: a bare "Garo" as an OBJECT usually names the
+        # language (e.g. LANGUAGE_USED's "GaroCommunity -> Garo"), not the
+        # people -- see _humanize_entity for the bug this avoids.
+        obj = self._humanize_entity(triple.get("object", "another entity"), as_subject=False)
+        is_plural = self._is_plural_subject(subject)
 
-        templates = {
-            "IS_A": f"{subject} is {self._article(obj)}",
-            "TYPE": f"{subject} is {self._article(obj)}",
-            "LOCATED_IN": f"{subject} is located in {obj}",
-            "LIVE_IN": f"{subject} live in {obj}" if subject_lower.endswith("people") else f"{subject} lives in {obj}",
-            "SPEAK_LANGUAGE": f"{subject} speak {obj}" if subject_lower.endswith("people") or subject_lower.endswith("community") else f"{subject} speaks {obj}",
-            "BELONG_TO": f"{subject} belong to {obj}" if subject_lower.endswith("people") or subject_lower.endswith("community") else f"{subject} belongs to {obj}",
-            "HAS_LANGUAGE": f"{subject} use the {obj} language",
-            "HAS_A_POPULATION": f"{subject} have an estimated population of {obj}",
-        }
-        sentence = templates.get(predicate_key)
-        if sentence:
-            return f"{sentence}."
+        sentence_builder = self._PREDICATE_TEMPLATES.get(predicate_key)
+        if sentence_builder:
+            return f"{sentence_builder(self, subject, obj, is_plural)}."
         # Pass the ORIGINAL predicate text (not the upper-cased key) so any
         # camelCase word boundaries it still has are available to humanize.
-        readable_predicate = self._humanize_predicate(raw_predicate)
+        readable_predicate = self._humanize_predicate(raw_predicate, is_plural)
         return f"{subject} {readable_predicate} {obj}."
+
+    # Entities that read as a group rather than one named thing -- "the Garo
+    # people", "Informants", "Traditional Garo Houses" -- need a plural verb
+    # ("face", not "faces"). Curated from the real production graph rather
+    # than a general "ends in s" rule: that rule looks appealing (every
+    # plural subject here happens to end in "s" or is "people"/"children"),
+    # but a blanket version would misfire on this SAME graph -- "Garo
+    # Community Health Status" ends in "s" too and is singular. Checked
+    # deliberately rather than assumed. A known, bounded list, not a claim
+    # of covering every future subject -- see _PREDICATE_TEMPLATES'
+    # docstring for the same tradeoff.
+    _PLURAL_SUBJECT_SUFFIXES = (
+        "people", "authorities", "houses", "utensils", "members", "informants",
+        "children", "programs", "domains",
+    )
+
+    def _is_plural_subject(self, humanized_subject: str) -> bool:
+        lowered = humanized_subject.strip().lower()
+        return any(lowered.endswith(suffix) for suffix in self._PLURAL_SUBJECT_SUFFIXES)
+
+    # One sentence-building function per predicate in the current production
+    # graph (data/production_graph/, 32 distinct predicates), keyed the same
+    # way _format_triple already computed a lookup key. WHY THIS EXISTS: a
+    # live test 2026-10-07 ("What is the Garo community?") showed the OLD
+    # 8-entry dict matched NONE of the real predicates -- including a literal
+    # typo, "LIVE_IN" against the real "LIVING_IN" -- so every answer fell
+    # through to naive concatenation: "The Garo people faces Unemployment"
+    # (wrong verb number) and "Garo People bilingual Bengali" (missing verb
+    # entirely). Each function takes (self, subject, object, is_plural) and
+    # returns a sentence with no trailing period. A predicate from a FUTURE
+    # paper that isn't one of these 32 falls through to _humanize_predicate's
+    # generic word-segmentation path, now at least plural-aware for the
+    # common single-word-verb case -- but closing this for good needs a
+    # controlled predicate vocabulary at extraction time (KNOWN_LIMITATIONS.md
+    # #5), not an ever-growing dict here.
+    _PREDICATE_TEMPLATES: Dict[str, Any] = {
+        "POPULATION": lambda self, s, o, p: f"{s} recorded a population of {o}",
+        "BILINGUAL": lambda self, s, o, p: f"{s} {'are' if p else 'is'} bilingual in {o}",
+        "HAD_INTEREST_IN": lambda self, s, o, p: f"{s} had an interest in {o}",
+        "HAVE_PROPERTY": lambda self, s, o, p: f"{s} {'have' if p else 'has'} {self._article(o)} as a feature",
+        "EVOLVE": lambda self, s, o, p: f"{s} evolved to use {o}",
+        "NAMED": lambda self, s, o, p: f"{s} {'are' if p else 'is'} named {o}",
+        "HAS_TRADITIONAL_RELIGION": lambda self, s, o, p: f"{s} {'have' if p else 'has'} a traditional religious practice of {o}",
+        "HAS_HEALTH_STATUS": lambda self, s, o, p: f"{s} {'have' if p else 'has'} a health status of {o}",
+        "HAS_PERCENTAGE": lambda self, s, o, p: f"{s} {'stand' if p else 'stands'} at {o}",
+        "FACES": lambda self, s, o, p: f"{s} {'face' if p else 'faces'} {o}",
+        "HAS_CONCERN": lambda self, s, o, p: f"{s} {'have' if p else 'has'} a concern about {o}",
+        "HAS_ORIGIN": lambda self, s, o, p: f"{s} {'originate' if p else 'originates'} from {o}",
+        "LIVING_IN": lambda self, s, o, p: f"{s} {'live' if p else 'lives'} in {o}",
+        "LANGUAGE_USED": lambda self, s, o, p: f"{s} {'speak' if p else 'speaks'} {o}",
+        "HAS_LANGUAGE_MAINTENANCE": lambda self, s, o, p: f"{s} {'maintain' if p else 'maintains'} {o}",
+        "DEFINED_BY": lambda self, s, o, p: f"{s} {'are' if p else 'is'} defined by {o}",
+        "IDENTIFIED_DOMAINS": lambda self, s, o, p: f"{s} identified {o} as a domain of language use",
+        "USES": lambda self, s, o, p: f"{s} {'use' if p else 'uses'} {o}",
+        "HAS_USES_IN": lambda self, s, o, p: f"{s} {'have' if p else 'has'} uses in {o}",
+        "ARE_MORE_INVOLVED_THAN": lambda self, s, o, p: f"{s} are more involved than {o}",
+        "EXTENT_OF_USE": lambda self, s, o, p: f"{s} {'have' if p else 'has'} an extent of use in {o}",
+        "RELIGIOUS_DOMAIN": lambda self, s, o, p: f"{s} {'are' if p else 'is'} characterized by the religious domain of {o}",
+        "ISCHRISTIAN": lambda self, s, o, p: f"{s} {'are' if p else 'is'} Christian and attend {o}",
+        "HAS_RELIGIOUS_SCRIPT": lambda self, s, o, p: f"{s} {'have' if p else 'has'} a religious script in {o}",
+        "IS_MAINTAINED_LESS": lambda self, s, o, p: f"{s} {'are' if p else 'is'} maintained less in {o}",
+        "MEDIA_BROADCAST": lambda self, s, o, p: f"{s} {'are' if p else 'is'} broadcast through {o}",
+        "IS_USED_IN": lambda self, s, o, p: f"{s} {'are' if p else 'is'} used in {o}",
+        "HASPOSITIVEATTITUDES": lambda self, s, o, p: f"{s} {'have' if p else 'has'} positive attitudes toward {o}",
+        "EMPHASIZES_LANGUAGES": lambda self, s, o, p: f"{s} {'emphasize' if p else 'emphasizes'} {o}",
+        "RESIDENTS": lambda self, s, o, p: f"{s} {'are residents' if p else 'is a resident'} of {o}",
+        "ABANDONED": lambda self, s, o, p: f"{s} {'have' if p else 'has'} abandoned {o}",
+        "INCLUDES": lambda self, s, o, p: f"{s} {'include' if p else 'includes'} {o}",
+    }
 
     # Makes CamelCase graph identifiers readable in a response, and refers
     # to the Garo people by their full, respectful name rather than just
-    # the bare entity label.
-    def _humanize_entity(self, entity: Any) -> str:
+    # the bare entity label -- but only when used AS a subject. A bare
+    # "Garo" as an OBJECT usually names the language, not the people (e.g.
+    # LANGUAGE_USED's "GaroCommunity -> Garo"); collapsing it the same way
+    # produced a real, confirmed bug: "The Garo people language used The
+    # Garo people" (self-referential, from the object also collapsing).
+    def _humanize_entity(self, entity: Any, as_subject: bool = True) -> str:
         raw_text = str(entity or "").strip()
         text = raw_text.replace("_", " ")
         text = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text)
         text = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", text)
         if re.fullmatch(r"[A-Za-z0-9_]+", raw_text):
             text = re.sub(r"\s+Community$", "", text, flags=re.IGNORECASE)
-        if text.strip().lower() == "garo":
+        if as_subject and text.strip().lower() == "garo":
             text = "the Garo people"
         return text[:1].upper() + text[1:] if text else "another entity"
 
@@ -978,16 +1044,16 @@ Answer:"""
     # next begins). For those, fall back to dictionary-based word
     # segmentation so the answer still reads as real words instead of one
     # run-together blob.
-    def _humanize_predicate(self, predicate: str) -> str:
+    def _humanize_predicate(self, predicate: str, is_plural: bool = False) -> str:
         normalized = predicate.lower().replace("_", " ").strip()
         replacements = {
-            "live in": "lives in",
-            "located in": "is located in",
-            "born in": "was born in",
-            "part of": "is part of",
-            "related to": "is related to",
-            "is a": "is a",
-            "role": "have the role of",
+            "live in": "live in" if is_plural else "lives in",
+            "located in": "are located in" if is_plural else "is located in",
+            "born in": "were born in" if is_plural else "was born in",
+            "part of": "are part of" if is_plural else "is part of",
+            "related to": "are related to" if is_plural else "is related to",
+            "is a": "are" if is_plural else "is a",
+            "role": "have the role of" if is_plural else "has the role of",
             "recognize": "recognize",
             "speak language": "speak",
         }
@@ -1000,8 +1066,18 @@ Answer:"""
             if token
             for word in self._split_concatenated_word(token)
         ]
+        # A single segmented word ending in "s" reads as a present-tense,
+        # third-person-singular verb (e.g. "faces", "includes") -- the exact
+        # shape behind a real, confirmed bug: "The Garo people faces
+        # Unemployment". For a plural subject, strip the trailing "s" to the
+        # bare/plural verb form. Scoped to a single segment only: a
+        # multi-word phrase's trailing "s" is usually a plural NOUN, not a
+        # verb (e.g. "identified domains"), where stripping it would be
+        # wrong -- "identified domain" is worse, not better.
+        if is_plural and len(segmented) == 1 and len(segmented[0]) > 3 and segmented[0].endswith("s"):
+            segmented = [segmented[0][:-1]]
         readable = " ".join(segmented)
-        return readable or "is related to"
+        return readable or ("are related to" if is_plural else "is related to")
 
     # Splits a run of letters with no remaining word boundaries (e.g.
     # "relyingon") back into likely English words. Short tokens are left
