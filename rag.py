@@ -110,9 +110,36 @@ def score_triple(triple: Dict[str, Any], keywords: List[str]) -> int:
     return score
 
 
+# Keyword -> other word forms that should count as the same match. WHY A
+# CURATED LIST, NOT A GENERAL STEMMING RULE: tried a shared-prefix heuristic
+# first (e.g. "match if two words share a long enough common prefix") and
+# measured it before shipping -- it still MISSES "live"/"living" under a
+# safe threshold (their shared prefix "liv" is too short to pass safely),
+# and under a looser threshold it produces real false positives on this
+# exact corpus: "status" matches "statute", "family" matches "familiar",
+# and "community" matches "communicate" (which would partially UNDO this
+# morning's fix, since "Insufficient Communication" is a real object value
+# and "community" is already the graph's most over-matching word). Same
+# lesson as _PLURAL_SUBJECT_SUFFIXES: a bounded, curated list beats a
+# general rule that misfires on this graph. Confirmed live 2026-10-07:
+# "live" is not a literal substring of "living" (silent-e), and
+# "religious" is not a literal substring of "religion" -- both caused a
+# real triple (LIVING_IN, HAS_TRADITIONAL_RELIGION) to under-rank.
+_KEYWORD_EQUIVALENTS: Dict[str, Tuple[str, ...]] = {
+    "live": ("living", "lived", "lives"),
+    "religious": ("religion", "religions"),
+}
+
+
+def _keyword_matches(keyword: str, haystack: str) -> bool:
+    if keyword in haystack:
+        return True
+    return any(form in haystack for form in _KEYWORD_EQUIVALENTS.get(keyword, ()))
+
+
 def _keyword_in_triple(triple: Dict[str, Any], keyword: str) -> bool:
     for field, _ in _FIELD_WEIGHTS:
-        if keyword in str(triple.get(field) or "").lower():
+        if _keyword_matches(keyword, str(triple.get(field) or "").lower()):
             return True
     return False
 
@@ -152,7 +179,7 @@ def score_triple_weighted(triple: Dict[str, Any], weights: Dict[str, float]) -> 
         if not haystack:
             continue
         for keyword, weight in weights.items():
-            if keyword in haystack:
+            if _keyword_matches(keyword, haystack):
                 score += field_weight * weight
     return score
 

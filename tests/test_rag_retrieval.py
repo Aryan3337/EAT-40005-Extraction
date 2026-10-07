@@ -183,6 +183,37 @@ def test_weighted_scoring_can_reorder_what_flat_scoring_ranked_first():
     assert weighted_order[0] is specific  # the fix
 
 
+def test_live_matches_living_despite_not_being_a_literal_substring():
+    # Confirmed live 2026-10-07: "live" is not a literal substring of
+    # "living" (silent-e), so "Where do the Garo live?" scored the one
+    # directly relevant triple (...LIVING_IN...) BELOW several generic
+    # Garo-mentioning ones. A shared-prefix heuristic was tried and
+    # rejected (see _KEYWORD_EQUIVALENTS' docstring) in favour of this
+    # curated equivalence.
+    pool = [
+        _triple(subject="GaroCommunity", predicate="LIVING_IN", object="Mymensingh", sentence_ref="x"),
+        _triple(subject="GaroCommunity", predicate="FACES", object="Unemployment", sentence_ref="x"),
+    ]
+    living, unrelated = pool
+    weights = keyword_weights(["live", "garo"], pool)
+    assert score_triple_weighted(living, weights) > score_triple_weighted(unrelated, weights)
+
+
+def test_religious_matches_religion_despite_not_being_a_literal_substring():
+    religious_triple = _triple(subject="Judgment", predicate="HAS_TRADITIONAL_RELIGION",
+                                object="JudgmentAtMissalCharms", sentence_ref="x")
+    pool = _garo_noise_pool() + [religious_triple]
+    generic = pool[0]
+    weights = keyword_weights(["religious", "garo"], pool)
+    assert score_triple_weighted(religious_triple, weights) > score_triple_weighted(generic, weights)
+
+
+def test_a_curated_equivalent_does_not_match_an_unrelated_word():
+    # "live" matching "living" should not somehow make it match everything.
+    triple = _triple(subject="Unrelated", predicate="NAMED", object="Something", sentence_ref="x")
+    assert score_triple_weighted(triple, keyword_weights(["live"], [triple])) == 0
+
+
 def test_a_keyword_absent_from_the_pool_still_has_a_finite_weight():
     # Should not divide by zero or blow up when nothing in the pool matches.
     weights = keyword_weights(["nonexistent"], [_triple()])
