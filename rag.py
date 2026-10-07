@@ -1173,7 +1173,25 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                     self._send_json(400, {"error": "query is required"})
                     return
 
-                triples = skeleton.query(question)
+                # Capped to what synthesizer.answer() actually sends the model
+                # (SYNTHESIS_EVIDENCE_LIMIT), not the full DEFAULT_TOP_K=25
+                # retrieval. WHY: live-tested 2026-10-07 -- a one-fact answer
+                # like "The population... is not explicitly stated..." was
+                # showing "View verified sources (25)", because the Flutter
+                # client's source count comes straight from this list
+                # (chat_service.dart's _readSources(payload['triples'])), and
+                # it was never trimmed to match what the model actually saw.
+                # A real per-question relevance threshold would be more
+                # honest still, but was tested against all of today's example
+                # questions and found unsafe to ship: for the religion
+                # question fixed earlier today, a threshold would have cut
+                # the two genuinely relevant triples (Judgment, Informants)
+                # while keeping an irrelevant one that outscores them on a
+                # keyword-overlap artifact ("traditional" in both the
+                # question and an unrelated subject name). That needs the
+                # retrieval scorer's stemming gaps (e.g. "live" vs "living")
+                # closed first -- a bigger, separate piece of work.
+                triples = skeleton.query(question, top_k=SYNTHESIS_EVIDENCE_LIMIT)
                 sources = sorted({
                     t.get("source_section", "Unknown")
                     for t in triples
