@@ -687,7 +687,29 @@ class Neo4jRAGSkeleton:
 # with headroom for a slow first call, while still failing well short of
 # mistral-small3.1's measured 151.3s if that model is ever selected (a
 # different, deliberately slow, model choice).
-ANSWER_SYNTHESIS_TIMEOUT_SECONDS = 90
+#
+# Raised to 130s 2026-10-07: 90s was still not enough for a genuinely COLD
+# question (no matching prompt in llama.cpp's own prompt cache). Measured via
+# Ollama's own timing log on the real hosted-demo tunnel path: prefill of the
+# ~2460-token evidence prompt alone took ~62s at this CPU's ~40 tokens/sec
+# prefill speed, before decoding even starts; decode then added another
+# ~50-60s. A same-prompt retest looked like a fast 52.7s total, but that was
+# a prompt-cache hit (cached n_tokens = 2459 of 2460) from the first,
+# cancelled attempt -- not representative, since every real question has a
+# different evidence prompt. See SYNTHESIS_EVIDENCE_LIMIT below, which
+# attacks the actual bottleneck (prefill length) directly; this timeout is
+# the safety margin on top of that fix, not a substitute for it.
+ANSWER_SYNTHESIS_TIMEOUT_SECONDS = 130
+
+# Caps how many retrieved triples go into the synthesis PROMPT (citations in
+# the "View verified sources" panel still show all of DEFAULT_TOP_K=25 --
+# this only shrinks what gets sent to the model). WHY: prefill time scales
+# ~linearly with prompt length, and all 25 triples as JSON evidence produce a
+# ~2460-token prompt that alone takes ~62s to prefill on this CPU (~40
+# tokens/sec), which is most of the timeout budget before decoding even
+# starts. Triples already arrive score-sorted, so keeping the top N keeps the
+# most relevant evidence.
+SYNTHESIS_EVIDENCE_LIMIT = 10
 
 # How long to wait for Ollama to even ACCEPT a connection, separate from how
 # long to wait for it to finish generating (above). This matters once the
@@ -756,7 +778,7 @@ class AnswerSynthesizer:
         if cached:
             return cached
 
-        prompt = self._build_prompt(question, triples)
+        prompt = self._build_prompt(question, triples[:SYNTHESIS_EVIDENCE_LIMIT])
         try:
             response = requests.post(
                 self.ollama_url,

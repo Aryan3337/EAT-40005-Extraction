@@ -20,6 +20,7 @@ import requests
 from rag import (
     ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS,
     ANSWER_SYNTHESIS_TIMEOUT_SECONDS,
+    SYNTHESIS_EVIDENCE_LIMIT,
     AnswerSynthesizer,
     load_demo_answer_cache,
 )
@@ -90,6 +91,35 @@ def test_a_timeout_still_falls_back_to_the_templated_answer(monkeypatch):
     answer = synthesizer.answer("What language do the Garo speak?", [_triple()])
 
     assert "bilingual" in answer.lower()
+
+
+def test_the_synthesis_prompt_is_capped_to_the_top_n_triples(monkeypatch):
+    # Measured 2026-10-07 on the real hosted-demo tunnel path: a cold,
+    # 25-triple evidence prompt (~2460 tokens) takes ~62s just to prefill on
+    # this CPU's ~40 tokens/sec prefill speed, before decoding even starts --
+    # enough on its own to blow a 90s timeout. Triples arrive score-sorted,
+    # so capping to the top N keeps the most relevant evidence while cutting
+    # prefill roughly proportionally. This must not affect the separate
+    # citations list the query handler builds from the full, uncapped triple
+    # list -- only what gets sent to the model.
+    captured = {}
+
+    def fake_build_prompt(self, question, triples):
+        captured["triples"] = triples
+        return "prompt"
+
+    monkeypatch.setattr(AnswerSynthesizer, "_build_prompt", fake_build_prompt)
+
+    def fake_post(url, json, timeout, headers=None):
+        raise requests.Timeout("simulated")
+
+    monkeypatch.setattr("rag.requests.post", fake_post)
+    many_triples = [_triple(subject=f"Subject{i}") for i in range(25)]
+    synthesizer = AnswerSynthesizer(ollama_url="http://localhost:11434/api/generate", answer_cache={})
+    synthesizer.answer("What language do the Garo speak?", many_triples)
+
+    assert len(captured["triples"]) == SYNTHESIS_EVIDENCE_LIMIT
+    assert captured["triples"] == many_triples[:SYNTHESIS_EVIDENCE_LIMIT]
 
 
 def test_a_response_within_the_timeout_is_used_as_is(monkeypatch):
