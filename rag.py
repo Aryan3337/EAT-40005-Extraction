@@ -21,6 +21,7 @@ as the primary retrieval strategy for the current KG.
 import os
 import json
 import csv
+import math
 import re
 import sys
 import argparse
@@ -106,6 +107,53 @@ def score_triple(triple: Dict[str, Any], keywords: List[str]) -> int:
         for keyword in keywords:
             if keyword in haystack:
                 score += weight
+    return score
+
+
+def _keyword_in_triple(triple: Dict[str, Any], keyword: str) -> bool:
+    for field, _ in _FIELD_WEIGHTS:
+        if keyword in str(triple.get(field) or "").lower():
+            return True
+    return False
+
+
+def keyword_weights(keywords: List[str], triples: List[Dict[str, Any]]) -> Dict[str, float]:
+    """How much each keyword should count in score_triple_weighted, discounted
+    by how common it is across `triples` -- a classic smoothed IDF.
+
+    WHY: measured 2026-10-07 on the real 45-triple production graph, "garo"
+    appears in 22 of 45 triples and "community" in 17, because GaroCommunity
+    is the graph's one hub entity (13 of 45 triples). Under flat scoring, a
+    triple that only matches on "garo"/"community" outranks one that matches
+    a genuinely rare, on-topic word like "religious" (3 of 45) or
+    "traditional" (2 of 45) -- so a specific question gets buried in generic
+    hub noise. Confirmed live: a religion question retrieved no real religion
+    evidence, and the model invented a speculative connection to compensate
+    (see tests/test_answer_synthesis.py's synthesis tests) -- the model was
+    honest given what it was handed, it just was not handed the right
+    evidence. A keyword present in every triple contributes a weight just
+    above 1 (counts, but barely); one present in only one or two triples
+    contributes several times that.
+    """
+    n = len(triples) or 1
+    weights = {}
+    for keyword in keywords:
+        document_frequency = sum(1 for triple in triples if _keyword_in_triple(triple, keyword))
+        weights[keyword] = math.log((n + 1) / (document_frequency + 1)) + 1
+    return weights
+
+
+def score_triple_weighted(triple: Dict[str, Any], weights: Dict[str, float]) -> float:
+    """Like score_triple, but each keyword counts by its keyword_weights()
+    weight instead of equally. See keyword_weights for why."""
+    score = 0.0
+    for field, field_weight in _FIELD_WEIGHTS:
+        haystack = str(triple.get(field) or "").lower()
+        if not haystack:
+            continue
+        for keyword, weight in weights.items():
+            if keyword in haystack:
+                score += field_weight * weight
     return score
 
 
@@ -366,7 +414,10 @@ class ConceptRetriever:
         if not keywords:
             return []
 
-        scored = [(score_triple(triple, keywords), triple) for triple in self.kg.triples]
+        # Weighted by keyword_weights so a rare, on-topic keyword outranks a
+        # flat match on the graph's hub entity -- see keyword_weights.
+        weights = keyword_weights(keywords, self.kg.triples)
+        scored = [(score_triple_weighted(triple, weights), triple) for triple in self.kg.triples]
         # Stable sort on the negated score keeps the CSV's row order as the
         # tie-break, so equal-scoring results do not shuffle between calls.
         scored.sort(key=lambda pair: -pair[0])
@@ -649,9 +700,12 @@ class Neo4jRAGSkeleton:
             )
             candidates = [dict(record) for record in result]
 
+        # Weighted by keyword_weights so a rare, on-topic keyword outranks a
+        # flat match on the graph's hub entity -- see keyword_weights.
         # Stable sort on the negated score keeps Cypher's order as the
         # tie-break, so equal-scoring results do not shuffle between calls.
-        candidates.sort(key=lambda triple: -score_triple(triple, keywords))
+        weights = keyword_weights(keywords, candidates)
+        candidates.sort(key=lambda triple: -score_triple_weighted(triple, weights))
 
         # Dedupe before truncating, so a duplicate doesn't cost a real
         # candidate its place in top_k. Sorting first means the
