@@ -199,6 +199,24 @@ def test_live_matches_living_despite_not_being_a_literal_substring():
     assert score_triple_weighted(living, weights) > score_triple_weighted(unrelated, weights)
 
 
+def test_live_does_not_false_match_livelihood():
+    # Confirmed live 2026-10-08: "live" IS a literal substring of
+    # "livelihood", so every LivelihoodPatterns/MAINLYREFERS triple from the
+    # overnight batch false-matched "Where do the Garo live?" at the same
+    # score as the real LIVING_IN triple -- 8 near-identical rows from one
+    # sentence, which (via dedupe_triples) crowded the genuinely relevant
+    # RESIDENTS triple out of the top 10.
+    pool = [
+        _triple(subject="GaroCommunity", predicate="LIVING_IN", object="Mymensingh", sentence_ref="x"),
+        _triple(subject="LivelihoodPatterns", predicate="MAINLYREFERS", object="WayOfLifeStyle",
+                sentence_ref="livelihood patterns mainly refer to the way of life style"),
+    ]
+    living, livelihood = pool
+    weights = keyword_weights(["live", "garo"], pool)
+    assert score_triple_weighted(livelihood, weights) == 0
+    assert score_triple_weighted(living, weights) > 0
+
+
 def test_religious_matches_religion_despite_not_being_a_literal_substring():
     religious_triple = _triple(subject="Judgment", predicate="HAS_TRADITIONAL_RELIGION",
                                 object="JudgmentAtMissalCharms", sentence_ref="x")

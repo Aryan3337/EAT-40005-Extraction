@@ -130,8 +130,26 @@ _KEYWORD_EQUIVALENTS: Dict[str, Tuple[str, ...]] = {
     "religious": ("religion", "religions"),
 }
 
+# Words that would substring-match a keyword but mean something unrelated --
+# the same false-positive family _KEYWORD_EQUIVALENTS' docstring already
+# warns about ("community" in "communicate"), found live 2026-10-08 on the
+# overnight batch's new LivelihoodPatterns/MAINLYREFERS triples: "live" is a
+# literal substring of "livelihood", so every one of those 8 triples
+# false-matched "Where do the Garo live?" at the same score as the real
+# LIVING_IN triple, and (being 8 near-identical rows -- see dedupe_triples)
+# crowded the genuinely relevant RESIDENTS triple out of the top 10. Stripped
+# from the haystack before matching, the same way a stopword is removed,
+# rather than blocked with a word-boundary regex -- entity names like
+# "GaroCommunity" rely on substring matching across a camelCase join with no
+# boundary, so a general regex fix would break those matches too.
+_KEYWORD_FALSE_POSITIVES: Dict[str, Tuple[str, ...]] = {
+    "live": ("livelihood", "livelihoods"),
+}
+
 
 def _keyword_matches(keyword: str, haystack: str) -> bool:
+    for excluded in _KEYWORD_FALSE_POSITIVES.get(keyword, ()):
+        haystack = haystack.replace(excluded, "")
     if keyword in haystack:
         return True
     return any(form in haystack for form in _KEYWORD_EQUIVALENTS.get(keyword, ()))
