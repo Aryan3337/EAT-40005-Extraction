@@ -855,6 +855,15 @@ _FALSEY = {"", "0", "false", "no", "off"}
 def relevance_gate_enabled() -> bool:
     return os.getenv("SYNTHESIS_RELEVANCE_GATE", "on").strip().lower() not in _FALSEY
 
+
+# Shown when retrieval found nothing, and when the relevance gate judged that
+# nothing retrieved actually answers the question. One constant so the two
+# paths cannot drift into saying different things about the same situation.
+NO_GROUNDED_ANSWER_MESSAGE = (
+    "I could not find enough connected evidence to answer that question. "
+    "Try naming a specific person, place, event, or relationship."
+)
+
 # Pre-computed answers for the demo's scripted questions (chat_page.dart's
 # _examplePrompts). WHY: even after the timeout fix and the model switch
 # above, measured 2026-10-05 showed real synthesis calls still taking 90s+
@@ -905,7 +914,7 @@ class AnswerSynthesizer:
     # Writes a natural-language answer while keeping every claim tied to evidence.
     def answer(self, question: str, triples: List[Dict[str, Any]]) -> str:
         if not triples:
-            return "I could not find enough connected evidence to answer that question. Try naming a specific person, place, event, or relationship."
+            return NO_GROUNDED_ANSWER_MESSAGE
 
         cached = self.answer_cache.get(normalize_cache_key(question))
         if cached:
@@ -938,7 +947,13 @@ class AnswerSynthesizer:
                 if response.status_code == 200:
                     text = response.json().get("response", "").strip()
                     if text:
-                        return self._clean_response(text)
+                        if not relevance_gate_enabled():
+                            return self._clean_response(text)
+                        gated = self._parse_gated_response(text)
+                        # A refusal is the intended output, not a failure:
+                        # deliberately NOT _fallback_answer, whose templated
+                        # triple soup is the off-topic padding being removed.
+                        return gated if gated is not None else NO_GROUNDED_ANSWER_MESSAGE
                 break
 
         return self._fallback_answer(triples)

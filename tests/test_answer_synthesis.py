@@ -21,6 +21,7 @@ from rag import (
     ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS,
     ANSWER_SYNTHESIS_CONNECTION_RETRIES,
     ANSWER_SYNTHESIS_TIMEOUT_SECONDS,
+    NO_GROUNDED_ANSWER_MESSAGE,
     SYNTHESIS_EVIDENCE_LIMIT,
     AnswerSynthesizer,
     load_demo_answer_cache,
@@ -168,7 +169,7 @@ def test_a_bare_connection_failure_is_retried(monkeypatch):
         status_code = 200
 
         def json(self):
-            return {"response": "Second attempt succeeded."}
+            return {"response": "RELEVANT: yes\nSecond attempt succeeded."}
 
     def fake_post(url, json, timeout, headers=None):
         calls.append(1)
@@ -226,7 +227,7 @@ def test_a_response_within_the_timeout_is_used_as_is(monkeypatch):
         status_code = 200
 
         def json(self):
-            return {"response": "The Garo are bilingual in Bengali."}
+            return {"response": "RELEVANT: yes\nThe Garo are bilingual in Bengali."}
 
     def fake_post(url, json, timeout, headers=None):
         return FakeResponse()
@@ -401,3 +402,85 @@ def test_the_prompt_omits_the_gate_instruction_when_switched_off(monkeypatch):
     monkeypatch.setenv("SYNTHESIS_RELEVANCE_GATE", "0")
     prompt = _synthesizer()._build_prompt("What language do they speak?", [_triple()])
     assert "RELEVANT:" not in prompt
+
+
+def _fake_ollama(text):
+    """Stubs a successful Ollama call returning `text` as the model output."""
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"response": text}
+
+    def fake_post(url, json, timeout, headers=None):
+        return _Response()
+
+    return fake_post
+
+
+def test_a_gated_refusal_returns_the_honest_message(monkeypatch):
+    monkeypatch.delenv("SYNTHESIS_RELEVANCE_GATE", raising=False)
+    monkeypatch.setattr(
+        "rag.requests.post",
+        _fake_ollama("RELEVANT: no\nHowever, traditional practices are being modified."),
+    )
+    result = _synthesizer().answer("How do the Garo trace inheritance?", [_triple()])
+    assert result == NO_GROUNDED_ANSWER_MESSAGE
+
+
+def test_a_gated_refusal_does_not_fall_back_to_the_triple_templates(monkeypatch):
+    # _fallback_answer renders "Based on the available knowledge, ..." from
+    # the triples -- the exact off-topic padding this gate exists to remove.
+    # A refusal must not route into it.
+    monkeypatch.delenv("SYNTHESIS_RELEVANCE_GATE", raising=False)
+    monkeypatch.setattr("rag.requests.post", _fake_ollama("RELEVANT: no\nSomething."))
+    result = _synthesizer().answer("How do the Garo trace inheritance?", [_triple()])
+    assert "Based on the available knowledge" not in result
+    assert "bilingual" not in result.lower()
+
+
+def test_a_gated_pass_returns_the_models_prose(monkeypatch):
+    monkeypatch.delenv("SYNTHESIS_RELEVANCE_GATE", raising=False)
+    monkeypatch.setattr(
+        "rag.requests.post",
+        _fake_ollama("RELEVANT: yes\nThe Garo people are bilingual in Bengali."),
+    )
+    result = _synthesizer().answer("What languages do they speak?", [_triple()])
+    assert result == "The Garo people are bilingual in Bengali."
+
+
+def test_an_unmarked_response_fails_closed_rather_than_passing_prose_through(monkeypatch):
+    monkeypatch.delenv("SYNTHESIS_RELEVANCE_GATE", raising=False)
+    monkeypatch.setattr("rag.requests.post", _fake_ollama("The Garo people are bilingual."))
+    result = _synthesizer().answer("What languages do they speak?", [_triple()])
+    assert result == NO_GROUNDED_ANSWER_MESSAGE
+
+
+def test_with_the_gate_off_prose_is_returned_unmodified(monkeypatch):
+    # The rollback path must behave exactly as before: no marker expected,
+    # no parsing, model output returned as-is.
+    monkeypatch.setenv("SYNTHESIS_RELEVANCE_GATE", "0")
+    monkeypatch.setattr("rag.requests.post", _fake_ollama("The Garo people are bilingual."))
+    result = _synthesizer().answer("What languages do they speak?", [_triple()])
+    assert result == "The Garo people are bilingual."
+
+
+def test_a_cached_answer_is_never_run_through_the_gate(monkeypatch):
+    # Cached demo answers contain no RELEVANT marker, so if the gate were
+    # ever applied before the cache short-circuit, all three scripted demo
+    # questions would fail closed and refuse on stage. Locks the ordering.
+    monkeypatch.delenv("SYNTHESIS_RELEVANCE_GATE", raising=False)
+
+    def explode(*args, **kwargs):
+        raise AssertionError("a cached answer must not reach Ollama")
+
+    monkeypatch.setattr("rag.requests.post", explode)
+    synthesizer = AnswerSynthesizer(
+        ollama_url="http://localhost:11434/api/generate",
+        answer_cache={"where do the garo live?": "The Garo live in Mymensingh."},
+    )
+    assert synthesizer.answer("Where do the Garo live?", [_triple()]) == (
+        "The Garo live in Mymensingh."
+    )
