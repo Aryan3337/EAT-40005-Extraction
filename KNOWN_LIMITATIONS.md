@@ -558,6 +558,44 @@ a deeper per-question filter, by deliberate choice, not oversight.
 
 ## 23. The synthesizer sometimes invents connections between real, unrelated facts
 
+**Partially fixed, 2026-10-08.** A relevance gate now makes the model emit
+`RELEVANT: yes` / `RELEVANT: no` as its first line, and `rag.py` **discards
+everything after a "no" in code** rather than trusting the model to stop
+writing — which is exactly what the two reverted attempts below asked for and
+did not get. A missing or unreadable marker fails closed to the same refusal.
+See `docs/superpowers/specs/2026-10-08-synthesis-relevance-gate-design.md`.
+
+The recurrence that prompted it, measured live on the hosted site: "How do the
+Garo trace family lineage and inheritance?" returned a **fabricated citation
+attribution** — "as stated in Pütz (1991) who identified family as one of the
+domains of study" — welding together two facts that share only the keyword
+"family" (Pütz is a sociolinguistics framework about which *settings* a
+language is used in). Misattributing a named academic source is worse than
+vague hedging, because it reads as sourced.
+
+Verified live 2026-10-08 against the real graph, tunnel on: that question now
+refuses honestly (53s — the model was called, and its prose was discarded);
+three uncached strong questions still answer correctly (31-35s, no
+over-refusal, which was the risk this introduced); and the religion question
+below now correctly surfaces `GaroPeople -[HAVE_RELIGION]-> Sangsharek`
+instead of bridging to bamboo floors.
+
+**What this does NOT fix.** It is all-or-nothing: a question with *mostly*
+good evidence plus one irrelevant triple is still synthesized, and the model
+may still weave the irrelevant one in. Per-triple classification is the next
+iteration. The deterministic template fallback (used when Ollama is
+unreachable) has no LLM to judge relevance and is unchanged — and retrieval
+scoring cannot substitute for one: measured 2026-10-08, the fabricating
+question's top retrieval score (22.05) was **higher** than two genuinely
+strong questions (16.14, 20.96), because IDF weighting rewards keyword rarity,
+not topical relevance. That extends #22's relative-threshold finding to
+absolute thresholds.
+
+**Rollback:** set `SYNTHESIS_RELEVANCE_GATE=0` (any of `0`/`false`/`no`/`off`)
+and redeploy — restores the previous behaviour with no code change.
+
+Original text and measurement, kept for the record:
+
 Found 2026-10-07 on "What are the traditional religious beliefs of the
 Garo?" (thin real evidence retrieved): the model wrote confident-sounding
 prose inventing links between genuinely unrelated real facts — "bamboo
