@@ -24,6 +24,7 @@ from rag import (
     SYNTHESIS_EVIDENCE_LIMIT,
     AnswerSynthesizer,
     load_demo_answer_cache,
+    relevance_gate_enabled,
 )
 
 
@@ -373,3 +374,30 @@ def test_a_yes_marker_sharing_its_line_with_the_answer_still_returns_it():
         "RELEVANT: yes The Garo community speaks Garo."
     )
     assert result == "The Garo community speaks Garo."
+
+
+def test_the_gate_is_on_by_default(monkeypatch):
+    # Default ON is the whole point -- an unset variable must not silently
+    # disable the fix. Note the default passed to os.getenv is "on", NOT ""
+    # ("" is in _FALSEY and would invert this).
+    monkeypatch.delenv("SYNTHESIS_RELEVANCE_GATE", raising=False)
+    assert relevance_gate_enabled() is True
+
+
+def test_the_gate_can_be_switched_off_for_demo_rollback(monkeypatch):
+    for value in ("0", "false", "no", "off", ""):
+        monkeypatch.setenv("SYNTHESIS_RELEVANCE_GATE", value)
+        assert relevance_gate_enabled() is False, value
+
+
+def test_the_prompt_carries_the_gate_instruction_when_enabled(monkeypatch):
+    monkeypatch.delenv("SYNTHESIS_RELEVANCE_GATE", raising=False)
+    prompt = _synthesizer()._build_prompt("What language do they speak?", [_triple()])
+    assert "RELEVANT: yes" in prompt
+    assert "RELEVANT: no" in prompt
+
+
+def test_the_prompt_omits_the_gate_instruction_when_switched_off(monkeypatch):
+    monkeypatch.setenv("SYNTHESIS_RELEVANCE_GATE", "0")
+    prompt = _synthesizer()._build_prompt("What language do they speak?", [_triple()])
+    assert "RELEVANT:" not in prompt

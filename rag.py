@@ -837,6 +837,24 @@ ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS = 10
 # that a slow-but-connected generation can raise.
 ANSWER_SYNTHESIS_CONNECTION_RETRIES = 1
 
+# Same spelling of "off" as llm_endpoint.py's ALLOW_EXTERNAL_LLM check,
+# rather than a second convention in the same codebase. Defined here rather
+# than imported because llm_endpoint._FALSEY is private to that module.
+_FALSEY = {"", "0", "false", "no", "off"}
+
+
+# The relevance gate makes the model declare on its first line whether the
+# evidence actually answers the question, and rag.py discards everything
+# after a "no" instead of trusting the model to stop writing (see
+# _parse_gated_response). Defaults ON.
+#
+# SYNTHESIS_RELEVANCE_GATE=0 restores pre-2026-10-08 behaviour without a code
+# change -- a rollback switch for the 2026-10-09 demo, settable from the
+# Render dashboard. NOTE the "on" default below: os.getenv's fallback must
+# not be "", which is itself in _FALSEY and would invert the default.
+def relevance_gate_enabled() -> bool:
+    return os.getenv("SYNTHESIS_RELEVANCE_GATE", "on").strip().lower() not in _FALSEY
+
 # Pre-computed answers for the demo's scripted questions (chat_page.dart's
 # _examplePrompts). WHY: even after the timeout fix and the model switch
 # above, measured 2026-10-05 showed real synthesis calls still taking 90s+
@@ -937,6 +955,22 @@ class AnswerSynthesizer:
                 "source_section": triple.get("source_section", ""),
             })
 
+        # Asking for a bounded first-line verdict, then enforcing the
+        # consequence in code, is the part that differs from the two
+        # prompt-only attempts reverted on 2026-10-07 -- both asked the model
+        # to self-regulate its prose and it simply did not.
+        gate_instruction = """Before answering, judge whether the evidence below directly answers the question.
+Your FIRST line must be exactly one of:
+RELEVANT: yes
+RELEVANT: no
+Write "no" if the evidence only touches the topic indirectly, mentions a
+related word, or would require you to infer a connection the evidence does
+not itself state. If "no", write nothing after that line.
+If "yes", write the answer below it, using only evidence that directly
+supports it.
+
+""" if relevance_gate_enabled() else ""
+
         return f"""You are a careful knowledge-graph research assistant.
 Answer the user's question using only the evidence below.
 The Mandi people are the same community as the Garo people (they call themselves
@@ -957,7 +991,7 @@ Do not invent facts, names, dates, or explanations that are not supported.
     the question. If it does answer the question, answer it plainly and stop -- do not
     add a closing disclaimer out of habit.
 
-User question:
+{gate_instruction}User question:
 {question}
 
 Evidence:
