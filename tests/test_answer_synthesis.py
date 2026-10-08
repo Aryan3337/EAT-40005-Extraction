@@ -476,6 +476,46 @@ def test_with_the_gate_off_prose_is_returned_unmodified(monkeypatch):
     assert result == "The Garo people are bilingual."
 
 
+def test_an_explicit_no_is_logged_distinctly_from_an_unparseable_response(monkeypatch, capsys):
+    # OLLAMA_MODEL is env-overridable; if the swapped-in model does not honour
+    # the RELEVANT: format, every answer silently becomes a refusal with no
+    # way to tell format collapse from a genuine "no" mid-demo. answer() must
+    # print a line naming which branch fired, and the two branches must read
+    # differently from each other.
+    monkeypatch.delenv("SYNTHESIS_RELEVANCE_GATE", raising=False)
+
+    monkeypatch.setattr(
+        "rag.requests.post", _fake_ollama("RELEVANT: no\nSomething.")
+    )
+    _synthesizer().answer("How do the Garo trace inheritance?", [_triple()])
+    no_output = capsys.readouterr().out
+
+    monkeypatch.setattr(
+        "rag.requests.post", _fake_ollama("The Garo people are bilingual.")
+    )
+    _synthesizer().answer("What languages do they speak?", [_triple()])
+    unreadable_output = capsys.readouterr().out
+
+    assert no_output.strip()
+    assert unreadable_output.strip()
+    assert no_output != unreadable_output
+    assert "no" in no_output.lower()
+    assert "unreadable" in unreadable_output.lower() or "missing" in unreadable_output.lower()
+
+
+def test_a_comma_after_the_marker_is_consumed_not_leaked_into_the_answer():
+    # Verified live 2026-10-08: "RELEVANT: yes, the evidence covers it. The
+    # Garo speak Garo." left a stray leading comma AND leaked the gate's own
+    # meta-commentary onto the demo screen, because the marker regex's
+    # [.:]? only consumed a period or colon, not a comma.
+    result = _synthesizer()._parse_gated_response(
+        "RELEVANT: yes, the evidence covers it. The Garo speak Garo."
+    )
+    assert result is not None
+    assert not result.startswith(",")
+    assert ", the evidence covers it." not in result
+
+
 def test_a_cached_answer_is_never_run_through_the_gate(monkeypatch):
     # Cached demo answers contain no RELEVANT marker, so if the gate were
     # ever applied before the cache short-circuit, all three scripted demo

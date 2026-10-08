@@ -949,7 +949,16 @@ class AnswerSynthesizer:
                     if text:
                         if not relevance_gate_enabled():
                             return self._clean_response(text)
-                        gated = self._parse_gated_response(text)
+                        verdict, gated = self._parse_gated_verdict(text)
+                        # OLLAMA_MODEL is env-overridable; swap in a model
+                        # that does not honour the RELEVANT: format and every
+                        # answer silently becomes a refusal. Print which
+                        # branch fired so an explicit "no" is distinguishable
+                        # from format collapse mid-demo.
+                        if verdict == self._GATE_NO:
+                            print("Answer synthesis gate refused: the model judged the evidence irrelevant (RELEVANT: no).")
+                        elif verdict == self._GATE_UNREADABLE:
+                            print("Answer synthesis gate refused: the RELEVANT marker was missing or unreadable in the model's response.")
                         # A refusal is the intended output, not a failure:
                         # deliberately NOT _fallback_answer, whose templated
                         # triple soup is the off-topic padding being removed.
@@ -1020,11 +1029,18 @@ Answer:"""
         text = re.sub(r"^\s*(answer|response)\s*:\s*", "", text, flags=re.IGNORECASE)
         return text.strip()
 
-    # Reads the RELEVANT: yes/no marker the gate instruction asks for, and
-    # returns the answer ONLY when the model vouched for its evidence.
-    #
-    # Returns None for a refusal -- including when the marker is missing or
-    # unreadable. An unparseable response is not evidence that the answer is
+    # _parse_gated_verdict's three possible verdicts. GATE_NO is an explicit
+    # "RELEVANT: no"; GATE_UNREADABLE covers everything else that fails
+    # closed (missing marker, unrecognised value, or a "yes" with no answer
+    # body) -- answer() logs the two differently so a genuine refusal is
+    # distinguishable from the model's output format collapsing.
+    _GATE_YES = "yes"
+    _GATE_NO = "no"
+    _GATE_UNREADABLE = "unreadable"
+
+    # Reads the RELEVANT: yes/no marker the gate instruction asks for.
+    # Returns (verdict, answer): answer is non-None only when verdict is
+    # _GATE_YES. An unparseable response is not evidence that the answer is
     # grounded, and this project prefers an honest refusal to a confident
     # wrong one. See docs/superpowers/specs/2026-10-08-synthesis-relevance-gate-design.md
     #
@@ -1032,15 +1048,20 @@ Answer:"""
     # emits <think>...</think> before anything else, and _clean_response also
     # strips a leading "Answer:" prefix, so "Answer: RELEVANT: yes" still
     # leaves the marker on line one.
-    def _parse_gated_response(self, text: str) -> Optional[str]:
+    def _parse_gated_verdict(self, text: str) -> Tuple[str, Optional[str]]:
         cleaned = self._clean_response(text)
         lines = [line for line in cleaned.splitlines() if line.strip()]
         if not lines:
-            return None
+            return self._GATE_UNREADABLE, None
 
-        match = re.match(r"\s*RELEVANT\s*:\s*(yes|no)\b[.:]?\s*", lines[0], flags=re.IGNORECASE)
-        if not match or match.group(1).lower() == "no":
-            return None
+        # [.:,;-]? consumes a single trailing punctuation mark after yes/no
+        # (a model writing "RELEVANT: yes," must not leak a stray leading
+        # comma -- and the meta-commentary after it -- into the answer).
+        match = re.match(r"\s*RELEVANT\s*:\s*(yes|no)\b[.:,;-]?\s*", lines[0], flags=re.IGNORECASE)
+        if not match:
+            return self._GATE_UNREADABLE, None
+        if match.group(1).lower() == "no":
+            return self._GATE_NO, None
 
         # Keep anything trailing the marker on its own line: a model that
         # writes "RELEVANT: yes The Garo..." has still answered, and dropping
@@ -1048,7 +1069,15 @@ Answer:"""
         head = lines[0][match.end():].strip()
         tail = "\n".join(lines[1:]).strip()
         remainder = "\n".join(part for part in (head, tail) if part).strip()
-        return remainder or None
+        if not remainder:
+            return self._GATE_UNREADABLE, None
+        return self._GATE_YES, remainder
+
+    # Thin wrapper over _parse_gated_verdict for callers that only care
+    # about None (refuse) vs the answer prose -- unchanged contract.
+    def _parse_gated_response(self, text: str) -> Optional[str]:
+        _, answer = self._parse_gated_verdict(text)
+        return answer
 
     # Produces a readable answer when Ollama is offline or unavailable.
     def _fallback_answer(self, triples: List[Dict[str, Any]]) -> str:

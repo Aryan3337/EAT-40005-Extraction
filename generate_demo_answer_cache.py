@@ -24,7 +24,12 @@ import json
 import sys
 from pathlib import Path
 
-from rag import AnswerSynthesizer, DEMO_ANSWER_CACHE_PATH, Neo4jRAGSkeleton
+from rag import (
+    AnswerSynthesizer,
+    DEMO_ANSWER_CACHE_PATH,
+    NO_GROUNDED_ANSWER_MESSAGE,
+    Neo4jRAGSkeleton,
+)
 
 # Must match flutter_application/lib/features/chat/chat_page.dart's
 # _examplePrompts exactly -- that is what a demo presenter actually clicks.
@@ -63,6 +68,17 @@ def main() -> int:
                 problems.append(
                     f"{question!r}: synthesis timed out and fell back to the "
                     f"template -- not caching a non-answer. Re-run this script."
+                )
+                continue
+            # The relevance gate (rag.py) can return this on the same
+            # success path as a real answer -- a 200 response the model
+            # itself judged ungrounded. Cached answers bypass the gate
+            # entirely, so caching a refusal here would serve it forever
+            # with no SYNTHESIS_RELEVANCE_GATE=0 rollback able to undo it.
+            if answer == NO_GROUNDED_ANSWER_MESSAGE:
+                problems.append(
+                    f"{question!r}: the relevance gate refused this question -- "
+                    f"not caching a refusal. Re-run this script."
                 )
                 continue
 
