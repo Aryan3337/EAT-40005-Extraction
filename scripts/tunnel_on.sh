@@ -41,8 +41,21 @@ else
   sleep 2
 fi
 
-echo "3/3 Starting Tailscale Funnel..."
+echo "3/4 Starting Tailscale Funnel..."
 "/c/Program Files/Tailscale/tailscale.exe" funnel --bg "$PROXY_PORT"
+
+echo "4/4 Refreshing the TLS cert..."
+# Found live 2026-10-08: a stale/un-provisioned cert for this device's
+# Funnel hostname makes Render's outbound requests fail with
+# SSLError(SSLEOFError, 'UNEXPECTED_EOF_WHILE_READING') -- which looks
+# exactly like the "unexplained network flakiness" flagged on 2026-10-05
+# and 2026-10-07 (KNOWN_LIMITATIONS.md #23's neighbourhood), but is not
+# actually unexplainable: `tailscale cert` forces re-provisioning and
+# fixed it immediately, both locally and from the live hosted API.
+# Idempotent and fast when the cert is already fresh, so safe to run
+# every time rather than only when something looks broken.
+HOSTNAME="$("/c/Program Files/Tailscale/tailscale.exe" status --json | python -c "import json,sys; print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))")"
+"/c/Program Files/Tailscale/tailscale.exe" cert --cert-file - --key-file - "$HOSTNAME" > /tmp/tailscale_cert.log 2>&1
 
 echo
 echo "Live AI is ON. Run scripts/tunnel_off.sh when you're done."
