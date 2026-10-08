@@ -700,7 +700,7 @@ class AnswerSynthesizer:
                     "model": self.model,
                     "prompt": prompt,
                     "stream": False,
-                    "options": {"temperature": 0.4, "num_predict": 400},
+                    "options": {"temperature": 0.4, "num_predict": 700},
                 },
                 timeout=30,
             )
@@ -741,10 +741,22 @@ way a database would print it out:
   "X is Y. X also Z." sentences back to back.
 - Use natural connectors where they fit ("They also...", "Because of this,",
   "Over time,") instead of listing facts as disconnected statements.
-- Translate graph identifiers such as GaroCommunity into natural language such as
-  "the Garo community".
+- Never let a raw graph identifier (CamelCase or underscore_joined names like
+  GaroCommunity, HAS_A_POPULATION, source_section) appear anywhere in your
+  answer, including later in the same paragraph. Translate every single one
+  into plain words the first time and every time it recurs - "GaroCommunity"
+  is always "the Garo community", never the bare identifier.
 - Write 1-3 natural paragraphs. Do not mention prompts, models, retrieval,
   graph triples, or JSON.
+- Write in plain prose only - no markdown. Never use **bold**, *italics*,
+  `code` formatting, bullet points, numbered lists, or headings. This answer
+  is displayed as plain text, so markdown symbols would show up as literal
+  asterisks or hashes instead of formatting.
+- Do not describe your own process of answering. Never write phrases like
+  "the evidence supports", "according to the data", "the sources indicate",
+  or "based on the information provided". State facts plainly, the way a
+  knowledgeable person states something they simply know - not the way a
+  report cites its sources.
 - If the evidence is incomplete, say what is known and work the gap into the
   answer naturally, rather than appending it as a separate disclaimer sentence.
 
@@ -760,6 +772,13 @@ Answer:"""
     def _clean_response(self, text: str) -> str:
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
         text = re.sub(r"^\s*(answer|response)\s*:\s*", "", text, flags=re.IGNORECASE)
+        # Belt-and-braces: strip common markdown the model may still slip in
+        # despite the prompt instruction, since the Flutter app has no
+        # markdown renderer and would otherwise show literal ** or # symbols.
+        text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+        text = re.sub(r"(?<!\w)\*(.+?)\*(?!\w)", r"\1", text)
+        text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
+        text = re.sub(r"^\s*[-*]\s+", "", text, flags=re.MULTILINE)
         return text.strip()
 
     # A few openers and connectors to rotate through so the template-only
@@ -821,10 +840,14 @@ Answer:"""
     # subject_override lets a repeated subject be written as a pronoun
     # ("They") instead of the full entity name.
     def _format_triple(self, triple: Dict[str, Any], subject_override: Optional[str] = None) -> str:
-        subject = subject_override or self._humanize_entity(triple.get("subject", "This entity"))
+        subject = subject_override or self._humanize_entity(triple.get("subject", "This entity"), is_subject=True)
         raw_predicate = str(triple.get("predicate", ""))
         predicate_key = raw_predicate.upper().replace(" ", "_")
-        obj = self._humanize_entity(triple.get("object", "another entity"))
+        # is_subject=False: an object such as a language name ("Garo") must
+        # stay as written and never get expanded into "the Garo people" -
+        # that expansion only makes sense when Garo IS the thing being
+        # talked about, not something it's merely associated with.
+        obj = self._humanize_entity(triple.get("object", "another entity"), is_subject=False)
         subject_lower = subject.lower()
         # "They" (from a pronoun continuation) is plural just like "...people"
         # or "...community" - all three take the same verb form.
@@ -848,21 +871,28 @@ Answer:"""
         if sentence:
             return f"{sentence}."
         # Pass the ORIGINAL predicate text (not the upper-cased key) so any
-        # camelCase word boundaries it still has are available to humanize.
-        readable_predicate = self._humanize_predicate(raw_predicate)
+        # camelCase word boundaries it still has are available to humanize,
+        # plus is_plural so an un-templated predicate (e.g. FACES) still
+        # agrees with a plural subject instead of staying stuck in the
+        # singular ("faces" vs "face").
+        readable_predicate = self._humanize_predicate(raw_predicate, is_plural)
         return f"{subject} {readable_predicate} {obj}."
 
     # Makes CamelCase graph identifiers readable in a response, and refers
     # to the Garo people by their full, respectful name rather than just
-    # the bare entity label.
-    def _humanize_entity(self, entity: Any) -> str:
+    # the bare entity label - but only when Garo IS the subject being
+    # described. An object (e.g. the language someone speaks) keeps the
+    # plain name, since "speak the Garo people" doesn't make sense.
+    def _humanize_entity(self, entity: Any, is_subject: bool = True) -> str:
         raw_text = str(entity or "").strip()
         text = raw_text.replace("_", " ")
         text = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text)
         text = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", text)
+        text = re.sub(r"(?<=[A-Za-z])(?=[0-9])", " ", text)
+        text = re.sub(r"(?<=[0-9])(?=[A-Za-z])", " ", text)
         if re.fullmatch(r"[A-Za-z0-9_]+", raw_text):
             text = re.sub(r"\s+Community$", "", text, flags=re.IGNORECASE)
-        if text.strip().lower() == "garo":
+        if is_subject and text.strip().lower() == "garo":
             text = "the Garo people"
         return text[:1].upper() + text[1:] if text else "another entity"
 
@@ -877,19 +907,31 @@ Answer:"""
     # next begins). For those, fall back to dictionary-based word
     # segmentation so the answer still reads as real words instead of one
     # run-together blob.
-    def _humanize_predicate(self, predicate: str) -> str:
+    def _humanize_predicate(self, predicate: str, is_plural: bool = False) -> str:
         normalized = predicate.lower().replace("_", " ").strip()
-        replacements = {
+        singular_replacements = {
             "live in": "lives in",
             "located in": "is located in",
             "born in": "was born in",
             "part of": "is part of",
             "related to": "is related to",
             "is a": "is a",
+            "role": "has the role of",
+            "recognize": "recognizes",
+            "speak language": "speaks",
+        }
+        plural_replacements = {
+            "live in": "live in",
+            "located in": "are located in",
+            "born in": "were born in",
+            "part of": "are part of",
+            "related to": "are related to",
+            "is a": "are a",
             "role": "have the role of",
             "recognize": "recognize",
             "speak language": "speak",
         }
+        replacements = plural_replacements if is_plural else singular_replacements
         if normalized in replacements:
             return replacements[normalized]
 
@@ -900,7 +942,14 @@ Answer:"""
             for word in self._split_concatenated_word(token)
         ]
         readable = " ".join(segmented)
-        return readable or "is related to"
+        if not readable:
+            return "are related to" if is_plural else "is related to"
+        # Predicates not covered above (e.g. "FACES") are stored as the
+        # singular, third-person verb form. For a plural subject, drop the
+        # trailing "s" so it still agrees ("faces" -> "face").
+        if is_plural and readable.endswith("s") and not readable.endswith("ss"):
+            readable = readable[:-1]
+        return readable
 
     # Splits a run of letters with no remaining word boundaries (e.g.
     # "relyingon") back into likely English words. Short tokens are left
