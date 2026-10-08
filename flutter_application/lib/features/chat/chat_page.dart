@@ -108,7 +108,10 @@ class _ChatPageState extends State<ChatPage> {
       _isLoading = true;
     });
 
-    final answer = await widget.service.ask(question);
+    final answer = await widget.service.ask(
+      question,
+      language: widget.strings.languageCode,
+    );
     if (!mounted) return;
     setState(() {
       _messages.add(answer);
@@ -218,7 +221,7 @@ class _ChatPageState extends State<ChatPage> {
       return;
     }
     setState(() => _isListening = true);
-    await _speech.listen((text) {
+    await _speech.listen(localeId: widget.strings.speechLocaleId, (text) {
       setState(() {
         _inputController.text = text;
         _inputController.selection = TextSelection.collapsed(
@@ -647,11 +650,30 @@ class _EmptyState extends StatelessWidget {
     'What challenges does the Garo community face?',
   ];
 
+  // The same three questions in Bangla, shown when the app is in Bangla.
+  static const _banglaExamplePrompts = [
+    'গারোরা কোথায় বাস করে?',
+    'গারোরা কোন ভাষায় কথা বলে?',
+    'গারো সম্প্রদায় কী কী সমস্যার মুখোমুখি হয়?',
+  ];
+
+  // The same three questions in Hindi, shown when the app is in Hindi.
+  static const _hindiExamplePrompts = [
+    'गारो लोग कहाँ रहते हैं?',
+    'गारो लोग कौन सी भाषा बोलते हैं?',
+    'गारो समुदाय किन चुनौतियों का सामना करता है?',
+  ];
+
   // Builds the first-use prompt and example questions.
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final accents = [theme.colorScheme.primary, theme.colorScheme.secondary];
+    final prompts = switch (strings.languageCode) {
+      'bn' => _banglaExamplePrompts,
+      'hi' => _hindiExamplePrompts,
+      _ => _examplePrompts,
+    };
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(24, 48, 24, 24),
@@ -666,9 +688,9 @@ class _EmptyState extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 6),
-          const Text(
-            'Try one of these, or type your own question below.',
-            style: TextStyle(color: Color(0xFF8A93A0)),
+          Text(
+            strings.text('tryThese'),
+            style: const TextStyle(color: Color(0xFF8A93A0)),
           ),
           const SizedBox(height: 22),
           Wrap(
@@ -676,11 +698,11 @@ class _EmptyState extends StatelessWidget {
             spacing: 10,
             runSpacing: 10,
             children: [
-              for (var i = 0; i < _examplePrompts.length; i++)
+              for (var i = 0; i < prompts.length; i++)
                 _PromptChip(
-                  label: _examplePrompts[i],
+                  label: prompts[i],
                   color: accents[i % accents.length],
-                  onTap: () => onPromptTap(_examplePrompts[i]),
+                  onTap: () => onPromptTap(prompts[i]),
                 ),
             ],
           ),

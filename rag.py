@@ -25,6 +25,7 @@ import re
 import sys
 import argparse
 import threading
+import time
 from urllib.parse import parse_qs, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -727,6 +728,229 @@ def load_demo_answer_cache(path: Path = DEMO_ANSWER_CACHE_PATH) -> Dict[str, str
     return {normalize_cache_key(question): answer for question, answer in raw.items()}
 
 
+# ============================================================================
+# Answer languages
+# ============================================================================
+
+# Languages the Flutter app's LanguagePicker offers. The client sends the
+# chosen code with each /query; the answer is written in that language.
+# English stays the default so a client that sends no language (older app
+# builds, curl, the CLI) behaves exactly as before.
+DEFAULT_LANGUAGE = "en"
+ANSWER_LANGUAGES = {
+    "en": "English",
+    "hi": "Hindi",
+    "bn": "Bengali (Bangla)",
+}
+
+_NO_EVIDENCE_MESSAGES = {
+    "en": "I could not find enough connected evidence to answer that question. Try naming a specific person, place, event, or relationship.",
+    "hi": "इस सवाल का जवाब देने के लिए पर्याप्त जुड़े हुए प्रमाण नहीं मिले। किसी व्यक्ति, जगह, घटना या संबंध का नाम लेकर फिर से पूछें।",
+    "bn": "এই প্রশ্নের উত্তর দেওয়ার মতো যথেষ্ট তথ্য পাওয়া যায়নি। কোনো নির্দিষ্ট ব্যক্তি, স্থান, ঘটনা বা সম্পর্কের নাম উল্লেখ করে আবার জিজ্ঞাসা করুন।",
+}
+
+# Shown above the English templated answer when the LLM is unreachable
+# (e.g. the hosted demo with the tunnel off), since only the LLM can write
+# the answer in another language.
+_ENGLISH_ONLY_NOTES = {
+    "hi": "(अभी हिंदी में अनुवाद उपलब्ध नहीं है, इसलिए उत्तर अंग्रेज़ी में दिखाया गया है।)",
+    "bn": "(এই মুহূর্তে বাংলায় অনুবাদ করা যাচ্ছে না, তাই উত্তরটি ইংরেজিতে দেখানো হলো।)",
+}
+
+# Retrieval matches English keywords against an English graph, so a
+# question typed in Bangla or Hindi would otherwise retrieve nothing. The
+# LLM translates the question when it is reachable; this small glossary of
+# the corpus's core terms keeps retrieval working when it is not. Matched as
+# substrings, so inflected forms (e.g. গারোদের) still hit.
+_RETRIEVAL_GLOSSARY = {
+    # Bangla
+    "গারো": "garo", "মান্দি": "mandi", "মান্দে": "mande", "আচিক": "achik",
+    "ভাষা": "language", "উপভাষা": "dialect", "বাংলা": "bengali",
+    "জনসংখ্যা": "population", "ধর্ম": "religion", "সংস্কৃতি": "culture",
+    "সমস্যা": "challenge problem", "চ্যালেঞ্জ": "challenge",
+    "বাস": "live reside", "থাকে": "live reside", "বসবাস": "live reside",
+    "ঘর": "house housing", "বাড়ি": "house housing", "শিক্ষা": "education",
+    "বাংলাদেশ": "bangladesh", "ভারত": "india", "মেঘালয়": "meghalaya",
+    "টাঙ্গাইল": "tangail", "ময়মনসিংহ": "mymensingh", "মধুপুর": "madhupur",
+    "নারী": "women", "সম্প্রদায়": "community",
+    # Hindi
+    "गारो": "garo", "भाषा": "language", "बोली": "dialect",
+    "जनसंख्या": "population", "धर्म": "religion", "संस्कृति": "culture",
+    "समस्या": "challenge problem", "चुनौती": "challenge", "चुनौति": "challenge",
+    "रहते": "live reside", "घर": "house housing", "शिक्षा": "education",
+    "बांग्लादेश": "bangladesh", "भारत": "india", "मेघालय": "meghalaya",
+    "समुदाय": "community",
+}
+
+
+def normalize_language(code: Any) -> str:
+    """Maps whatever the client sent to a supported language code."""
+    lowered = str(code or "").strip().lower().replace("_", "-")
+    base = lowered.split("-")[0]
+    return base if base in ANSWER_LANGUAGES else DEFAULT_LANGUAGE
+
+
+def glossary_keywords(question: str) -> str:
+    """English search terms for the glossary words found in the question."""
+    terms: List[str] = []
+    for native, english in _RETRIEVAL_GLOSSARY.items():
+        if native in (question or ""):
+            for term in english.split():
+                if term not in terms:
+                    terms.append(term)
+    return " ".join(terms)
+
+
+def _is_plain_english(text: str) -> bool:
+    """True when the question has no non-Latin letters to translate."""
+    return not re.search(r"[^\x00-\x7F·]", text or "")
+
+
+# How non-English questions and answers are translated.
+#   auto (default): the free online services (Google, then MyMemory), and
+#       only if both fail, a local Ollama model IF one happens to be running.
+#       Nobody needs Ollama installed: without it that last step fails
+#       instantly and the English answer is shown with a short note.
+#   online (alias: google): Google, then MyMemory; never the local model.
+#   llm: the local Ollama model only. Nothing leaves the machine, but it
+#       needs the model installed and is much slower.
+# Both online services are reached through the deep-translator library and
+# need no API key. NOTE: the question and the answer text are sent to them
+# -- see README "Languages". Google's free endpoint has no guarantee: it
+# answered a single request with 429 Too Many Requests on a team laptop on
+# 2026-10-08, which is why MyMemory backs it up.
+TRANSLATION_PROVIDERS = {"auto", "online", "google", "llm"}
+_GOOGLE_MAX_CHARS = 4500  # Google's per-request limit is 5000.
+# After Google refuses with 429, skip it for this long instead of paying a
+# failed round trip on every question.
+GOOGLE_COOLDOWN_SECONDS = 600
+_google_blocked_until = 0.0
+
+# Bangla/Hindi text costs the local model several tokens per character, so a
+# translated answer needs far more tokens and time than an English one.
+TRANSLATED_ANSWER_MAX_TOKENS = 1500
+TRANSLATION_TIMEOUT_SECONDS = 240
+
+
+def translation_provider() -> str:
+    value = os.getenv("TRANSLATION_PROVIDER", "auto").strip().lower()
+    if value == "google":
+        return "online"
+    return value if value in TRANSLATION_PROVIDERS else "auto"
+
+
+# MyMemory: free, no key, but 500 characters per request and a daily
+# character quota per IP (roughly 5,000/day anonymously, about 50,000/day
+# when MYMEMORY_EMAIL is set to any real address).
+_MYMEMORY_CODES = {"en": "en-GB", "bn": "bn-IN", "hi": "hi-IN"}
+_MYMEMORY_MAX_CHARS = 480
+MYMEMORY_COOLDOWN_SECONDS = 3600
+_mymemory_blocked_until = 0.0
+
+
+def _split_for_limit(text: str, limit: int) -> List[str]:
+    """Splits text into pieces under `limit` chars, at paragraph and then
+    sentence boundaries where possible, so each request stays valid."""
+    pieces: List[str] = []
+    for paragraph in [p for p in text.split("\n\n") if p.strip()]:
+        if len(paragraph) <= limit:
+            pieces.append(paragraph)
+            continue
+        current = ""
+        for sentence in re.split(r"(?<=[.!?।])\s+", paragraph):
+            while len(sentence) > limit:  # one very long sentence
+                if current:
+                    pieces.append(current)
+                    current = ""
+                pieces.append(sentence[:limit])
+                sentence = sentence[limit:]
+            if current and len(current) + 1 + len(sentence) > limit:
+                pieces.append(current)
+                current = sentence
+            else:
+                current = f"{current} {sentence}".strip()
+        if current:
+            pieces.append(current)
+    return pieces
+
+
+def mymemory_translate(text: str, source: str, target: str) -> str:
+    """Translates with MyMemory via deep-translator; "" if unavailable."""
+    global _mymemory_blocked_until
+    if not (text or "").strip() or time.time() < _mymemory_blocked_until:
+        return ""
+    source_code = _MYMEMORY_CODES.get(source)
+    target_code = _MYMEMORY_CODES.get(target)
+    if not source_code or not target_code:
+        return ""  # MyMemory cannot auto-detect the source language
+    try:
+        from deep_translator import MyMemoryTranslator
+    except ImportError:
+        print("MyMemory translation unavailable: pip install deep-translator")
+        return ""
+
+    email = os.getenv("MYMEMORY_EMAIL") or None
+    try:
+        translator = MyMemoryTranslator(source=source_code, target=target_code, email=email)
+        translated = []
+        for chunk in _split_for_limit(text, _MYMEMORY_MAX_CHARS):
+            result = (translator.translate(chunk) or "").strip()
+            # Out of quota is reported as a normal 200 with a warning
+            # sentence in place of the translation.
+            if "MYMEMORY WARNING" in result.upper():
+                raise RuntimeError(result)
+            translated.append(result)
+    except Exception as error:
+        _mymemory_blocked_until = time.time() + MYMEMORY_COOLDOWN_SECONDS
+        print(f"MyMemory translation unavailable ({type(error).__name__}: "
+              f"{str(error)[:120]}); not retrying for "
+              f"{MYMEMORY_COOLDOWN_SECONDS // 60} minutes.")
+        return ""
+    return "\n\n".join(part for part in translated if part)
+
+
+def online_translate(text: str, source: str, target: str) -> str:
+    """Google first, then MyMemory. "" if neither could translate."""
+    for service, translate in (("Google Translate", google_translate),
+                               ("MyMemory", mymemory_translate)):
+        translated = translate(text, source, target)
+        if translated:
+            print(f"Translated {source} -> {target} with {service}")
+            return translated
+    return ""
+
+
+def google_translate(text: str, source: str, target: str) -> str:
+    """Translates with deep-translator; returns "" if it is unavailable."""
+    global _google_blocked_until
+    if not (text or "").strip():
+        return ""
+    if time.time() < _google_blocked_until:
+        return ""
+    try:
+        from deep_translator import GoogleTranslator
+    except ImportError:
+        print("Google translation unavailable: pip install deep-translator")
+        return ""
+
+    # Long answers go paragraph by paragraph to stay under the size limit.
+    chunks = [text] if len(text) <= _GOOGLE_MAX_CHARS else [
+        part for part in text.split("\n\n") if part.strip()]
+    try:
+        translator = GoogleTranslator(source=source, target=target)
+        translated = [(translator.translate(chunk[:_GOOGLE_MAX_CHARS]) or "").strip()
+                      for chunk in chunks]
+    except Exception as error:  # network errors, rate limits, bad responses
+        if type(error).__name__ == "TooManyRequests":
+            _google_blocked_until = time.time() + GOOGLE_COOLDOWN_SECONDS
+            print(f"Google translation refused (429 Too Many Requests); "
+                  f"not retrying for {GOOGLE_COOLDOWN_SECONDS // 60} minutes.")
+        else:
+            print(f"Google translation unavailable: {error}")
+        return ""
+    return "\n\n".join(part for part in translated if part)
+
+
 class AnswerSynthesizer:
     def __init__(self, ollama_url: Optional[str] = None, model: Optional[str] = None,
                  answer_cache: Optional[Dict[str, str]] = None):
@@ -748,15 +972,34 @@ class AnswerSynthesizer:
         self.answer_cache = load_demo_answer_cache() if answer_cache is None else answer_cache
 
     # Writes a natural-language answer while keeping every claim tied to evidence.
-    def answer(self, question: str, triples: List[Dict[str, Any]]) -> str:
+    def answer(self, question: str, triples: List[Dict[str, Any]],
+               language: str = DEFAULT_LANGUAGE,
+               english_question: Optional[str] = None) -> str:
+        language = normalize_language(language)
         if not triples:
-            return "I could not find enough connected evidence to answer that question. Try naming a specific person, place, event, or relationship."
+            return _NO_EVIDENCE_MESSAGES[language]
 
-        cached = self.answer_cache.get(normalize_cache_key(question))
-        if cached:
-            return cached
+        # Google/auto path: answer in English exactly as an English user
+        # would be answered (demo cache, then Ollama, then the template),
+        # then translate the finished answer -- with Google, or in auto mode
+        # with the local model if Google refuses.
+        provider = translation_provider()
+        if language != DEFAULT_LANGUAGE and provider in ("online", "auto"):
+            english = self.answer(english_question or question, triples)
+            translated = online_translate(english, "en", language)
+            if not translated and provider == "auto":
+                translated = self._llm_translate(english, language)
+            if translated:
+                return translated
+            return f"{_ENGLISH_ONLY_NOTES[language]}\n\n{english}"
 
-        prompt = self._build_prompt(question, triples)
+        # The cached demo answers are English, so they only serve English.
+        if language == DEFAULT_LANGUAGE:
+            cached = self.answer_cache.get(normalize_cache_key(question))
+            if cached:
+                return cached
+
+        prompt = self._build_prompt(question, triples, language)
         try:
             response = requests.post(
                 self.ollama_url,
@@ -764,10 +1007,16 @@ class AnswerSynthesizer:
                     "model": self.model,
                     "prompt": prompt,
                     "stream": False,
-                    "options": {"temperature": 0.2, "num_predict": 400},
+                    "options": {
+                        "temperature": 0.2,
+                        "num_predict": 400 if language == DEFAULT_LANGUAGE
+                        else TRANSLATED_ANSWER_MAX_TOKENS,
+                    },
                 },
                 headers=ollama_tunnel_headers(),
-                timeout=(ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS, ANSWER_SYNTHESIS_TIMEOUT_SECONDS),
+                timeout=(ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS,
+                         ANSWER_SYNTHESIS_TIMEOUT_SECONDS if language == DEFAULT_LANGUAGE
+                         else TRANSLATION_TIMEOUT_SECONDS),
             )
             if response.status_code == 200:
                 text = response.json().get("response", "").strip()
@@ -776,10 +1025,106 @@ class AnswerSynthesizer:
         except (requests.RequestException, ValueError, KeyError) as error:
             print(f"Answer synthesis unavailable: {error}")
 
-        return self._fallback_answer(triples)
+        fallback = self._fallback_answer(triples)
+        if language in _ENGLISH_ONLY_NOTES:
+            return f"{_ENGLISH_ONLY_NOTES[language]}\n\n{fallback}"
+        return fallback
+
+    # Turns a question asked in another language into English search terms,
+    # since the graph and its keyword retrieval are English. English
+    # questions pass through untouched.
+    def question_for_retrieval(self, question: str, language: str = DEFAULT_LANGUAGE,
+                               translated: Optional[str] = None) -> str:
+        if _is_plain_english(question):
+            return question
+
+        glossary = glossary_keywords(question)
+        if translated is None:
+            translated = self.english_question(question, language)
+        search_text = " ".join(part for part in (translated, glossary) if part)
+        return search_text or question
+
+    # The question in English, via the configured provider. Returns the
+    # question itself when it is already English, and "" when translation
+    # is unavailable (the glossary then keeps retrieval working).
+    def english_question(self, question: str, language: str = DEFAULT_LANGUAGE) -> str:
+        if _is_plain_english(question):
+            return question
+        provider = translation_provider()
+        if provider in ("online", "auto"):
+            source = normalize_language(language)
+            # In English mode a non-English question has an unknown language:
+            # let Google detect it (MyMemory cannot, and skips "auto").
+            translated = online_translate(
+                question, "auto" if source == DEFAULT_LANGUAGE else source, "en")
+            if translated or provider == "online":
+                return translated
+        return self._translate_to_english(question, normalize_language(language))
+
+    # Translates a finished English answer with the local model. Used in
+    # auto mode when Google refuses. Returns "" if the model is unreachable.
+    def _llm_translate(self, text: str, language: str) -> str:
+        name = ANSWER_LANGUAGES.get(normalize_language(language))
+        if not name or not text.strip():
+            return ""
+        prompt = (
+            f"Translate the following text from English into {name}. "
+            "Keep proper names (Garo, Mandi, A·chik, place names) recognisable. "
+            "Reply with the translation only, nothing else.\n\n"
+            f"{text}"
+        )
+        try:
+            response = requests.post(
+                self.ollama_url,
+                json={
+                    "model": self.model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0, "num_predict": TRANSLATED_ANSWER_MAX_TOKENS},
+                },
+                headers=ollama_tunnel_headers(),
+                timeout=(ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS, TRANSLATION_TIMEOUT_SECONDS),
+            )
+            if response.status_code == 200:
+                return self._clean_response(response.json().get("response", ""))
+        except (requests.RequestException, ValueError, KeyError) as error:
+            print(f"Answer translation unavailable: {error}")
+        return ""
+
+    # Asks the LLM for a one-line English translation of the question.
+    # Returns "" when the LLM is unreachable, so the glossary still works.
+    def _translate_to_english(self, question: str, language: str) -> str:
+        source = ANSWER_LANGUAGES.get(language, "the user's language")
+        if language == DEFAULT_LANGUAGE:
+            source = "another language"
+        prompt = (
+            f"Translate this question from {source} into English. "
+            "The Mandi, Mande, A·chik and Garo are the same people; write \"Garo\". "
+            "Reply with the English question only, nothing else.\n\n"
+            f"{question}"
+        )
+        try:
+            response = requests.post(
+                self.ollama_url,
+                json={
+                    "model": self.model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0, "num_predict": 80},
+                },
+                headers=ollama_tunnel_headers(),
+                timeout=(ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS, ANSWER_SYNTHESIS_TIMEOUT_SECONDS),
+            )
+            if response.status_code == 200:
+                text = self._clean_response(response.json().get("response", ""))
+                return text.splitlines()[0].strip().strip('"') if text else ""
+        except (requests.RequestException, ValueError, KeyError) as error:
+            print(f"Question translation unavailable: {error}")
+        return ""
 
     # Builds a small evidence-only prompt for the local language model.
-    def _build_prompt(self, question: str, triples: List[Dict[str, Any]]) -> str:
+    def _build_prompt(self, question: str, triples: List[Dict[str, Any]],
+                      language: str = DEFAULT_LANGUAGE) -> str:
         evidence = []
         for triple in triples:
             evidence.append({
@@ -802,7 +1147,7 @@ Do not invent facts, names, dates, or explanations that are not supported.
     models, retrieval, graph triples, or JSON.
     Answer the specific question first and omit evidence that does not help answer it.
     If the evidence is incomplete, say what is known and briefly acknowledge the limitation.
-
+{self._language_instruction(language)}
 User question:
 {question}
 
@@ -810,6 +1155,18 @@ Evidence:
 {json.dumps(evidence, ensure_ascii=False, indent=2)}
 
 Answer:"""
+
+    # The evidence is English; this tells the model which language to answer in.
+    def _language_instruction(self, language: str) -> str:
+        language = normalize_language(language)
+        if language == DEFAULT_LANGUAGE:
+            return ""
+        name = ANSWER_LANGUAGES[language]
+        return (
+            f"Write the whole answer in {name}, even though the evidence is in English.\n"
+            "Keep proper names (Garo, Mandi, A·chik, place names) recognisable, "
+            "transliterated into the answer's script where natural.\n"
+        )
 
     # Removes model-style prefixes that do not belong in the chat response.
     def _clean_response(self, text: str) -> str:
@@ -988,14 +1345,21 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                     self._send_json(400, {"error": "query is required"})
                     return
 
-                triples = skeleton.query(question)
+                language = normalize_language(payload.get("language"))
+                # Retrieval runs on English search terms; the answer is
+                # written in the language the user picked.
+                english_question = synthesizer.english_question(question, language)
+                triples = skeleton.query(synthesizer.question_for_retrieval(
+                    question, language, english_question))
                 sources = sorted({
                     t.get("source_section", "Unknown")
                     for t in triples
                     if t.get("source_section")
                 })
                 self._send_json(200, {
-                    "answer": synthesizer.answer(question, triples),
+                    "answer": synthesizer.answer(question, triples, language,
+                                                 english_question or None),
+                    "language": language,
                     "evidence": skeleton.format_output(triples),
                     "sources": sources,
                     "triples": triples,

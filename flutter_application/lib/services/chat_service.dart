@@ -15,12 +15,18 @@ class ChatService {
   final String endpoint;
 
   // Queries RAG.py and maps its answer and evidence into a chat message.
-  Future<ChatMessage> ask(String question) async {
+  // [language] is the app's language code ('en', 'hi', 'bn'); the backend
+  // writes its answer in that language. English is the backend's default,
+  // so it is left out of the request.
+  Future<ChatMessage> ask(String question, {String language = 'en'}) async {
     try {
       final response = await _client.post(
         Uri.parse(endpoint),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'query': question}),
+        body: jsonEncode({
+          'query': question,
+          if (language != 'en') 'language': language,
+        }),
       );
 
       if (response.statusCode >= 200 && response.statusCode < 300) {

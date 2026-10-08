@@ -12,11 +12,29 @@ class TtsService {
 
   final FlutterTts _tts = FlutterTts();
 
+  String _language = 'en-US';
+
+  // Picks the voice from the text's script, so a Bangla or Hindi answer is
+  // read in that language even if the app language changed since it arrived.
+  static String languageFor(String text) {
+    if (RegExp(r'[\u0980-\u09FF]').hasMatch(text)) return 'bn-BD';
+    if (RegExp(r'[\u0900-\u097F]').hasMatch(text)) return 'hi-IN';
+    return 'en-US';
+  }
+
   // Speaks [text] aloud, cancelling anything already being read.
   Future<void> speak(String text) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;
     await _tts.stop();
+    final language = languageFor(trimmed);
+    if (language != _language) {
+      // If the device has no voice for it, keep the current voice.
+      try {
+        await _tts.setLanguage(language);
+        _language = language;
+      } catch (_) {}
+    }
     await _tts.speak(trimmed);
   }
 

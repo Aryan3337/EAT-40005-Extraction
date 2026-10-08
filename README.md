@@ -253,6 +253,29 @@ flutter run
 
 Choose an available device when Flutter asks. For Windows, Chrome, or another desktop target, the app connects to `http://127.0.0.1:8000/query`. For the Android emulator, the app automatically uses `http://10.0.2.2:8000/query` to reach the host computer.
 
+#### Languages (English, Hindi, Bangla)
+
+Pick the language from the menu at the top of the app (English, हिन्दी, বাংলা). The whole interface switches, and questions can be typed or spoken in that language. Answers come back in the chosen language.
+
+**Setup:** just install the Python requirements (this includes `deep-translator`). No Ollama or model download is needed for Bangla or Hindi:
+
+```powershell
+pip install -r requirements.txt
+```
+
+How it works:
+
+- Interface text (buttons, labels) is hand-written in `flutter_application/lib/app/app_localizations.dart`.
+- For answers, a Bangla/Hindi question is translated to English, answered exactly like an English question (demo cache, then Ollama if you have it, otherwise the template answer), and the finished answer is translated back.
+- Translation tries two free online services through `deep-translator`, with no API key: **Google Translate first, then MyMemory** if Google refuses (Google's free endpoint sometimes returns "429 Too Many Requests", especially on university networks). A refused service is skipped for a while instead of being retried on every question. Only if both fail does it try a local Ollama model, and only if one happens to be running.
+- MyMemory allows about 5,000 characters a day per network without an account. Set `$env:MYMEMORY_EMAIL = "you@example.com"` (any real address) before starting `rag.py` to raise that to about 50,000.
+- English requests are never translated and behave exactly as before.
+- If translation fails completely, nothing breaks: the English answer is shown with a short Bangla/Hindi note, and a small built-in word list (e.g. গারো → garo, ভাষা → language) still lets retrieval find evidence.
+- **Privacy note:** the question and the answer text are sent to Google/MyMemory. Our supervisor was told that project content stays on our own infrastructure, so check with her before using this for real community data. `$env:TRANSLATION_PROVIDER = "llm"` keeps everything on a local Ollama model (`ollama pull mistral:7b`) instead; `"online"` uses only the online services.
+- Voice input and read-aloud use the browser/device voices. They only work in Bangla if the device has a Bangla voice installed (Chrome works best). In Chrome, voice input is processed by Google's speech service.
+
+To add another language: add its strings and code in `app_localizations.dart`, and its code and name to `ANSWER_LANGUAGES` in `rag.py`.
+
 #### Test the API without Flutter
 
 You can ask a question directly from a second PowerShell terminal:

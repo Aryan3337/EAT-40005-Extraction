@@ -9,6 +9,8 @@
 # Keep in sync with requirements.txt by hand -- there is no tooling that
 # enforces this split, so if the API gains a new import, add it here too.
 requests
+# Translates Bangla/Hindi questions and answers (rag.py google_translate).
+deep-translator
 neo4j
 python-dotenv
 pdfplumber

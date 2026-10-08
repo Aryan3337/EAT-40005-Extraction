@@ -1,5 +1,7 @@
 pdfplumber
 requests
+# Translates Bangla/Hindi questions and answers (rag.py google_translate).
+deep-translator
 neo4j
 python-dotenv
 rapidfuzz
