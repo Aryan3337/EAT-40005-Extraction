@@ -183,7 +183,7 @@ class _ChatPageState extends State<ChatPage> {
   // Speaks the message at [index] aloud, replacing any speech in progress.
   Future<void> _speak(int index, String text) async {
     setState(() => _speakingIndex = index);
-    await _tts.speak(text);
+    await _tts.speak(text, languageCode: widget.strings.languageCode);
   }
 
   // Stops whatever the assistant is currently reading aloud.
@@ -225,7 +225,7 @@ class _ChatPageState extends State<ChatPage> {
           offset: text.length,
         );
       });
-    });
+    }, languageCode: widget.strings.languageCode);
   }
 
   // Clears the current conversation and starts a fresh session.
@@ -349,9 +349,7 @@ class _ChatHeader extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: const BorderRadius.vertical(
-          bottom: Radius.circular(24),
-        ),
+        borderRadius: const BorderRadius.vertical(bottom: Radius.circular(24)),
         boxShadow: [
           BoxShadow(
             color: theme.colorScheme.primary.withValues(alpha: 0.08),
@@ -375,7 +373,10 @@ class _ChatHeader extends StatelessWidget {
             height: 40,
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                colors: [theme.colorScheme.primary, theme.colorScheme.secondary],
+                colors: [
+                  theme.colorScheme.primary,
+                  theme.colorScheme.secondary,
+                ],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
@@ -413,7 +414,9 @@ class _ChatHeader extends StatelessWidget {
             ),
           const SizedBox(width: 8),
           _RoundIconButton(
-            icon: autoSpeak ? Icons.volume_up_rounded : Icons.volume_off_rounded,
+            icon: autoSpeak
+                ? Icons.volume_up_rounded
+                : Icons.volume_off_rounded,
             active: autoSpeak,
             tooltip: autoSpeak
                 ? 'Auto read-aloud is on: tap to turn off'
@@ -1146,7 +1149,10 @@ class _Composer extends StatelessWidget {
             height: 48,
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                colors: [theme.colorScheme.primary, theme.colorScheme.secondary],
+                colors: [
+                  theme.colorScheme.primary,
+                  theme.colorScheme.secondary,
+                ],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),

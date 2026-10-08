@@ -5,7 +5,6 @@ import 'package:flutter_tts/flutter_tts.dart';
 class TtsService {
   TtsService() {
     _tts
-      ..setLanguage('en-US')
       ..setSpeechRate(0.58)
       ..setPitch(1.0);
   }
@@ -13,10 +12,14 @@ class TtsService {
   final FlutterTts _tts = FlutterTts();
 
   // Speaks [text] aloud, cancelling anything already being read.
-  Future<void> speak(String text) async {
+  Future<void> speak(String text, {String languageCode = 'en'}) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;
+
+    const languageTags = {'en': 'en-AU', 'hi': 'hi-IN', 'bn': 'bn-BD'};
+
     await _tts.stop();
+    await _tts.setLanguage(languageTags[languageCode] ?? languageTags['en']!);
     await _tts.speak(trimmed);
   }
 
