@@ -700,7 +700,7 @@ class AnswerSynthesizer:
                     "model": self.model,
                     "prompt": prompt,
                     "stream": False,
-                    "options": {"temperature": 0.2, "num_predict": 400},
+                    "options": {"temperature": 0.4, "num_predict": 400},
                 },
                 timeout=30,
             )
@@ -725,18 +725,28 @@ class AnswerSynthesizer:
                 "source_section": triple.get("source_section", ""),
             })
 
-        return f"""You are a careful knowledge-graph research assistant.
+        return f"""You are a knowledgeable, approachable guide to Garo (Mandi) culture and
+history, talking with someone who's genuinely curious to learn.
 Answer the user's question using only the evidence below.
 The Mandi people are the same community as the Garo people (they call themselves
 A·chik Mande), so treat "Mandi", "Mande", "A·chik" and "Garo" as the same people.
 Do not invent facts, names, dates, or explanations that are not supported.
-    If the question asks what an entity is, begin with a direct definition and then add
-    one or two supported details such as location, language, or community identity.
-    Translate graph identifiers such as GaroCommunity into natural language such as
-    "the Garo community". Write 1-3 natural paragraphs. Do not mention prompts,
-    models, retrieval, graph triples, or JSON.
-    Answer the specific question first and omit evidence that does not help answer it.
-    If the evidence is incomplete, say what is known and briefly acknowledge the limitation.
+
+Write the way a well-informed person would explain this in conversation, not the
+way a database would print it out:
+- Open with a direct answer to the question, in your own words.
+- After the first mention, refer back with "they", "their", or the group's name
+  instead of repeating the full identifier every sentence.
+- Vary your sentence openings and length rather than stacking similar
+  "X is Y. X also Z." sentences back to back.
+- Use natural connectors where they fit ("They also...", "Because of this,",
+  "Over time,") instead of listing facts as disconnected statements.
+- Translate graph identifiers such as GaroCommunity into natural language such as
+  "the Garo community".
+- Write 1-3 natural paragraphs. Do not mention prompts, models, retrieval,
+  graph triples, or JSON.
+- If the evidence is incomplete, say what is known and work the gap into the
+  answer naturally, rather than appending it as a separate disclaimer sentence.
 
 User question:
 {question}
@@ -752,31 +762,87 @@ Answer:"""
         text = re.sub(r"^\s*(answer|response)\s*:\s*", "", text, flags=re.IGNORECASE)
         return text.strip()
 
+    # A few openers and connectors to rotate through so the template-only
+    # fallback doesn't read as a fixed, repeated phrase. These only ever sit
+    # in front of a new subject - a continuation of the same subject never
+    # uses one, since it's merged straight into that subject's sentence.
+    _OPENERS = ["Here's what's recorded: ", "From the available sources: ", ""]
+    _CONNECTORS = ["", "Also, ", "In addition, ", "Beyond that, "]
+
     # Produces a readable answer when Ollama is offline or unavailable.
+    # Consecutive facts about the same subject are merged into one flowing
+    # sentence ("X lives in Y, and they speak Z") instead of being written
+    # as separate back-to-back "X is... X also..." sentences.
     def _fallback_answer(self, triples: List[Dict[str, Any]]) -> str:
-        statements = [self._format_triple(triple) for triple in triples[:6]]
-        statements = [statement for statement in statements if statement]
-        if not statements:
+        groups: List[List[str]] = []
+        previous_subject = None
+        for triple in triples[:6]:
+            subject_key = str(triple.get("subject", "")).strip().lower()
+            if subject_key and subject_key == previous_subject and groups:
+                pronoun = self._subject_pronoun(triple.get("subject", ""))
+                clause = self._format_triple(triple, subject_override=pronoun).rstrip(".")
+                if clause.startswith(pronoun):
+                    clause = clause[len(pronoun):].lstrip()
+                groups[-1].append(clause)
+            else:
+                sentence = self._format_triple(triple).rstrip(".")
+                if sentence:
+                    groups.append([sentence])
+            previous_subject = subject_key
+
+        groups = [g for g in groups if g and g[0]]
+        if not groups:
             return "I could not find enough connected evidence to answer that question."
-        return "Based on the available knowledge, " + " ".join(statements)
+
+        sentences = []
+        for i, clauses in enumerate(groups):
+            # Join same-subject clauses like a normal English list: commas
+            # between all but the last pair, "and" only before the last one.
+            if len(clauses) == 1:
+                text = clauses[0]
+            else:
+                text = ", ".join(clauses[:-1]) + f", and {clauses[-1]}"
+            if i > 0:
+                text = f"{self._CONNECTORS[i % len(self._CONNECTORS)]}{text}"
+            sentences.append(text + ".")
+
+        opener = self._OPENERS[len(sentences) % len(self._OPENERS)]
+        return f"{opener}{' '.join(sentences)}"
+
+    # Picks "They" for a people/community subject, "It" otherwise, so a
+    # repeated subject can be referred back to naturally.
+    def _subject_pronoun(self, subject: Any) -> str:
+        text = str(subject or "").strip().lower()
+        if text.endswith("people") or text.endswith("community") or text.endswith("communities"):
+            return "They"
+        return "It"
 
     # Converts one graph triple into a readable, grounded sentence.
-    def _format_triple(self, triple: Dict[str, Any]) -> str:
-        subject = self._humanize_entity(triple.get("subject", "This entity"))
+    # subject_override lets a repeated subject be written as a pronoun
+    # ("They") instead of the full entity name.
+    def _format_triple(self, triple: Dict[str, Any], subject_override: Optional[str] = None) -> str:
+        subject = subject_override or self._humanize_entity(triple.get("subject", "This entity"))
         raw_predicate = str(triple.get("predicate", ""))
         predicate_key = raw_predicate.upper().replace(" ", "_")
         obj = self._humanize_entity(triple.get("object", "another entity"))
         subject_lower = subject.lower()
+        # "They" (from a pronoun continuation) is plural just like "...people"
+        # or "...community" - all three take the same verb form.
+        is_plural = (
+            subject_lower.endswith("people")
+            or subject_lower.endswith("community")
+            or subject_lower == "they"
+        )
 
         templates = {
             "IS_A": f"{subject} is {self._article(obj)}",
             "TYPE": f"{subject} is {self._article(obj)}",
             "LOCATED_IN": f"{subject} is located in {obj}",
-            "LIVE_IN": f"{subject} live in {obj}" if subject_lower.endswith("people") else f"{subject} lives in {obj}",
-            "SPEAK_LANGUAGE": f"{subject} speak {obj}" if subject_lower.endswith("people") or subject_lower.endswith("community") else f"{subject} speaks {obj}",
-            "BELONG_TO": f"{subject} belong to {obj}" if subject_lower.endswith("people") or subject_lower.endswith("community") else f"{subject} belongs to {obj}",
+            "LIVE_IN": f"{subject} live in {obj}" if is_plural else f"{subject} lives in {obj}",
+            "SPEAK_LANGUAGE": f"{subject} speak {obj}" if is_plural else f"{subject} speaks {obj}",
+            "BELONG_TO": f"{subject} belong to {obj}" if is_plural else f"{subject} belongs to {obj}",
             "HAS_LANGUAGE": f"{subject} use the {obj} language",
-            "HAS_A_POPULATION": f"{subject} have an estimated population of {obj}",
+            "HAS_A_POPULATION": f"{subject} have an estimated population of {obj}" if is_plural else f"{subject} has an estimated population of {obj}",
         }
         sentence = templates.get(predicate_key)
         if sentence:
