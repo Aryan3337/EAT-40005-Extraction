@@ -292,3 +292,84 @@ def test_loading_the_cache_file_normalizes_its_keys(tmp_path):
     cache = load_demo_answer_cache(cache_file)
 
     assert cache == {"where do the garo live?": "They live in the Garo Hills."}
+
+
+# -- the relevance gate's parser ---------------------------------------------
+#
+# WHY THIS EXISTS: measured live 2026-10-08, synthesis fabricated a citation
+# ("as stated in Putz (1991) who identified family as one of the domains of
+# study") linking two facts that share only the keyword "family". The model's
+# own answer OPENED with "The evidence provided does not directly answer..."
+# and then kept writing anyway -- its judgement was never the broken part, the
+# unconstrained continuation was. So the parser's job is to discard everything
+# after a "no" in code. Two prior prompt-only fixes that asked the model to
+# restrain itself were both reverted after failing live retests.
+
+
+def _synthesizer():
+    return AnswerSynthesizer(
+        ollama_url="http://localhost:11434/api/generate", answer_cache={}
+    )
+
+
+def test_a_yes_marker_returns_the_prose_below_it():
+    result = _synthesizer()._parse_gated_response(
+        "RELEVANT: yes\nThe Garo community speaks Garo and Mandi."
+    )
+    assert result == "The Garo community speaks Garo and Mandi."
+
+
+def test_a_no_marker_discards_everything_the_model_wrote_after_it():
+    # The exact 2026-10-08 failure shape: an honest opener followed by
+    # fabricated bridging prose. The prose must not survive.
+    result = _synthesizer()._parse_gated_response(
+        "RELEVANT: no\nHowever, it is mentioned that traditional practices "
+        "are being modified in response to modernization, as stated in "
+        "Putz (1991)."
+    )
+    assert result is None
+
+
+def test_a_missing_marker_fails_closed():
+    result = _synthesizer()._parse_gated_response(
+        "The Garo community resides primarily in the Garo Hills."
+    )
+    assert result is None
+
+
+def test_an_unrecognised_marker_value_fails_closed():
+    # "nope" must not be read as a prefix of "no" -- nor as a yes.
+    assert _synthesizer()._parse_gated_response("RELEVANT: nope\nSomething.") is None
+    assert _synthesizer()._parse_gated_response("RELEVANT: maybe\nSomething.") is None
+
+
+def test_a_thinking_model_preamble_is_stripped_before_the_marker_is_read():
+    # deepseek-r1:7b emits <think>...</think> before anything else. Without
+    # _clean_response running first, the marker is never on the first line
+    # and every answer would fail closed.
+    result = _synthesizer()._parse_gated_response(
+        "<think>The user asks about language. The evidence covers it.</think>\n"
+        "RELEVANT: yes\nThe Garo community speaks Garo."
+    )
+    assert result == "The Garo community speaks Garo."
+
+
+def test_the_marker_is_case_and_whitespace_insensitive():
+    result = _synthesizer()._parse_gated_response(
+        "  relevant:YES  \n\nThe Garo community speaks Garo."
+    )
+    assert result == "The Garo community speaks Garo."
+
+
+def test_a_yes_marker_with_no_answer_body_fails_closed():
+    assert _synthesizer()._parse_gated_response("RELEVANT: yes\n   \n") is None
+
+
+def test_a_yes_marker_sharing_its_line_with_the_answer_still_returns_it():
+    # Robustness against format drift: if the model puts the marker and the
+    # answer on one line, dropping the answer would cause a false refusal --
+    # the over-refusal risk called out in the spec's risks section.
+    result = _synthesizer()._parse_gated_response(
+        "RELEVANT: yes The Garo community speaks Garo."
+    )
+    assert result == "The Garo community speaks Garo."

@@ -971,6 +971,36 @@ Answer:"""
         text = re.sub(r"^\s*(answer|response)\s*:\s*", "", text, flags=re.IGNORECASE)
         return text.strip()
 
+    # Reads the RELEVANT: yes/no marker the gate instruction asks for, and
+    # returns the answer ONLY when the model vouched for its evidence.
+    #
+    # Returns None for a refusal -- including when the marker is missing or
+    # unreadable. An unparseable response is not evidence that the answer is
+    # grounded, and this project prefers an honest refusal to a confident
+    # wrong one. See docs/superpowers/specs/2026-10-08-synthesis-relevance-gate-design.md
+    #
+    # _clean_response runs FIRST, and that order is load-bearing: deepseek-r1
+    # emits <think>...</think> before anything else, and _clean_response also
+    # strips a leading "Answer:" prefix, so "Answer: RELEVANT: yes" still
+    # leaves the marker on line one.
+    def _parse_gated_response(self, text: str) -> Optional[str]:
+        cleaned = self._clean_response(text)
+        lines = [line for line in cleaned.splitlines() if line.strip()]
+        if not lines:
+            return None
+
+        match = re.match(r"\s*RELEVANT\s*:\s*(yes|no)\b[.:]?\s*", lines[0], flags=re.IGNORECASE)
+        if not match or match.group(1).lower() == "no":
+            return None
+
+        # Keep anything trailing the marker on its own line: a model that
+        # writes "RELEVANT: yes The Garo..." has still answered, and dropping
+        # it would be a false refusal.
+        head = lines[0][match.end():].strip()
+        tail = "\n".join(lines[1:]).strip()
+        remainder = "\n".join(part for part in (head, tail) if part).strip()
+        return remainder or None
+
     # Produces a readable answer when Ollama is offline or unavailable.
     def _fallback_answer(self, triples: List[Dict[str, Any]]) -> str:
         statements = [self._format_triple(triple) for triple in triples[:6]]
