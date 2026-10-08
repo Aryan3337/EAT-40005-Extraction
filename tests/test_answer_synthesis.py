@@ -163,13 +163,17 @@ def test_a_bare_connection_failure_is_retried(monkeypatch):
     # apart. The proxy's own log showed no trace of the failed attempt ever
     # arriving -- the drop is in the network path, not this code -- so one
     # retry is enough to mask a single transient blip.
+    # This test is about the HTTP-layer retry, not gate parsing (covered by
+    # its own tests below) -- disable the gate rather than coupling this
+    # fixture to _parse_gated_response's marker-stripping behaviour.
+    monkeypatch.setenv("SYNTHESIS_RELEVANCE_GATE", "0")
     calls = []
 
     class FakeResponse:
         status_code = 200
 
         def json(self):
-            return {"response": "RELEVANT: yes\nSecond attempt succeeded."}
+            return {"response": "Second attempt succeeded."}
 
     def fake_post(url, json, timeout, headers=None):
         calls.append(1)
@@ -223,11 +227,16 @@ def test_a_slow_but_connected_timeout_is_not_retried(monkeypatch):
 
 
 def test_a_response_within_the_timeout_is_used_as_is(monkeypatch):
+    # This test is about the immediate-success pass-through, not gate
+    # parsing (covered by its own tests below) -- disable the gate rather
+    # than coupling this fixture to _parse_gated_response's behaviour.
+    monkeypatch.setenv("SYNTHESIS_RELEVANCE_GATE", "0")
+
     class FakeResponse:
         status_code = 200
 
         def json(self):
-            return {"response": "RELEVANT: yes\nThe Garo are bilingual in Bengali."}
+            return {"response": "The Garo are bilingual in Bengali."}
 
     def fake_post(url, json, timeout, headers=None):
         return FakeResponse()
