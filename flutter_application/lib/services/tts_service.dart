@@ -11,15 +11,19 @@ class TtsService {
 
   final FlutterTts _tts = FlutterTts();
 
-  Future<void> setLanguage(String locale) async {
-    await _tts.setLanguage(locale);
-  }
-
   // Speaks [text] aloud, cancelling anything already being read.
   Future<void> speak(String text) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;
     await _tts.stop();
+    final language = languageFor(trimmed);
+    if (language != _language) {
+      // If the device has no voice for it, keep the current voice.
+      try {
+        await _tts.setLanguage(language);
+        _language = language;
+      } catch (_) {}
+    }
     await _tts.speak(trimmed);
   }
 

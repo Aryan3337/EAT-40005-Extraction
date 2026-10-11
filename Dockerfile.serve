@@ -1,0 +1,30 @@
+# Serves rag.py's HTTP API for the hosted demo. Separate from the existing
+# Dockerfile (which drops a team member into a shell for extraction work,
+# CMD ["bash"]) -- this one has a fixed entrypoint and a much smaller
+# dependency set, since the served API never extracts or runs spaCy.
+#
+# Build and run locally to sanity-check before deploying:
+#   docker build -f Dockerfile.serve -t mandi-kg-api .
+#   docker run --rm -p 8000:8000 --env-file .env -e PORT=8000 mandi-kg-api
+#
+# Secrets (NEO4J_*, OLLAMA_URL, TRUSTED_LLM_HOST, ADMIN_UPLOAD_SECRET) are
+# never baked into the image -- set them as environment variables in the
+# hosting platform's dashboard, the same as --env-file does locally.
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements-serve.txt .
+RUN pip install --no-cache-dir -r requirements-serve.txt
+
+COPY rag.py admin_ingest.py confidence_framework.py llm_endpoint.py config.py ./
+COPY data/ ./data/
+
+EXPOSE 8000
+
+# --host 0.0.0.0, not the --host 127.0.0.1 default: a container's exposed
+# port is unreachable from outside otherwise. --port omitted deliberately
+# so rag.py's resolve_port() picks up the platform's injected $PORT.
+# python -u: unbuffered stdout, so logs actually reach the hosting
+# platform's log viewer instead of sitting in a pipe buffer.
+CMD ["python", "-u", "rag.py", "--serve", "--neo4j", "--host", "0.0.0.0"]

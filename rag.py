@@ -24,6 +24,9 @@ import csv
 import re
 import sys
 import argparse
+import threading
+import time
+from urllib.parse import parse_qs, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import List, Dict, Any, Set, Tuple, Optional, Protocol
@@ -31,12 +34,107 @@ from collections import defaultdict
 from dotenv import load_dotenv
 import requests
 
+from admin_ingest import (check_admin_secret, current_queue, ingest_pdf,
+                          read_paper_bytes, record_manual_decision,
+                          validate_upload)
+from llm_endpoint import ollama_tunnel_headers, resolve_llm_endpoint
+
 try:
     from neo4j import GraphDatabase  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - optional dependency for Neo4j mode
     GraphDatabase = None
 
 load_dotenv()
+
+
+# ============================================================================
+# Retrieval scoring
+# ============================================================================
+
+# Measured on the 16 gated garo_1 triples: the keyword "garo" matches 13 of
+# them. A top_k of 10 therefore discarded real evidence on the most obvious
+# question anyone would ask, silently.
+DEFAULT_TOP_K = 25
+
+# The old keyword regex kept every word of 3+ characters, so "what", "are",
+# "the" and "and" became search terms -- and those appear in nearly every
+# sentence_ref, which is much of why retrieval matched so broadly.
+_STOPWORDS = {
+    "the", "and", "are", "was", "were", "what", "who", "whom", "whose", "which",
+    "how", "why", "when", "where", "does", "did", "for", "with", "about", "from",
+    "into", "that", "this", "these", "those", "their", "them", "they", "there",
+    "have", "has", "had", "can", "could", "would", "should", "will", "shall",
+    "you", "your", "our", "its", "his", "her", "him", "she", "any", "all",
+    "but", "not", "than", "then", "also", "some", "more", "most", "many",
+    "tell", "give", "show", "say", "said", "know", "please", "thing", "things",
+}
+
+
+def question_keywords(question: str) -> List[str]:
+    """Content words from the question, lowercased, duplicates collapsed.
+
+    Order is preserved so the scoring is deterministic and reproducible for
+    a given question.
+    """
+    words = re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", question or "")
+    keywords = []
+    for word in words:
+        lowered = word.lower()
+        if lowered in _STOPWORDS or lowered in keywords:
+            continue
+        keywords.append(lowered)
+    return keywords
+
+
+# Where a keyword matches decides how much it counts. A triple ABOUT the
+# thing asked about should beat one that merely mentions it in passing in its
+# source sentence. The previous scoring looked for a fixed list of terms in
+# the predicate NAME -- speak/language/dialect, population, live/locat --
+# against a graph whose predicates are LANGUAGE_USED, EXTENT_OF_USE,
+# HAS_LANGUAGE_Maintenance and so on. Only POPULATION ever matched, so 10 of
+# 11 predicate types scored 0 and ORDER BY relevance was a tie across almost
+# everything, leaving Neo4j's scan order to pick the answer.
+_FIELD_WEIGHTS = (("subject", 3), ("object", 3), ("predicate", 2), ("sentence_ref", 1))
+
+
+def score_triple(triple: Dict[str, Any], keywords: List[str]) -> int:
+    """How well one triple answers a question, given its content words."""
+    score = 0
+    for field, weight in _FIELD_WEIGHTS:
+        haystack = str(triple.get(field) or "").lower()
+        if not haystack:
+            continue
+        for keyword in keywords:
+            if keyword in haystack:
+                score += weight
+    return score
+
+
+def resolve_port(explicit_port: Optional[int]) -> int:
+    """The port to serve on: an explicit --port always wins; otherwise a
+    hosting platform's injected $PORT (Render, Railway, Fly.io all set
+    this), falling back to 8000 if neither is set -- unchanged local
+    development behaviour.
+    """
+    if explicit_port is not None:
+        return explicit_port
+    return int(os.environ.get("PORT", 8000))
+
+
+def dedupe_triples(triples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop duplicate facts -- same (subject, predicate, object) cited from
+    several passages -- keeping the first (i.e. highest-ranked, if the
+    caller already sorted) occurrence of each.
+    """
+    seen: Set[Tuple[Any, Any, Any]] = set()
+    unique = []
+    for triple in triples:
+        key = (triple.get("subject"), triple.get("predicate"), triple.get("object"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(triple)
+    return unique
 
 
 # ============================================================================
@@ -143,7 +241,12 @@ class CypherRetriever:
         # Reads from the environment so this works correctly inside Docker, where
         # docker-compose.yml overrides OLLAMA_URL to point at the ollama service
         # rather than localhost. Falls back to localhost for native (non-Docker) runs.
-        self.ollama_url = ollama_url or os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+        # resolve_llm_endpoint refuses a host outside our own network: this
+        # project committed that paper content goes to a local model only.
+        # Checked here so `rag.py --serve` fails at startup, not mid-query.
+        self.ollama_url = resolve_llm_endpoint(
+            ollama_url or os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+        )
         self.model = os.getenv("OLLAMA_MODEL", "deepseek-r1:7b")
 
     def _generate_cypher(self, question: str) -> str:
@@ -219,8 +322,9 @@ Return only the query, no explanation."""
 
 class ConceptRetriever:
     """
-    Retrieves triples by extracting known entities from the question using word‑boundary matching.
-    If no entities are found, it falls back to matching predicates or searching the sentence_ref fields.
+    Retrieves triples by scoring every triple against the question's content
+    words -- the same question_keywords/score_triple ranking
+    Neo4jRAGSkeleton.query uses on the graph path.
 
     This approach is fast, deterministic, and does not require an LLM.
     It is the recommended primary retrieval strategy.
@@ -228,15 +332,14 @@ class ConceptRetriever:
 
     def __init__(self, kg: KnowledgeGraph):
         self.kg = kg
-        # Common stopwords to ignore when extracting keywords.
-        self.stopwords = {'what', 'is', 'are', 'the', 'of', 'in', 'for', 'on', 'at', 'to', 'with',
-                          'by', 'from', 'up', 'about', 'do', 'does', 'did', 'have', 'has', 'had',
-                          'how', 'why', 'when', 'where', 'which', 'who', 'whom', 'whose'}
 
     def _extract_entities(self, question: str) -> Set[str]:
         """
         Find known entities from the KG that appear in the question as whole words.
         This avoids partial matches (e.g., 'Garo' should not match 'GaroWomen').
+        Used by RetrieverComparator for its diagnostic entity count; retrieve()
+        no longer needs it, since score_triple already rewards a subject/object
+        match over one that merely appears in a source sentence.
         """
         question_lower = question.lower()
         entities = set()
@@ -245,84 +348,31 @@ class ConceptRetriever:
                 entities.add(entity)
         return entities
 
-    def _extract_keywords(self, question: str) -> List[str]:
-        """
-        Extract meaningful keywords (words with at least 3 letters, excluding stopwords).
-        These are used for predicate matching and sentence search fallbacks.
-        """
-        question_lower = question.lower()
-        words = re.findall(r'\b[a-z][a-z]{2,}\b', question_lower)
-        return [w for w in words if w not in self.stopwords]
+    def retrieve(self, question: str, top_k: int = DEFAULT_TOP_K) -> List[Dict]:
+        """Scores every triple against the question's content words and
+        returns the highest-ranked, deduped matches.
 
-    def _match_predicates(self, question: str) -> List[Dict]:
+        Previously this had its own three-stage fallback (known-entity
+        match, then predicate keyword match, then sentence_ref search) with
+        its own scoring: 2 points per entity match, 1 per predicate keyword,
+        plus a bonus for the LENGTH of sentence_ref ("longer = more
+        context"). That rewarded verbose citations -- precisely the
+        pathology MAX_SENTENCE_REF_CHARS exists to stop on the extraction
+        side -- and ranked this CSV fallback differently from the graph
+        path it is meant to stand in for. Scoring now goes through the same
+        score_triple() the graph path uses, so a question gets the same
+        answer whether or not AuraDB happens to be reachable.
         """
-        Find triples whose predicate contains any of the keywords extracted from the question.
-        This is useful when the question does not mention a known entity but does describe a relationship.
-        """
-        keywords = self._extract_keywords(question)
-        results = []
-        for t in self.kg.triples:
-            pred = t['predicate'].lower()
-            if any(kw in pred or pred in kw for kw in keywords):
-                results.append(t)
-        return results
+        keywords = question_keywords(question)
+        if not keywords:
+            return []
 
-    def _search_sentences(self, question: str) -> List[Dict]:
-        """
-        Final fallback: search the sentence_ref fields of all triples for keywords.
-        This can retrieve triples whose source sentence contains the relevant terms,
-        even if the triple itself does not directly match the question.
-        """
-        keywords = self._extract_keywords(question)
-        results = []
-        for t in self.kg.triples:
-            sent = t.get('sentence_ref', '').lower()
-            if sent and any(kw in sent for kw in keywords):
-                results.append(t)
-        return results
-
-    def retrieve(self, question: str, top_k: int = 10) -> List[Dict]:
-        """
-        Main retrieval pipeline:
-            1. Attempt to extract known entities from the question.
-            2. If entities are found, retrieve all triples containing them and rank by relevance.
-            3. If no entities, try matching predicates.
-            4. If still nothing, search sentence references.
-
-        Ranking is based on:
-            - Number of entity matches (weighted 2 points each).
-            - Keyword matches in the predicate (1 point each).
-            - Length of the sentence_ref (longer = more context).
-        """
-        entities = self._extract_entities(question)
-        if entities:
-            results = self.kg.get_triples_by_entities(entities)
-            scored = []
-            for t in results:
-                score = 0
-                subj = t['subject'].lower()
-                obj = t['object'].lower()
-                for ent in entities:
-                    if ent in subj or ent in obj:
-                        score += 2
-                pred_lower = t['predicate'].lower()
-                for kw in self._extract_keywords(question):
-                    if kw in pred_lower:
-                        score += 1
-                # Add a small bonus for longer sentence references (more informative).
-                score += len(t.get('sentence_ref', '')) / 200
-                scored.append((score, t))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            return [t for _, t in scored[:top_k]]
-
-        # No entities found – try predicate matching.
-        pred_results = self._match_predicates(question)
-        if pred_results:
-            return pred_results[:top_k]
-
-        # Final fallback – search sentence references.
-        sent_results = self._search_sentences(question)
-        return sent_results[:top_k]
+        scored = [(score_triple(triple, keywords), triple) for triple in self.kg.triples]
+        # Stable sort on the negated score keeps the CSV's row order as the
+        # tie-break, so equal-scoring results do not shuffle between calls.
+        scored.sort(key=lambda pair: -pair[0])
+        matches = [triple for score, triple in scored if score > 0]
+        return dedupe_triples(matches)[:top_k]
 
 
 # ============================================================================
@@ -494,7 +544,7 @@ class RAGSkeleton:
         # return re.sub(r'\bGaro\b', 'Garo people', question, flags=re.IGNORECASE)
         return question
 
-    def query(self, question: str, top_k: int = 10) -> List[Dict]:
+    def query(self, question: str, top_k: int = DEFAULT_TOP_K) -> List[Dict]:
         """Main entry: question in → triples out."""
         normalized = self.normalize_question(question)
         return self.retriever.retrieve(normalized, top_k)
@@ -525,6 +575,12 @@ class RAGSkeleton:
 
 # Queries Entity nodes and their relationships directly from Neo4j.
 class Neo4jRAGSkeleton:
+    # Upper bound on rows pulled back for ranking. Well above the current
+    # graph (45 triples) and above the ~350 expected after 20 more papers,
+    # so it never truncates in practice -- it exists so an unexpectedly
+    # large graph degrades instead of pulling everything into memory.
+    FETCH_LIMIT = 500
+
     # Opens a Neo4j driver using the project's environment configuration.
     def __init__(self):
         from config import PASSWORD, URI, USERNAME
@@ -541,89 +597,39 @@ class Neo4jRAGSkeleton:
 
         self.driver = GraphDatabase.driver(uri, auth=(username, password))
 
-    # Words that carry no topic meaning and would match almost every fact.
-    STOPWORDS = {
-        "the", "and", "for", "are", "was", "were", "what", "who", "whom", "whose",
-        "which", "when", "where", "why", "how", "does", "did", "do", "can", "could",
-        "would", "should", "will", "about", "tell", "me", "please", "give", "some",
-        "any", "all", "their", "they", "them", "there", "this", "that", "these",
-        "those", "with", "from", "into", "have", "has", "had", "you", "your", "our",
-        "its", "his", "her", "is", "an", "a", "of", "in", "on", "to", "or", "be",
-        "been", "being", "more", "most", "much", "many", "information", "know",
-        "explain", "describe", "people", "peoples", "person", "community",
-        "communities", "tribe", "tribal", "group", "info",
-    }
-
-    # Names the community is known by; a question using one should find facts
-    # stored under any of the others.
-    COMMUNITY_NAMES = {"mandi", "mande", "garo", "garos", "achik", "a'chik", "achik-mande"}
-
     # Finds graph relationships whose entities or source text match the question.
-    # Topic words decide what is relevant; community names alone only act as a
-    # fallback so general questions ("Who are the Mandi people?") still get facts.
-    def query(self, question: str, top_k: int = 10) -> List[Dict]:
-        question_lower = question.lower()
-        words = [w.lower() for w in re.findall(r"[A-Za-z][A-Za-z0-9_'-]{1,}", question)]
+    def query(self, question: str, top_k: int = DEFAULT_TOP_K) -> List[Dict]:
+        """Fetch every triple the question's words touch, then rank in Python.
 
-        mentions_community = any(w in self.COMMUNITY_NAMES for w in words)
-        keywords: List[str] = []
-        for word in words:
-            if word in self.COMMUNITY_NAMES or word in self.STOPWORDS or len(word) < 3:
-                continue
-            # Light stemming so "festivals" matches "festival", "farming" matches "farm".
-            for suffix in ("ies", "ing", "es", "s"):
-                if word.endswith(suffix) and len(word) - len(suffix) >= 4:
-                    word = word[: -len(suffix)] + ("y" if suffix == "ies" else "")
-                    break
-            if word not in keywords:
-                keywords.append(word)
+        Ranking moved out of Cypher deliberately. The old query scored with
+        `reduce` over a hardcoded relationship_terms list -- speak/language/
+        dialect, population, live/locat/resid, is_a/type -- matched against
+        the predicate NAME. The graph's predicates are LANGUAGE_USED,
+        EXTENT_OF_USE, HAS_LANGUAGE_Maintenance, HAS_TRADITIONAL_RELIGION and
+        so on; only POPULATION ever matched one, so 10 of 11 predicate types
+        scored 0, ORDER BY relevance was a tie across nearly everything, and
+        Neo4j's scan order chose the answer.
 
-        community_terms = ["garo", "mandi", "mande", "achik"]
+        Scoring here instead makes the ranking unit-testable without a live
+        database, and lets a match on the subject or object outrank one that
+        merely mentions the word in a source sentence.
 
-        relationship_terms = []
-        if re.search(r"\b(where|live|lives|located|location|reside|resides|home)\b", question_lower):
-            relationship_terms.extend(["live", "locat", "resid", "home", "place"])
-        if re.search(r"\b(language|speak|speaks|dialect)\b", question_lower):
-            relationship_terms.extend(["speak", "language", "dialect"])
-        if re.search(r"\b(population|many|number)\b", question_lower):
-            relationship_terms.extend(["population", "number", "count"])
-        if re.search(r"\b(religion|believe|belief|god|deity|deities|worship)\b", question_lower):
-            relationship_terms.extend(["believ", "worship", "religi", "deit"])
-        if re.search(r"\b(inherit|inheritance|descent|lineage|matrilineal|clan)\b", question_lower):
-            relationship_terms.extend(["inherit", "descent", "lineage", "clan"])
-        if re.search(r"\b(what is|who is|what are|who are)\b", question_lower):
-            relationship_terms.extend(["is_a", "type", "identity", "about", "known", "call"])
-
-        if not keywords and not mentions_community:
+        This is a full relationship scan with no index -- free at the current
+        45 triples and fine into the low thousands, but it is the documented
+        ceiling on this read path. FETCH_LIMIT bounds the worst case.
+        """
+        keywords = question_keywords(question)
+        if not keywords:
             return []
-
-        # With no topic words ("Who are the Mandi?") fall back to community facts.
-        search_terms = keywords if keywords else community_terms
 
         cypher = """
         MATCH (s:Entity)-[r]->(o:Entity)
-        WITH s, r, o,
-             toLower(coalesce(s.name, '')) AS sname,
-             toLower(coalesce(o.name, '')) AS oname,
-             toLower(coalesce(r.passage, '') + ' ' + coalesce(r.sentence_ref, '')) AS text,
-             toLower(type(r)) AS rtype
-        WITH s, r, o, sname, oname, text, rtype,
-             size([k IN $search_terms WHERE sname CONTAINS k OR oname CONTAINS k]) AS entity_hits,
-             size([k IN $search_terms WHERE rtype CONTAINS k]) AS predicate_hits,
-             size([k IN $search_terms WHERE text CONTAINS k]) AS text_hits
-        WHERE entity_hits + predicate_hits + text_hits > 0
-        WITH s, r, o, entity_hits, predicate_hits, text_hits,
-             entity_hits * 6 + predicate_hits * 5 + text_hits * 2
-             + reduce(score = 0, term IN $relationship_terms |
-                 score + CASE
-                     WHEN rtype CONTAINS term THEN 10
-                     WHEN text CONTAINS term THEN 3
-                     ELSE 0
-                 END)
-             + CASE WHEN $mentions_community AND any(c IN $community_terms
-                    WHERE sname CONTAINS c OR oname CONTAINS c OR text CONTAINS c)
-                    THEN 4 ELSE 0 END
-             + CASE WHEN r.paper_id IS NOT NULL THEN -2 ELSE 0 END AS relevance
+        WHERE any(keyword IN $keywords WHERE
+            toLower(coalesce(s.name, '')) CONTAINS keyword OR
+            toLower(coalesce(o.name, '')) CONTAINS keyword OR
+            toLower(type(r)) CONTAINS keyword OR
+            toLower(coalesce(r.sentence_ref, '')) CONTAINS keyword OR
+            toLower(coalesce(r.passage, '')) CONTAINS keyword)
         RETURN s.name AS subject,
                type(r) AS predicate,
                o.name AS object,
@@ -631,32 +637,27 @@ class Neo4jRAGSkeleton:
                coalesce(r.source_section, '') AS source_section,
                coalesce(r.passage, '') AS passage,
                coalesce(r.confidence, '') AS confidence,
-               relevance
-        ORDER BY relevance DESC
-        LIMIT $top_k
+               coalesce(r.run_id, '') AS run_id,
+               coalesce(r.ingested_at, '') AS ingested_at
+        LIMIT $fetch_limit
         """
 
         with self.driver.session() as session:
             result = session.run(
                 cypher,
-                search_terms=search_terms,
-                relationship_terms=relationship_terms,
-                community_terms=community_terms,
-                mentions_community=mentions_community,
-                top_k=top_k,
+                keywords=keywords,
+                fetch_limit=self.FETCH_LIMIT,
             )
-            triples = [dict(record) for record in result]
+            candidates = [dict(record) for record in result]
 
-        # Drop duplicate facts (same subject/predicate/object from several passages).
-        seen = set()
-        unique = []
-        for triple in triples:
-            key = (triple.get("subject"), triple.get("predicate"), triple.get("object"))
-            if key in seen:
-                continue
-            seen.add(key)
-            unique.append(triple)
-        return unique
+        # Stable sort on the negated score keeps Cypher's order as the
+        # tie-break, so equal-scoring results do not shuffle between calls.
+        candidates.sort(key=lambda triple: -score_triple(triple, keywords))
+
+        # Dedupe before truncating, so a duplicate doesn't cost a real
+        # candidate its place in top_k. Sorting first means the
+        # highest-scoring instance of each fact is the one kept.
+        return dedupe_triples(candidates)[:top_k]
 
     # Formats Neo4j triples for the Flutter assistant response.
     def format_output(self, triples: List[Dict]) -> str:
@@ -680,20 +681,290 @@ class Neo4jRAGSkeleton:
         self.driver.close()
 
     # Converts retrieved graph evidence into a concise, grounded answer.
-class AnswerSynthesizer:
-    SUPPORTED_LANGUAGES = {
-        "en": "English",
-        "es": "Spanish",
-        "fr": "French",
-        "hi": "Hindi",
-        "zh": "Mandarin Chinese",
-    }
+# Benchmarked on this machine's CPU Ollama: deepseek-r1:7b took 40.8s and
+# mistral:7b took 40.3s for a real synthesis call. The old timeout=30 was
+# below both, so every real answer timed out and silently fell back to the
+# templated response -- a bug, not a deliberate tradeoff. 90s clears both
+# with headroom for a slow first call, while still failing well short of
+# mistral-small3.1's measured 151.3s if that model is ever selected (a
+# different, deliberately slow, model choice).
+ANSWER_SYNTHESIS_TIMEOUT_SECONDS = 90
 
+# How long to wait for Ollama to even ACCEPT a connection, separate from how
+# long to wait for it to finish generating (above). This matters once the
+# hosted demo architecture is live: the hosted API's OLLAMA_URL points at a
+# Tailscale Funnel tunnel to a team laptop that is only turned on during the
+# live demo. The rest of the time nothing is listening there, so every
+# uncached question would otherwise make a real visitor wait the full 90s
+# before falling back to the template. A short connect timeout fails fast
+# when nothing is there, while still allowing the full 90s once a real
+# connection is made and generation has actually started.
+ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS = 10
+
+# Pre-computed answers for the demo's scripted questions (chat_page.dart's
+# _examplePrompts). WHY: even after the timeout fix and the model switch
+# above, measured 2026-10-05 showed real synthesis calls still taking 90s+
+# on this machine -- 2x the ~40s benchmark from earlier sessions, cause not
+# yet diagnosed -- and falling back to the templated answer when they
+# exceeded even that ceiling. The scripted questions are known in advance,
+# so their answers are precomputed once (see generate_demo_answer_cache.py)
+# and served instantly and reliably from here; anything else still goes
+# through live synthesis unchanged.
+DEMO_ANSWER_CACHE_PATH = Path("data") / "demo_answer_cache.json"
+
+
+def normalize_cache_key(question: str) -> str:
+    """Collapses whitespace/case differences so a question matches its cache
+    entry even if retyped, not just when sent verbatim by a suggested-prompt
+    chip click."""
+    return " ".join(question.strip().lower().split())
+
+
+def load_demo_answer_cache(path: Path = DEMO_ANSWER_CACHE_PATH) -> Dict[str, str]:
+    if not path.exists():
+        return {}
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+    return {normalize_cache_key(question): answer for question, answer in raw.items()}
+
+
+# ============================================================================
+# Answer languages
+# ============================================================================
+
+# Languages the Flutter app's LanguagePicker offers. The client sends the
+# chosen code with each /query; the answer is written in that language.
+# English stays the default so a client that sends no language (older app
+# builds, curl, the CLI) behaves exactly as before.
+DEFAULT_LANGUAGE = "en"
+ANSWER_LANGUAGES = {
+    "en": "English",
+    "hi": "Hindi",
+    "bn": "Bengali (Bangla)",
+}
+
+_NO_EVIDENCE_MESSAGES = {
+    "en": "I could not find enough connected evidence to answer that question. Try naming a specific person, place, event, or relationship.",
+    "hi": "इस सवाल का जवाब देने के लिए पर्याप्त जुड़े हुए प्रमाण नहीं मिले। किसी व्यक्ति, जगह, घटना या संबंध का नाम लेकर फिर से पूछें।",
+    "bn": "এই প্রশ্নের উত্তর দেওয়ার মতো যথেষ্ট তথ্য পাওয়া যায়নি। কোনো নির্দিষ্ট ব্যক্তি, স্থান, ঘটনা বা সম্পর্কের নাম উল্লেখ করে আবার জিজ্ঞাসা করুন।",
+}
+
+# Shown above the English templated answer when the LLM is unreachable
+# (e.g. the hosted demo with the tunnel off), since only the LLM can write
+# the answer in another language.
+_ENGLISH_ONLY_NOTES = {
+    "hi": "(अभी हिंदी में अनुवाद उपलब्ध नहीं है, इसलिए उत्तर अंग्रेज़ी में दिखाया गया है।)",
+    "bn": "(এই মুহূর্তে বাংলায় অনুবাদ করা যাচ্ছে না, তাই উত্তরটি ইংরেজিতে দেখানো হলো।)",
+}
+
+# Retrieval matches English keywords against an English graph, so a
+# question typed in Bangla or Hindi would otherwise retrieve nothing. The
+# LLM translates the question when it is reachable; this small glossary of
+# the corpus's core terms keeps retrieval working when it is not. Matched as
+# substrings, so inflected forms (e.g. গারোদের) still hit.
+_RETRIEVAL_GLOSSARY = {
+    # Bangla
+    "গারো": "garo", "মান্দি": "mandi", "মান্দে": "mande", "আচিক": "achik",
+    "ভাষা": "language", "উপভাষা": "dialect", "বাংলা": "bengali",
+    "জনসংখ্যা": "population", "ধর্ম": "religion", "সংস্কৃতি": "culture",
+    "সমস্যা": "challenge problem", "চ্যালেঞ্জ": "challenge",
+    "বাস": "live reside", "থাকে": "live reside", "বসবাস": "live reside",
+    "ঘর": "house housing", "বাড়ি": "house housing", "শিক্ষা": "education",
+    "বাংলাদেশ": "bangladesh", "ভারত": "india", "মেঘালয়": "meghalaya",
+    "টাঙ্গাইল": "tangail", "ময়মনসিংহ": "mymensingh", "মধুপুর": "madhupur",
+    "নারী": "women", "সম্প্রদায়": "community",
+    # Hindi
+    "गारो": "garo", "भाषा": "language", "बोली": "dialect",
+    "जनसंख्या": "population", "धर्म": "religion", "संस्कृति": "culture",
+    "समस्या": "challenge problem", "चुनौती": "challenge", "चुनौति": "challenge",
+    "रहते": "live reside", "घर": "house housing", "शिक्षा": "education",
+    "बांग्लादेश": "bangladesh", "भारत": "india", "मेघालय": "meghalaya",
+    "समुदाय": "community",
+}
+
+
+def normalize_language(code: Any) -> str:
+    """Maps whatever the client sent to a supported language code."""
+    lowered = str(code or "").strip().lower().replace("_", "-")
+    base = lowered.split("-")[0]
+    return base if base in ANSWER_LANGUAGES else DEFAULT_LANGUAGE
+
+
+def glossary_keywords(question: str) -> str:
+    """English search terms for the glossary words found in the question."""
+    terms: List[str] = []
+    for native, english in _RETRIEVAL_GLOSSARY.items():
+        if native in (question or ""):
+            for term in english.split():
+                if term not in terms:
+                    terms.append(term)
+    return " ".join(terms)
+
+
+def _is_plain_english(text: str) -> bool:
+    """True when the question has no non-Latin letters to translate."""
+    return not re.search(r"[^\x00-\x7F·]", text or "")
+
+
+# How non-English questions and answers are translated.
+#   auto (default): the free online services (Google, then MyMemory), and
+#       only if both fail, a local Ollama model IF one happens to be running.
+#       Nobody needs Ollama installed: without it that last step fails
+#       instantly and the English answer is shown with a short note.
+#   online (alias: google): Google, then MyMemory; never the local model.
+#   llm: the local Ollama model only. Nothing leaves the machine, but it
+#       needs the model installed and is much slower.
+# Both online services are reached through the deep-translator library and
+# need no API key. NOTE: the question and the answer text are sent to them
+# -- see README "Languages". Google's free endpoint has no guarantee: it
+# answered a single request with 429 Too Many Requests on a team laptop on
+# 2026-10-08, which is why MyMemory backs it up.
+TRANSLATION_PROVIDERS = {"auto", "online", "google", "llm"}
+_GOOGLE_MAX_CHARS = 4500  # Google's per-request limit is 5000.
+# After Google refuses with 429, skip it for this long instead of paying a
+# failed round trip on every question.
+GOOGLE_COOLDOWN_SECONDS = 600
+_google_blocked_until = 0.0
+
+# Bangla/Hindi text costs the local model several tokens per character, so a
+# translated answer needs far more tokens and time than an English one.
+TRANSLATED_ANSWER_MAX_TOKENS = 1500
+TRANSLATION_TIMEOUT_SECONDS = 240
+
+
+def translation_provider() -> str:
+    value = os.getenv("TRANSLATION_PROVIDER", "auto").strip().lower()
+    if value == "google":
+        return "online"
+    return value if value in TRANSLATION_PROVIDERS else "auto"
+
+
+# MyMemory: free, no key, but 500 characters per request and a daily
+# character quota per IP (roughly 5,000/day anonymously, about 50,000/day
+# when MYMEMORY_EMAIL is set to any real address).
+_MYMEMORY_CODES = {"en": "en-GB", "bn": "bn-IN", "hi": "hi-IN"}
+_MYMEMORY_MAX_CHARS = 480
+MYMEMORY_COOLDOWN_SECONDS = 3600
+_mymemory_blocked_until = 0.0
+
+
+def _split_for_limit(text: str, limit: int) -> List[str]:
+    """Splits text into pieces under `limit` chars, at paragraph and then
+    sentence boundaries where possible, so each request stays valid."""
+    pieces: List[str] = []
+    for paragraph in [p for p in text.split("\n\n") if p.strip()]:
+        if len(paragraph) <= limit:
+            pieces.append(paragraph)
+            continue
+        current = ""
+        for sentence in re.split(r"(?<=[.!?।])\s+", paragraph):
+            while len(sentence) > limit:  # one very long sentence
+                if current:
+                    pieces.append(current)
+                    current = ""
+                pieces.append(sentence[:limit])
+                sentence = sentence[limit:]
+            if current and len(current) + 1 + len(sentence) > limit:
+                pieces.append(current)
+                current = sentence
+            else:
+                current = f"{current} {sentence}".strip()
+        if current:
+            pieces.append(current)
+    return pieces
+
+
+def mymemory_translate(text: str, source: str, target: str) -> str:
+    """Translates with MyMemory via deep-translator; "" if unavailable."""
+    global _mymemory_blocked_until
+    if not (text or "").strip() or time.time() < _mymemory_blocked_until:
+        return ""
+    source_code = _MYMEMORY_CODES.get(source)
+    target_code = _MYMEMORY_CODES.get(target)
+    if not source_code or not target_code:
+        return ""  # MyMemory cannot auto-detect the source language
+    try:
+        from deep_translator import MyMemoryTranslator
+    except ImportError:
+        print("MyMemory translation unavailable: pip install deep-translator")
+        return ""
+
+    email = os.getenv("MYMEMORY_EMAIL") or None
+    try:
+        translator = MyMemoryTranslator(source=source_code, target=target_code, email=email)
+        translated = []
+        for chunk in _split_for_limit(text, _MYMEMORY_MAX_CHARS):
+            result = (translator.translate(chunk) or "").strip()
+            # Out of quota is reported as a normal 200 with a warning
+            # sentence in place of the translation.
+            if "MYMEMORY WARNING" in result.upper():
+                raise RuntimeError(result)
+            translated.append(result)
+    except Exception as error:
+        _mymemory_blocked_until = time.time() + MYMEMORY_COOLDOWN_SECONDS
+        print(f"MyMemory translation unavailable ({type(error).__name__}: "
+              f"{str(error)[:120]}); not retrying for "
+              f"{MYMEMORY_COOLDOWN_SECONDS // 60} minutes.")
+        return ""
+    return "\n\n".join(part for part in translated if part)
+
+
+def online_translate(text: str, source: str, target: str) -> str:
+    """Google first, then MyMemory. "" if neither could translate."""
+    for service, translate in (("Google Translate", google_translate),
+                               ("MyMemory", mymemory_translate)):
+        translated = translate(text, source, target)
+        if translated:
+            print(f"Translated {source} -> {target} with {service}")
+            return translated
+    return ""
+
+
+def google_translate(text: str, source: str, target: str) -> str:
+    """Translates with deep-translator; returns "" if it is unavailable."""
+    global _google_blocked_until
+    if not (text or "").strip():
+        return ""
+    if time.time() < _google_blocked_until:
+        return ""
+    try:
+        from deep_translator import GoogleTranslator
+    except ImportError:
+        print("Google translation unavailable: pip install deep-translator")
+        return ""
+
+    # Long answers go paragraph by paragraph to stay under the size limit.
+    chunks = [text] if len(text) <= _GOOGLE_MAX_CHARS else [
+        part for part in text.split("\n\n") if part.strip()]
+    try:
+        translator = GoogleTranslator(source=source, target=target)
+        translated = [(translator.translate(chunk[:_GOOGLE_MAX_CHARS]) or "").strip()
+                      for chunk in chunks]
+    except Exception as error:  # network errors, rate limits, bad responses
+        if type(error).__name__ == "TooManyRequests":
+            _google_blocked_until = time.time() + GOOGLE_COOLDOWN_SECONDS
+            print(f"Google translation refused (429 Too Many Requests); "
+                  f"not retrying for {GOOGLE_COOLDOWN_SECONDS // 60} minutes.")
+        else:
+            print(f"Google translation unavailable: {error}")
+        return ""
+    return "\n\n".join(part for part in translated if part)
+
+
+class AnswerSynthesizer:
     def __init__(self, ollama_url: Optional[str] = None, model: Optional[str] = None):
         self.ollama_url = ollama_url or os.getenv(
             "OLLAMA_URL", "http://localhost:11434/api/generate"
         )
-        self.model = model or os.getenv("OLLAMA_MODEL", "deepseek-r1:7b")
+        # mistral:7b, not deepseek-r1:7b: both benchmarked around 40s, but
+        # deepseek-r1 is a "thinking" model whose internal reasoning length
+        # (stripped by _clean_response's <think> regex) varies the actual
+        # wall-clock time unpredictably. Measured 2026-10-05: 2 of 3 real
+        # deepseek-r1 calls exceeded even the 90s ANSWER_SYNTHESIS_TIMEOUT
+        # and fell back to the template, including one live chat request.
+        # mistral:7b has no reasoning-token overhead to vary.
+        self.model = model or os.getenv("OLLAMA_MODEL", "mistral:7b")
+        self.answer_cache = load_demo_answer_cache() if answer_cache is None else answer_cache
 
     def translate_question(self, question: str, language: str) -> str:
         if language not in self.SUPPORTED_LANGUAGES:
@@ -734,16 +1005,9 @@ English translation:"""
         return question
 
     # Writes a natural-language answer while keeping every claim tied to evidence.
-    def answer(
-        self,
-        question: str,
-        triples: List[Dict[str, Any]],
-        language: str = "en",
-    ) -> str:
-        if language not in self.SUPPORTED_LANGUAGES:
-            raise ValueError(f"Unsupported language: {language}")
+    def answer(self, question: str, triples: List[Dict[str, Any]]) -> str:
         if not triples:
-            return self._no_evidence_message(language)
+            return "I could not find enough connected evidence to answer that question. Try naming a specific person, place, event, or relationship."
 
         prompt = self._build_prompt(question, triples, language)
         try:
@@ -753,9 +1017,16 @@ English translation:"""
                     "model": self.model,
                     "prompt": prompt,
                     "stream": False,
-                    "options": {"temperature": 0.2, "num_predict": 400},
+                    "options": {
+                        "temperature": 0.2,
+                        "num_predict": 400 if language == DEFAULT_LANGUAGE
+                        else TRANSLATED_ANSWER_MAX_TOKENS,
+                    },
                 },
-                timeout=30,
+                headers=ollama_tunnel_headers(),
+                timeout=(ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS,
+                         ANSWER_SYNTHESIS_TIMEOUT_SECONDS if language == DEFAULT_LANGUAGE
+                         else TRANSLATION_TIMEOUT_SECONDS),
             )
             if response.status_code == 200:
                 text = response.json().get("response", "").strip()
@@ -764,18 +1035,10 @@ English translation:"""
         except (requests.RequestException, ValueError, KeyError) as error:
             print(f"Answer synthesis unavailable: {error}")
 
-        return self._fallback_answer(triples, language)
+        return self._fallback_answer(triples)
 
     # Builds a small evidence-only prompt for the local language model.
-    def _build_prompt(
-        self,
-        question: str,
-        triples: List[Dict[str, Any]],
-        language: str = "en",
-    ) -> str:
-        language_name = self.SUPPORTED_LANGUAGES.get(language)
-        if language_name is None:
-            raise ValueError(f"Unsupported language: {language}")
+    def _build_prompt(self, question: str, triples: List[Dict[str, Any]]) -> str:
         evidence = []
         for triple in triples:
             evidence.append({
@@ -800,7 +1063,7 @@ Do not invent facts, names, dates, or explanations that are not supported.
     models, retrieval, graph triples, or JSON.
     Answer the specific question first and omit evidence that does not help answer it.
     If the evidence is incomplete, say what is known and briefly acknowledge the limitation.
-
+{self._language_instruction(language)}
 User question:
 {question}
 
@@ -808,6 +1071,18 @@ Evidence:
 {json.dumps(evidence, ensure_ascii=False, indent=2)}
 
 Answer:"""
+
+    # The evidence is English; this tells the model which language to answer in.
+    def _language_instruction(self, language: str) -> str:
+        language = normalize_language(language)
+        if language == DEFAULT_LANGUAGE:
+            return ""
+        name = ANSWER_LANGUAGES[language]
+        return (
+            f"Write the whole answer in {name}, even though the evidence is in English.\n"
+            "Keep proper names (Garo, Mandi, A·chik, place names) recognisable, "
+            "transliterated into the answer's script where natural.\n"
+        )
 
     # Removes model-style prefixes that do not belong in the chat response.
     def _clean_response(self, text: str) -> str:
@@ -1020,6 +1295,26 @@ class RAGQuerySkeleton(Protocol):
     def close(self) -> None: ...
 
 
+# Where admin uploads and the decision queue live.
+UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", "uploads"))
+
+# Papers in this corpus run well under 10 MB; the cap stops a single request
+# pulling an arbitrary amount into memory.
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+
+def _confidence_scorer(pdf_path: str):
+    """Scores an uploaded paper with the confidence framework.
+
+    Imported lazily so starting the API does not require spaCy, Ollama or the
+    framework's own import-time endpoint resolution -- the chatbot must come
+    up even when admin ingestion cannot run.
+    """
+    from confidence_framework import run_confidence_check
+
+    return run_confidence_check(pdf_path)
+
+
 # Creates an HTTP handler backed by the selected RAG retriever.
 def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesizer):
     class QueryHandler(BaseHTTPRequestHandler):
@@ -1034,10 +1329,24 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
             if self.path == "/health":
                 self._send_json(200, {"status": "ok"})
                 return
+            if self.path == "/admin/queue":
+                if not self._admin_authorised():
+                    return
+                self._send_json(200, {"queue": current_queue(UPLOADS_DIR)})
+                return
+            if self.path.startswith("/admin/paper"):
+                self._handle_paper_download()
+                return
             self._send_json(404, {"error": "Not found"})
 
         # Handles questions sent by the Flutter client.
         def do_POST(self) -> None:
+            if self.path == "/admin/upload":
+                self._handle_admin_upload()
+                return
+            if self.path == "/admin/review":
+                self._handle_manual_review()
+                return
             if self.path != "/query":
                 self._send_json(404, {"error": "Not found"})
                 return
@@ -1053,23 +1362,14 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                     self._send_json(400, {"error": "query is required"})
                     return
 
-                language = payload.get("language", "en")
-                if (
-                    not isinstance(language, str)
-                    or language not in AnswerSynthesizer.SUPPORTED_LANGUAGES
-                ):
-                    self._send_json(400, {"error": f"Unsupported language: {language}"})
-                    return
-
-                search_question = synthesizer.translate_question(question, language)
-                triples = skeleton.query(search_question)
+                triples = skeleton.query(question)
                 sources = sorted({
                     t.get("source_section", "Unknown")
                     for t in triples
                     if t.get("source_section")
                 })
                 self._send_json(200, {
-                    "answer": synthesizer.answer(question, triples, language),
+                    "answer": synthesizer.answer(question, triples),
                     "evidence": skeleton.format_output(triples),
                     "sources": sources,
                     "triples": triples,
@@ -1085,6 +1385,123 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                     {"error": f"Knowledge graph query failed ({type(error).__name__}: {error}). Check Neo4j URI and network/DNS."},
                 )
 
+        # Refuses unless the request carries the shared admin secret. The
+        # Flutter admin role only decides which buttons render -- a role held
+        # in the browser is not access control -- so this is what actually
+        # protects an endpoint that spends inference time and writes files.
+        def _admin_authorised(self) -> bool:
+            expected = os.getenv("ADMIN_UPLOAD_SECRET")
+            if check_admin_secret(self.headers.get("X-Admin-Secret"), expected=expected):
+                return True
+            if not expected:
+                self._send_json(503, {"error":
+                    "ADMIN_UPLOAD_SECRET is not set on the server, so admin "
+                    "endpoints are disabled. Set it in .env."})
+            else:
+                self._send_json(401, {"error": "Admin secret missing or incorrect."})
+            return False
+
+        # Accepts a PDF as the raw request body, with its filename in a header.
+        # Raw bytes rather than multipart/form-data on purpose: the stdlib cgi
+        # module that parsed multipart was removed in Python 3.13, and a Flutter
+        # client posts bodyBytes just as easily.
+        def _handle_admin_upload(self) -> None:
+            if not self._admin_authorised():
+                return
+
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0:
+                self._send_json(400, {"error": "No file was uploaded."})
+                return
+            if length > MAX_UPLOAD_BYTES:
+                self._send_json(413, {"error":
+                    f"That file is {length} bytes; the limit is "
+                    f"{MAX_UPLOAD_BYTES}."})
+                return
+
+            data = self.rfile.read(length)
+            filename = self.headers.get("X-Filename", "")
+
+            # Validated synchronously so a bad upload gets an immediate 400
+            # rather than a 202 and silence.
+            try:
+                name = validate_upload(data, filename)
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+                return
+
+            # Scoring is an LLM job -- minutes per paper on local Ollama, with
+            # a 300s timeout per call -- so it cannot run inside the request.
+            # The admin polls /admin/queue for the verdict.
+            def score_in_background():
+                try:
+                    ingest_pdf(data, name, scorer=_confidence_scorer,
+                               uploads_dir=UPLOADS_DIR)
+                except Exception as error:
+                    print(f"Admin upload scoring failed for {name}: {error}")
+
+            threading.Thread(target=score_in_background, daemon=True).start()
+
+            self._send_json(202, {
+                "status": "scoring",
+                "paper": name,
+                "message": "Upload accepted and being scored. Poll /admin/queue "
+                           "for the verdict; this takes minutes per paper.",
+            })
+
+        # Serves a stored PDF so a reviewer can read what they are judging.
+        # The paper name travels in the query string, which is fine -- it is
+        # not sensitive. The SECRET stays in a header, where it belongs.
+        def _handle_paper_download(self) -> None:
+            if not self._admin_authorised():
+                return
+
+            name = parse_qs(urlparse(self.path).query).get("name", [""])[0]
+            try:
+                data = read_paper_bytes(name, uploads_dir=UPLOADS_DIR)
+            except FileNotFoundError as error:
+                self._send_json(404, {"error": str(error)})
+                return
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+                return
+
+            self.send_response(200)
+            self._send_cors_headers()
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        # Records a person's approve/reject on a paper held for review.
+        def _handle_manual_review(self) -> None:
+            if not self._admin_authorised():
+                return
+
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                paper = str(payload.get("paper", "")).strip()
+                if not paper or "approve" not in payload:
+                    raise ValueError("paper and approve are both required")
+                approve = bool(payload["approve"])
+                note = payload.get("note")
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                self._send_json(400, {"error": f"Invalid request: {error}"})
+                return
+
+            try:
+                outcome = record_manual_decision(
+                    paper, approve=approve, note=note, uploads_dir=UPLOADS_DIR)
+            except FileNotFoundError as error:
+                self._send_json(404, {"error": str(error)})
+                return
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+                return
+
+            self._send_json(200, outcome.to_json())
+
         # Writes a JSON response with CORS enabled for local Flutter clients.
         def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
             body = json.dumps(payload).encode("utf-8")
@@ -1099,7 +1516,8 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
         def _send_cors_headers(self) -> None:
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Allow-Headers",
+                             "Content-Type, X-Admin-Secret, X-Filename")
 
         # Keeps routine request logs concise during local development.
         def log_message(self, format: str, *args: Any) -> None:
@@ -1149,13 +1567,17 @@ def main() -> None:
                         help="Read Entity relationships directly from Neo4j")
     parser.add_argument("--host", default="127.0.0.1",
                         help="API host (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8000,
-                        help="API port (default: 8000)")
+    # default=None, not 8000: lets a hosting platform's injected $PORT win
+    # when --port is not given explicitly, while an explicit --port (local
+    # development) still wins over $PORT.
+    parser.add_argument("--port", type=int, default=None,
+                        help="API port (default: $PORT, or 8000 if that is also unset)")
     parser.add_argument("--approach", choices=["concept", "cypher"], default="concept",
                         help="Retrieval approach (default: concept)")
-    parser.add_argument("--top-k", type=int, default=10,
-                        help="Number of triples to return (default: 10)")
+    parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K,
+                        help=f"Number of triples to return (default: {DEFAULT_TOP_K})")
     args = parser.parse_args()
+    args.port = resolve_port(args.port)
 
     # Verify that the KG file exists.
     if args.neo4j and not args.serve:

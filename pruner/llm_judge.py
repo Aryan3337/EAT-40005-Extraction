@@ -35,6 +35,7 @@ import json
 import os
 import re
 
+from llm_endpoint import require_external_llm_opt_in, resolve_llm_endpoint
 from . import audit, config, rules
 
 LLM_JUDGE_BACKEND = os.environ.get("LLM_JUDGE_BACKEND", "none")
@@ -47,7 +48,11 @@ LLM_JUDGE_BACKEND = os.environ.get("LLM_JUDGE_BACKEND", "none")
 # `docker compose exec app python run_prune.py ...`), set
 # OLLAMA_JUDGE_URL=http://ollama:11434/api/generate to use the Docker
 # service name, same as the main pipeline's .env does for OLLAMA_URL.
-OLLAMA_JUDGE_URL = os.environ.get("OLLAMA_JUDGE_URL", "http://localhost:11434/api/generate")
+# resolve_llm_endpoint refuses a host outside our own network -- the judge
+# is shown source text, so the same commitment applies to it.
+OLLAMA_JUDGE_URL = resolve_llm_endpoint(
+    os.environ.get("OLLAMA_JUDGE_URL", "http://localhost:11434/api/generate")
+)
 
 JUDGE_PROMPT = """You are checking one entry in a knowledge graph about the Garo / Mandi community for whether it belongs.
 
@@ -79,6 +84,9 @@ def _parse_response(text: str):
 
 
 def judge_with_openai(subject, relation, obj, source_text, model="gpt-4o-mini"):
+    # Sends source text to a third-party model provider. Refused unless
+    # ALLOW_EXTERNAL_LLM is set -- see llm_endpoint.py.
+    require_external_llm_opt_in("OpenAI")
     from openai import OpenAI
 
     client = OpenAI()
@@ -92,6 +100,9 @@ def judge_with_openai(subject, relation, obj, source_text, model="gpt-4o-mini"):
 
 
 def judge_with_anthropic(subject, relation, obj, source_text, model="claude-haiku-4-5"):
+    # Sends source text to a third-party model provider. Refused unless
+    # ALLOW_EXTERNAL_LLM is set -- see llm_endpoint.py.
+    require_external_llm_opt_in("Anthropic")
     import anthropic
 
     client = anthropic.Anthropic()

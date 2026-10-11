@@ -41,7 +41,9 @@ void main() {
     SharedPreferences.setMockInitialValues({});
   });
 
-  test('demo admin credentials are the only valid login', () async {
+  // Role behaviour and the second account are covered in auth_service_test.dart;
+  // this stays as a smoke check that sign-in works at all from the app's side.
+  test('the demo account signs in and an unknown account does not', () async {
     final service = AuthService();
 
     final validSession = await service.signIn(

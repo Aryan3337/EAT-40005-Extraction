@@ -1,40 +1,27 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../app/app_localizations.dart';
 import '../models/chat_message.dart';
+import 'api_config.dart';
 
 // Sends natural-language questions to the RAG.py API.
 class ChatService {
   ChatService({http.Client? client, String? endpoint})
-    : endpoint = endpoint ?? _defaultEndpoint,
+    : endpoint = endpoint ?? '$apiBaseUrl/query',
       _client = client ?? http.Client();
 
   final http.Client _client;
   final String endpoint;
 
-  // Selects the host address that reaches the computer running RAG.py.
-  static String get _defaultEndpoint {
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      return 'http://10.0.2.2:8000/query';
-    }
-
-    return 'http://127.0.0.1:8000/query';
-  }
-
   // Queries RAG.py and maps its answer and evidence into a chat message.
-  Future<ChatMessage> ask(
-    String question, {
-    String languageCode = 'en',
-  }) async {
-    final strings = AppLocalizations(languageCode);
+  Future<ChatMessage> ask(String question) async {
     try {
       final response = await _client.post(
         Uri.parse(endpoint),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'query': question, 'language': languageCode}),
+        body: jsonEncode({'query': question}),
       );
 
       if (response.statusCode >= 200 && response.statusCode < 300) {

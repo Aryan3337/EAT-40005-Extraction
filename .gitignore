@@ -14,3 +14,4 @@ Prompt_Iteration_Log_backup_*.xlsx
 
 # Local git worktrees
 .worktrees/
+uploads/

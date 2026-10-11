@@ -18,6 +18,7 @@ class ChatPage extends StatefulWidget {
     this.historyService,
     this.strings = const AppLocalizations('en'),
     this.onLanguageChanged,
+    this.onOpenAdmin,
   });
 
   final ChatService service;
@@ -26,6 +27,11 @@ class ChatPage extends StatefulWidget {
   final ChatHistoryService? historyService;
   final AppLocalizations strings;
   final ValueChanged<String>? onLanguageChanged;
+
+  // Non-null only for an admin session, which is what renders the entry point
+  // to the paper-admission screen. This is presentation, not access control:
+  // the server's shared secret authorises the requests.
+  final VoidCallback? onOpenAdmin;
 
   // Creates the mutable conversation state.
   @override
@@ -111,10 +117,7 @@ class _ChatPageState extends State<ChatPage> {
       _isLoading = true;
     });
 
-    final answer = await widget.service.ask(
-      question,
-      languageCode: widget.strings.languageCode,
-    );
+    final answer = await widget.service.ask(question);
     if (!mounted) return;
     setState(() {
       _messages.add(answer);
@@ -224,7 +227,7 @@ class _ChatPageState extends State<ChatPage> {
       return;
     }
     setState(() => _isListening = true);
-    await _speech.listen((text) {
+    await _speech.listen(localeId: widget.strings.speechLocaleId, (text) {
       setState(() {
         _inputController.text = text;
         _inputController.selection = TextSelection.collapsed(
@@ -295,6 +298,7 @@ class _ChatPageState extends State<ChatPage> {
                   onNewChat: _startNewChat,
                   onSignOut: widget.onSignOut,
                   onLanguageChanged: widget.onLanguageChanged,
+                  onOpenAdmin: widget.onOpenAdmin,
                   autoSpeak: _autoSpeak,
                   onToggleAutoSpeak: _toggleAutoSpeak,
                 ),
@@ -335,6 +339,7 @@ class _ChatHeader extends StatelessWidget {
     required this.onToggleAutoSpeak,
     this.onSignOut,
     this.onLanguageChanged,
+    this.onOpenAdmin,
   });
 
   final Future<void> Function() onNewChat;
@@ -343,6 +348,7 @@ class _ChatHeader extends StatelessWidget {
   final VoidCallback onToggleAutoSpeak;
   final VoidCallback? onSignOut;
   final ValueChanged<String>? onLanguageChanged;
+  final VoidCallback? onOpenAdmin;
 
   // Builds the product identity and session controls.
   @override
@@ -352,9 +358,7 @@ class _ChatHeader extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: const BorderRadius.vertical(
-          bottom: Radius.circular(24),
-        ),
+        borderRadius: const BorderRadius.vertical(bottom: Radius.circular(24)),
         boxShadow: [
           BoxShadow(
             color: theme.colorScheme.primary.withValues(alpha: 0.08),
@@ -378,7 +382,10 @@ class _ChatHeader extends StatelessWidget {
             height: 40,
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                colors: [theme.colorScheme.primary, theme.colorScheme.secondary],
+                colors: [
+                  theme.colorScheme.primary,
+                  theme.colorScheme.secondary,
+                ],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
@@ -411,9 +418,17 @@ class _ChatHeader extends StatelessWidget {
           ),
           if (onLanguageChanged != null)
             LanguagePicker(strings: strings, onChanged: onLanguageChanged!),
+          if (onOpenAdmin != null)
+            IconButton(
+              onPressed: onOpenAdmin,
+              tooltip: 'Paper admission',
+              icon: const Icon(Icons.admin_panel_settings_outlined),
+            ),
           const SizedBox(width: 8),
           _RoundIconButton(
-            icon: autoSpeak ? Icons.volume_up_rounded : Icons.volume_off_rounded,
+            icon: autoSpeak
+                ? Icons.volume_up_rounded
+                : Icons.volume_off_rounded,
             active: autoSpeak,
             tooltip: strings.text(autoSpeak ? 'autoReadOn' : 'autoReadOff'),
             onPressed: onToggleAutoSpeak,
@@ -633,11 +648,22 @@ class _EmptyState extends StatelessWidget {
 
   final void Function(String prompt) onPromptTap;
 
+  static const _examplePrompts = [
+    'What plants do the Garo people use for traditional medicine?',
+    'How is climate change affecting indigenous communities?',
+    "Tell me about the Garo people's matrilineal social system.",
+  ];
+
   // Builds the first-use prompt and example questions.
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final accents = [theme.colorScheme.primary, theme.colorScheme.secondary];
+    final prompts = switch (strings.languageCode) {
+      'bn' => _banglaExamplePrompts,
+      'hi' => _hindiExamplePrompts,
+      _ => _examplePrompts,
+    };
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(24, 48, 24, 24),
@@ -652,9 +678,9 @@ class _EmptyState extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 6),
-          Text(
-            strings.text('trySuggested'),
-            style: const TextStyle(color: Color(0xFF8A93A0)),
+          const Text(
+            'Try one of these, or type your own question below.',
+            style: TextStyle(color: Color(0xFF8A93A0)),
           ),
           const SizedBox(height: 22),
           Wrap(
@@ -662,11 +688,11 @@ class _EmptyState extends StatelessWidget {
             spacing: 10,
             runSpacing: 10,
             children: [
-              for (var i = 0; i < strings.examplePrompts.length; i++)
+              for (var i = 0; i < _examplePrompts.length; i++)
                 _PromptChip(
-                  label: strings.examplePrompts[i],
+                  label: _examplePrompts[i],
                   color: accents[i % accents.length],
-                  onTap: () => onPromptTap(strings.examplePrompts[i]),
+                  onTap: () => onPromptTap(_examplePrompts[i]),
                 ),
             ],
           ),
@@ -777,7 +803,9 @@ class _MessageBubble extends StatelessWidget {
                     padding: EdgeInsets.zero,
                     visualDensity: VisualDensity.compact,
                     onPressed: onToggleSpeak,
-                    tooltip: strings.text(isSpeaking ? 'stopReading' : 'readAloud'),
+                    tooltip: strings.text(
+                      isSpeaking ? 'stopReading' : 'readAloud',
+                    ),
                     icon: Icon(
                       isSpeaking
                           ? Icons.stop_circle_rounded
@@ -806,10 +834,9 @@ class _MessageBubble extends StatelessWidget {
                   color: Color(0xFF2E7D5B),
                 ),
                 title: Text(
-                  strings.text('verifiedSources').replaceAll(
-                    '{count}',
-                    '${message.sources.length}',
-                  ),
+                  strings
+                      .text('verifiedSources')
+                      .replaceAll('{count}', '${message.sources.length}'),
                   style: const TextStyle(
                     color: Color(0xFF2E7D5B),
                     fontWeight: FontWeight.w600,
@@ -884,10 +911,9 @@ class _MessageBubble extends StatelessWidget {
             if (message.feedbackComment.isNotEmpty) ...[
               const SizedBox(height: 6),
               Text(
-                strings.text('commentLabel').replaceAll(
-                  '{comment}',
-                  message.feedbackComment,
-                ),
+                strings
+                    .text('commentLabel')
+                    .replaceAll('{comment}', message.feedbackComment),
                 style: const TextStyle(
                   fontSize: 12,
                   fontStyle: FontStyle.italic,
@@ -942,11 +968,9 @@ class _MessageBubble extends StatelessWidget {
 
   Future<void> _showCommentDialog(BuildContext context) async {
     if (message.feedback == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-        content: Text(strings.text('chooseFeedback')),
-        ),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(strings.text('chooseFeedback'))));
       return;
     }
 
@@ -1013,10 +1037,9 @@ class _MessageBubble extends StatelessWidget {
           if (source.sourceSection.isNotEmpty) ...[
             const SizedBox(height: 6),
             Text(
-              strings.text('section').replaceAll(
-                '{section}',
-                source.sourceSection,
-              ),
+              strings
+                  .text('section')
+                  .replaceAll('{section}', source.sourceSection),
             ),
           ],
           if (supportingText.isNotEmpty) ...[
@@ -1031,20 +1054,18 @@ class _MessageBubble extends StatelessWidget {
               source.object.isNotEmpty) ...[
             const SizedBox(height: 8),
             Text(
-              strings.text('knowledgeGraph').replaceAll(
-                '{triple}',
-                source.triple,
-              ),
+              strings
+                  .text('knowledgeGraph')
+                  .replaceAll('{triple}', source.triple),
               style: const TextStyle(fontSize: 13, color: Color(0xFF52616A)),
             ),
           ],
           if (source.confidence.isNotEmpty) ...[
             const SizedBox(height: 6),
             Text(
-              strings.text('confidence').replaceAll(
-                '{confidence}',
-                source.confidence,
-              ),
+              strings
+                  .text('confidence')
+                  .replaceAll('{confidence}', source.confidence),
               style: const TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
@@ -1151,7 +1172,10 @@ class _Composer extends StatelessWidget {
             height: 48,
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                colors: [theme.colorScheme.primary, theme.colorScheme.secondary],
+                colors: [
+                  theme.colorScheme.primary,
+                  theme.colorScheme.secondary,
+                ],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
