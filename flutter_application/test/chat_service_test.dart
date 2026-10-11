@@ -13,6 +13,7 @@ void main() {
       final client = MockClient((request) async {
         expect(jsonDecode(request.body), {
           'query': 'Where do the Garo people live?',
+          'language': 'en',
         });
 
         return http.Response(
@@ -56,6 +57,32 @@ void main() {
         message.sources.single.triple,
         'GaroCommunity — IS_RESIDENT_IN → Tangail',
       );
+    });
+
+    test('sends the selected answer language to the RAG API', () async {
+      final client = MockClient((request) async {
+        expect(jsonDecode(request.body), {
+          'query': 'Where do the Garo people live?',
+          'language': 'fr',
+        });
+        return http.Response(
+          jsonEncode({'answer': 'Les Garo vivent dans plusieurs régions.'}),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+
+      final service = ChatService(
+        client: client,
+        endpoint: 'http://localhost/query',
+      );
+
+      final message = await service.ask(
+        'Where do the Garo people live?',
+        languageCode: 'fr',
+      );
+
+      expect(message.text, 'Les Garo vivent dans plusieurs régions.');
     });
 
     test('preserves source evidence in chat-history JSON', () {

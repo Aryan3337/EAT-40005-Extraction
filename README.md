@@ -197,6 +197,8 @@ python rag.py --kg output/your_paper_kg.csv --serve --approach concept
 
 The Flutter app sends `POST http://localhost:8000/query` with `{"query":"your question"}`. The bridge returns the formatted triples as `answer` and their source sections as `sources`.
 
+The language menu supports English, Spanish, French, Hindi, and Mandarin Chinese. It localizes the app interface, translates non-English questions for graph retrieval, and asks the RAG assistant to answer in the selected language. Voice input and read-aloud use the selected language when supported by the device.
+
 The `answer` field is synthesized from the retrieved graph evidence using the local Ollama model configured by `OLLAMA_MODEL`. If Ollama is unavailable, the API uses a deterministic human-readable summary of the graph facts instead. Raw formatted graph evidence is also returned in the `evidence` field.
 
 ### Run the Flutter app locally

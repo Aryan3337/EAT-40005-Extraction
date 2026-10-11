@@ -53,6 +53,7 @@ class _ChatPageState extends State<ChatPage> {
   void initState() {
     super.initState();
     _historyService = widget.historyService ?? ChatHistoryService();
+    _tts.setLanguage(widget.strings.ttsLocale);
     _loadHistory();
     _tts.onDone(() {
       if (!mounted) return;
@@ -69,6 +70,14 @@ class _ChatPageState extends State<ChatPage> {
           if (!mounted) return;
           setState(() => _speechAvailable = available);
         });
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.strings.languageCode != widget.strings.languageCode) {
+      _tts.setLanguage(widget.strings.ttsLocale);
+    }
   }
 
   Future<void> _loadHistory() async {
@@ -102,7 +111,10 @@ class _ChatPageState extends State<ChatPage> {
       _isLoading = true;
     });
 
-    final answer = await widget.service.ask(question);
+    final answer = await widget.service.ask(
+      question,
+      languageCode: widget.strings.languageCode,
+    );
     if (!mounted) return;
     setState(() {
       _messages.add(answer);
@@ -219,7 +231,7 @@ class _ChatPageState extends State<ChatPage> {
           offset: text.length,
         );
       });
-    });
+    }, localeId: widget.strings.speechLocale);
   }
 
   // Clears the current conversation and starts a fresh session.
@@ -379,17 +391,20 @@ class _ChatHeader extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 12),
-          const Expanded(
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
+                const Text(
                   'Mandi/Garo ChatBot',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
                 ),
                 Text(
-                  'Ask about culture, climate & community',
-                  style: TextStyle(fontSize: 12, color: Color(0xFF8A93A0)),
+                  strings.text('appTagline'),
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF8A93A0),
+                  ),
                 ),
               ],
             ),
@@ -400,9 +415,7 @@ class _ChatHeader extends StatelessWidget {
           _RoundIconButton(
             icon: autoSpeak ? Icons.volume_up_rounded : Icons.volume_off_rounded,
             active: autoSpeak,
-            tooltip: autoSpeak
-                ? 'Auto read-aloud is on: tap to turn off'
-                : 'Auto read-aloud is off: tap to turn on',
+            tooltip: strings.text(autoSpeak ? 'autoReadOn' : 'autoReadOff'),
             onPressed: onToggleAutoSpeak,
           ),
           const SizedBox(width: 8),
@@ -601,6 +614,7 @@ class _ConversationView extends StatelessWidget {
         return _MessageBubble(
           message: message,
           messageIndex: index,
+          strings: strings,
           onFeedback: onFeedback,
           isSpeaking: speakingIndex == index,
           onToggleSpeak: message.author == MessageAuthor.assistant
@@ -618,12 +632,6 @@ class _EmptyState extends StatelessWidget {
   final AppLocalizations strings;
 
   final void Function(String prompt) onPromptTap;
-
-  static const _examplePrompts = [
-    'What plants do the Garo people use for traditional medicine?',
-    'How is climate change affecting indigenous communities?',
-    "Tell me about the Garo people's matrilineal social system.",
-  ];
 
   // Builds the first-use prompt and example questions.
   @override
@@ -644,9 +652,9 @@ class _EmptyState extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 6),
-          const Text(
-            'Try one of these, or type your own question below.',
-            style: TextStyle(color: Color(0xFF8A93A0)),
+          Text(
+            strings.text('trySuggested'),
+            style: const TextStyle(color: Color(0xFF8A93A0)),
           ),
           const SizedBox(height: 22),
           Wrap(
@@ -654,11 +662,11 @@ class _EmptyState extends StatelessWidget {
             spacing: 10,
             runSpacing: 10,
             children: [
-              for (var i = 0; i < _examplePrompts.length; i++)
+              for (var i = 0; i < strings.examplePrompts.length; i++)
                 _PromptChip(
-                  label: _examplePrompts[i],
+                  label: strings.examplePrompts[i],
                   color: accents[i % accents.length],
-                  onTap: () => onPromptTap(_examplePrompts[i]),
+                  onTap: () => onPromptTap(strings.examplePrompts[i]),
                 ),
             ],
           ),
@@ -697,6 +705,7 @@ class _MessageBubble extends StatelessWidget {
   const _MessageBubble({
     required this.message,
     required this.messageIndex,
+    required this.strings,
     required this.onFeedback,
     required this.isSpeaking,
     required this.onToggleSpeak,
@@ -704,6 +713,7 @@ class _MessageBubble extends StatelessWidget {
 
   final ChatMessage message;
   final int messageIndex;
+  final AppLocalizations strings;
   final Future<void> Function(
     int messageIndex,
     MessageFeedback feedback,
@@ -767,7 +777,7 @@ class _MessageBubble extends StatelessWidget {
                     padding: EdgeInsets.zero,
                     visualDensity: VisualDensity.compact,
                     onPressed: onToggleSpeak,
-                    tooltip: isSpeaking ? 'Stop reading aloud' : 'Read aloud',
+                    tooltip: strings.text(isSpeaking ? 'stopReading' : 'readAloud'),
                     icon: Icon(
                       isSpeaking
                           ? Icons.stop_circle_rounded
@@ -796,7 +806,10 @@ class _MessageBubble extends StatelessWidget {
                   color: Color(0xFF2E7D5B),
                 ),
                 title: Text(
-                  'View verified sources (${message.sources.length})',
+                  strings.text('verifiedSources').replaceAll(
+                    '{count}',
+                    '${message.sources.length}',
+                  ),
                   style: const TextStyle(
                     color: Color(0xFF2E7D5B),
                     fontWeight: FontWeight.w600,
@@ -813,9 +826,9 @@ class _MessageBubble extends StatelessWidget {
           if (!isUser) ...[
             const SizedBox(height: 12),
             const Divider(color: Color(0xFFE0E7E3)),
-            const Text(
-              'Was this response helpful?',
-              style: TextStyle(
+            Text(
+              strings.text('responseHelpful'),
+              style: const TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
                 color: Color(0xFF52616A),
@@ -830,7 +843,7 @@ class _MessageBubble extends StatelessWidget {
                     MessageFeedback.helpful,
                     message.feedbackComment,
                   ),
-                  tooltip: 'Helpful',
+                  tooltip: strings.text('helpful'),
                   color: const Color(0xFF2E7D5B),
                   icon: Icon(
                     message.feedback == MessageFeedback.helpful
@@ -844,7 +857,7 @@ class _MessageBubble extends StatelessWidget {
                     MessageFeedback.notHelpful,
                     message.feedbackComment,
                   ),
-                  tooltip: 'Not helpful',
+                  tooltip: strings.text('notHelpful'),
                   color: const Color(0xFFC05A47),
                   icon: Icon(
                     message.feedback == MessageFeedback.notHelpful
@@ -857,21 +870,24 @@ class _MessageBubble extends StatelessWidget {
                   icon: const Icon(Icons.comment_outlined, size: 18),
                   label: Text(
                     message.feedbackComment.isEmpty
-                        ? 'Add comment'
-                        : 'Edit comment',
+                        ? strings.text('addComment')
+                        : strings.text('editComment'),
                   ),
                 ),
               ],
             ),
             if (message.feedback != null)
-              const Text(
-                'Thank you for your feedback.',
-                style: TextStyle(fontSize: 12, color: Color(0xFF2E7D5B)),
+              Text(
+                strings.text('feedbackThanks'),
+                style: const TextStyle(fontSize: 12, color: Color(0xFF2E7D5B)),
               ),
             if (message.feedbackComment.isNotEmpty) ...[
               const SizedBox(height: 6),
               Text(
-                'Comment: ${message.feedbackComment}',
+                strings.text('commentLabel').replaceAll(
+                  '{comment}',
+                  message.feedbackComment,
+                ),
                 style: const TextStyle(
                   fontSize: 12,
                   fontStyle: FontStyle.italic,
@@ -927,8 +943,8 @@ class _MessageBubble extends StatelessWidget {
   Future<void> _showCommentDialog(BuildContext context) async {
     if (message.feedback == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Please select helpful or not helpful first.'),
+        SnackBar(
+        content: Text(strings.text('chooseFeedback')),
         ),
       );
       return;
@@ -940,25 +956,25 @@ class _MessageBubble extends StatelessWidget {
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
-          title: const Text('Response feedback'),
+          title: Text(strings.text('responseFeedback')),
           content: TextField(
             controller: controller,
             autofocus: true,
             maxLines: 4,
             maxLength: 300,
-            decoration: const InputDecoration(
-              hintText: 'Tell us how this response could be improved.',
+            decoration: InputDecoration(
+              hintText: strings.text('improveResponse'),
               border: OutlineInputBorder(),
             ),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Cancel'),
+              child: Text(strings.text('cancel')),
             ),
             FilledButton(
               onPressed: () => Navigator.of(dialogContext).pop(controller.text),
-              child: const Text('Save feedback'),
+              child: Text(strings.text('saveFeedback')),
             ),
           ],
         );
@@ -988,7 +1004,7 @@ class _MessageBubble extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Source $number',
+            strings.text('source').replaceAll('{number}', '$number'),
             style: const TextStyle(
               fontWeight: FontWeight.w700,
               color: Color(0xFF2E7D5B),
@@ -996,7 +1012,12 @@ class _MessageBubble extends StatelessWidget {
           ),
           if (source.sourceSection.isNotEmpty) ...[
             const SizedBox(height: 6),
-            Text('Section: ${source.sourceSection}'),
+            Text(
+              strings.text('section').replaceAll(
+                '{section}',
+                source.sourceSection,
+              ),
+            ),
           ],
           if (supportingText.isNotEmpty) ...[
             const SizedBox(height: 6),
@@ -1010,14 +1031,20 @@ class _MessageBubble extends StatelessWidget {
               source.object.isNotEmpty) ...[
             const SizedBox(height: 8),
             Text(
-              'Knowledge graph: ${source.triple}',
+              strings.text('knowledgeGraph').replaceAll(
+                '{triple}',
+                source.triple,
+              ),
               style: const TextStyle(fontSize: 13, color: Color(0xFF52616A)),
             ),
           ],
           if (source.confidence.isNotEmpty) ...[
             const SizedBox(height: 6),
             Text(
-              'Confidence: ${source.confidence}',
+              strings.text('confidence').replaceAll(
+                '{confidence}',
+                source.confidence,
+              ),
               style: const TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
@@ -1095,15 +1122,15 @@ class _Composer extends StatelessWidget {
                 onSubmitted: (_) => onSend(),
                 decoration: InputDecoration(
                   hintText: isListening
-                      ? 'Listening...'
+                      ? strings.text('listening')
                       : strings.text('askAnything'),
                   prefixIcon: const Icon(Icons.search),
                   suffixIcon: speechAvailable
                       ? IconButton(
                           onPressed: onToggleListening,
                           tooltip: isListening
-                              ? 'Stop listening'
-                              : 'Ask by voice',
+                              ? strings.text('stopListening')
+                              : strings.text('askByVoice'),
                           color: isListening
                               ? theme.colorScheme.secondary
                               : const Color(0xFF8A93A0),

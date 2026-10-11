@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import '../app/app_localizations.dart';
 import '../models/chat_message.dart';
 
 // Sends natural-language questions to the RAG.py API.
@@ -24,31 +25,37 @@ class ChatService {
   }
 
   // Queries RAG.py and maps its answer and evidence into a chat message.
-  Future<ChatMessage> ask(String question) async {
+  Future<ChatMessage> ask(
+    String question, {
+    String languageCode = 'en',
+  }) async {
+    final strings = AppLocalizations(languageCode);
     try {
       final response = await _client.post(
         Uri.parse(endpoint),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'query': question}),
+        body: jsonEncode({'query': question, 'language': languageCode}),
       );
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
         final payload = jsonDecode(response.body) as Map<String, dynamic>;
 
         return ChatMessage(
-          text: payload['answer'] as String? ?? 'The graph returned no answer.',
+          text: payload['answer'] as String? ?? strings.text('noAnswer'),
           author: MessageAuthor.assistant,
           sources: _readSources(payload['triples']),
         );
       }
 
       return _errorMessage(
-        'RAG.py returned HTTP ${response.statusCode}: ${_readError(response.body)}',
+        strings
+            .text('ragHttpError')
+            .replaceAll('{status}', '${response.statusCode}')
+            .replaceAll('{error}', _readError(response.body, strings)),
       );
     } catch (_) {
       return _errorMessage(
-        'Cannot reach RAG.py at $endpoint. '
-        'Start the RAG API and try again.',
+        strings.text('cannotReachRag').replaceAll('{endpoint}', endpoint),
       );
     }
   }
@@ -79,14 +86,14 @@ class ChatService {
   }
 
   // Pulls the backend's error message out of a failed response.
-  String _readError(String body) {
+  String _readError(String body, AppLocalizations strings) {
     try {
       final payload = jsonDecode(body);
       if (payload is Map && payload['error'] != null) {
         return payload['error'].toString();
       }
     } catch (_) {}
-    return 'Check the backend terminal.';
+    return strings.text('checkBackend');
   }
 
   // Explains why a live graph answer could not be displayed.

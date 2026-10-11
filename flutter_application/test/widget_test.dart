@@ -97,6 +97,30 @@ void main() {
     expect(find.text('वापसी पर स्वागत है'), findsOneWidget);
   });
 
+  testWidgets('offers the five requested interface languages', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(const KnowledgeGraphApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Language'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('English'), findsNWidgets(2));
+    expect(find.text('Español'), findsOneWidget);
+    expect(find.text('Français'), findsOneWidget);
+    expect(find.text('हिन्दी'), findsOneWidget);
+    expect(find.text('中文（普通话）'), findsOneWidget);
+
+    await tester.tap(find.text('Español').last);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Te damos la bienvenida'), findsOneWidget);
+    expect(find.text('Usuario / Correo electrónico'), findsOneWidget);
+    final preferences = await SharedPreferences.getInstance();
+    expect(preferences.getString('app.language'), 'es');
+  });
+
   testWidgets('sends a question and renders the response', (
     WidgetTester tester,
   ) async {

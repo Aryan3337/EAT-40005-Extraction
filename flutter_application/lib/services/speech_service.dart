@@ -28,10 +28,14 @@ class SpeechService {
 
   // Starts listening, calling [onResult] with the live transcript as the
   // user speaks. No-ops if the recognizer isn't available.
-  Future<void> listen(void Function(String text) onResult) async {
+  Future<void> listen(
+    void Function(String text) onResult, {
+    String? localeId,
+  }) async {
     if (!_isAvailable) return;
     await _speech.listen(
       onResult: (result) => onResult(result.recognizedWords),
+      localeId: localeId,
     );
   }
 

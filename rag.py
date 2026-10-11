@@ -681,18 +681,71 @@ class Neo4jRAGSkeleton:
 
     # Converts retrieved graph evidence into a concise, grounded answer.
 class AnswerSynthesizer:
+    SUPPORTED_LANGUAGES = {
+        "en": "English",
+        "es": "Spanish",
+        "fr": "French",
+        "hi": "Hindi",
+        "zh": "Mandarin Chinese",
+    }
+
     def __init__(self, ollama_url: Optional[str] = None, model: Optional[str] = None):
         self.ollama_url = ollama_url or os.getenv(
             "OLLAMA_URL", "http://localhost:11434/api/generate"
         )
         self.model = model or os.getenv("OLLAMA_MODEL", "deepseek-r1:7b")
 
-    # Writes a natural-language answer while keeping every claim tied to evidence.
-    def answer(self, question: str, triples: List[Dict[str, Any]]) -> str:
-        if not triples:
-            return "I could not find enough connected evidence to answer that question. Try naming a specific person, place, event, or relationship."
+    def translate_question(self, question: str, language: str) -> str:
+        if language not in self.SUPPORTED_LANGUAGES:
+            raise ValueError(f"Unsupported language: {language}")
+        if language == "en":
+            return question
 
-        prompt = self._build_prompt(question, triples)
+        prompt = f"""Translate this question from {self.SUPPORTED_LANGUAGES[language]} into English.
+Return only the translation. Preserve names of people, places, and communities.
+
+Question:
+{question}
+
+English translation:"""
+        try:
+            response = requests.post(
+                self.ollama_url,
+                json={
+                    "model": self.model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.0, "num_predict": 256},
+                },
+                timeout=20,
+            )
+            if response.status_code == 200:
+                translated = response.json().get("response", "").strip()
+                if translated:
+                    return translated
+            else:
+                print(
+                    "Question translation unavailable: "
+                    f"Ollama returned HTTP {response.status_code}"
+                )
+        except (requests.RequestException, ValueError, KeyError) as error:
+            print(f"Question translation unavailable: {error}")
+
+        return question
+
+    # Writes a natural-language answer while keeping every claim tied to evidence.
+    def answer(
+        self,
+        question: str,
+        triples: List[Dict[str, Any]],
+        language: str = "en",
+    ) -> str:
+        if language not in self.SUPPORTED_LANGUAGES:
+            raise ValueError(f"Unsupported language: {language}")
+        if not triples:
+            return self._no_evidence_message(language)
+
+        prompt = self._build_prompt(question, triples, language)
         try:
             response = requests.post(
                 self.ollama_url,
@@ -711,10 +764,18 @@ class AnswerSynthesizer:
         except (requests.RequestException, ValueError, KeyError) as error:
             print(f"Answer synthesis unavailable: {error}")
 
-        return self._fallback_answer(triples)
+        return self._fallback_answer(triples, language)
 
     # Builds a small evidence-only prompt for the local language model.
-    def _build_prompt(self, question: str, triples: List[Dict[str, Any]]) -> str:
+    def _build_prompt(
+        self,
+        question: str,
+        triples: List[Dict[str, Any]],
+        language: str = "en",
+    ) -> str:
+        language_name = self.SUPPORTED_LANGUAGES.get(language)
+        if language_name is None:
+            raise ValueError(f"Unsupported language: {language}")
         evidence = []
         for triple in triples:
             evidence.append({
@@ -727,6 +788,8 @@ class AnswerSynthesizer:
 
         return f"""You are a careful knowledge-graph research assistant.
 Answer the user's question using only the evidence below.
+Write the entire answer in {language_name}, regardless of the language used in the question.
+Keep entity names and graph identifiers clear, but explain them in {language_name}.
 The Mandi people are the same community as the Garo people (they call themselves
 A·chik Mande), so treat "Mandi", "Mande", "A·chik" and "Garo" as the same people.
 Do not invent facts, names, dates, or explanations that are not supported.
@@ -753,19 +816,53 @@ Answer:"""
         return text.strip()
 
     # Produces a readable answer when Ollama is offline or unavailable.
-    def _fallback_answer(self, triples: List[Dict[str, Any]]) -> str:
-        statements = [self._format_triple(triple) for triple in triples[:6]]
+    def _fallback_answer(
+        self,
+        triples: List[Dict[str, Any]],
+        language: str = "en",
+    ) -> str:
+        statements = [
+            self._format_triple(triple, language)
+            for triple in triples[:6]
+        ]
         statements = [statement for statement in statements if statement]
         if not statements:
-            return "I could not find enough connected evidence to answer that question."
-        return "Based on the available knowledge, " + " ".join(statements)
+            return self._no_evidence_message(language)
+        introductions = {
+            "en": "Based on the available knowledge, ",
+            "es": "Según la información disponible, ",
+            "fr": "D’après les informations disponibles, ",
+            "hi": "उपलब्ध जानकारी के आधार पर, ",
+            "zh": "根据现有信息，",
+        }
+        return introductions[language] + " ".join(statements)
+
+    def _no_evidence_message(self, language: str) -> str:
+        messages = {
+            "en": "I could not find enough connected evidence to answer that question. Try naming a specific person, place, event, or relationship.",
+            "es": "No encontré suficiente evidencia relacionada para responder. Intenta mencionar una persona, un lugar, un evento o una relación específica.",
+            "fr": "Je n’ai pas trouvé suffisamment d’informations liées pour répondre. Essayez de nommer une personne, un lieu, un événement ou une relation précise.",
+            "hi": "इस प्रश्न का उत्तर देने के लिए पर्याप्त जुड़ी हुई जानकारी नहीं मिली। किसी व्यक्ति, स्थान, घटना या संबंध का नाम लेकर पूछें।",
+            "zh": "没有找到足够相关的信息来回答这个问题。请尝试指出具体的人物、地点、事件或关系。",
+        }
+        return messages[language]
 
     # Converts one graph triple into a readable, grounded sentence.
-    def _format_triple(self, triple: Dict[str, Any]) -> str:
-        subject = self._humanize_entity(triple.get("subject", "This entity"))
+    def _format_triple(
+        self,
+        triple: Dict[str, Any],
+        language: str = "en",
+    ) -> str:
+        subject = self._humanize_entity(
+            triple.get("subject", "This entity"),
+            language,
+        )
         raw_predicate = str(triple.get("predicate", ""))
         predicate_key = raw_predicate.upper().replace(" ", "_")
-        obj = self._humanize_entity(triple.get("object", "another entity"))
+        obj = self._humanize_entity(
+            triple.get("object", "another entity"),
+            language,
+        )
         subject_lower = subject.lower()
 
         templates = {
@@ -778,6 +875,59 @@ Answer:"""
             "HAS_LANGUAGE": f"{subject} use the {obj} language",
             "HAS_A_POPULATION": f"{subject} have an estimated population of {obj}",
         }
+        translated_templates = {
+            "es": {
+                "IS_A": f"{subject} es {obj}",
+                "TYPE": f"{subject} es {obj}",
+                "LOCATED_IN": f"{subject} se encuentra en {obj}",
+                "LIVE_IN": f"{subject} vive en {obj}",
+                "SPEAK_LANGUAGE": f"{subject} habla {obj}",
+                "BELONG_TO": f"{subject} pertenece a {obj}",
+                "HAS_LANGUAGE": f"{subject} usa el idioma {obj}",
+                "HAS_A_POPULATION": f"{subject} tiene una población estimada de {obj}",
+            },
+            "fr": {
+                "IS_A": f"{subject} est {obj}",
+                "TYPE": f"{subject} est {obj}",
+                "LOCATED_IN": f"{subject} se trouve à {obj}",
+                "LIVE_IN": f"{subject} vit à {obj}",
+                "SPEAK_LANGUAGE": f"{subject} parle {obj}",
+                "BELONG_TO": f"{subject} appartient à {obj}",
+                "HAS_LANGUAGE": f"{subject} utilise la langue {obj}",
+                "HAS_A_POPULATION": f"{subject} a une population estimée à {obj}",
+            },
+            "hi": {
+                "IS_A": f"{subject} {obj} है",
+                "TYPE": f"{subject} {obj} है",
+                "LOCATED_IN": f"{subject} {obj} में स्थित है",
+                "LIVE_IN": f"{subject} {obj} में रहते हैं",
+                "SPEAK_LANGUAGE": f"{subject} {obj} बोलते हैं",
+                "BELONG_TO": f"{subject} {obj} से संबंधित हैं",
+                "HAS_LANGUAGE": f"{subject} {obj} भाषा का उपयोग करते हैं",
+                "HAS_A_POPULATION": f"{subject} की अनुमानित जनसंख्या {obj} है",
+            },
+            "zh": {
+                "IS_A": f"{subject}是{obj}",
+                "TYPE": f"{subject}是{obj}",
+                "LOCATED_IN": f"{subject}位于{obj}",
+                "LIVE_IN": f"{subject}居住在{obj}",
+                "SPEAK_LANGUAGE": f"{subject}使用{obj}",
+                "BELONG_TO": f"{subject}属于{obj}",
+                "HAS_LANGUAGE": f"{subject}使用{obj}语言",
+                "HAS_A_POPULATION": f"{subject}的估计人口为{obj}",
+            },
+        }
+        if language != "en":
+            sentence = translated_templates.get(language, {}).get(predicate_key)
+            if sentence:
+                return sentence + ("。" if language == "zh" else ".")
+            localized_relation = {
+                "es": f"relación «{raw_predicate}» con",
+                "fr": f"relation « {raw_predicate} » avec",
+                "hi": f"का संबंध «{raw_predicate}»",
+                "zh": f"通过“{raw_predicate}”关系关联到",
+            }[language]
+            return f"{subject} {localized_relation} {obj}{'。' if language == 'zh' else '.'}"
         sentence = templates.get(predicate_key)
         if sentence:
             return f"{sentence}."
@@ -789,15 +939,26 @@ Answer:"""
     # Makes CamelCase graph identifiers readable in a response, and refers
     # to the Garo people by their full, respectful name rather than just
     # the bare entity label.
-    def _humanize_entity(self, entity: Any) -> str:
+    def _humanize_entity(self, entity: Any, language: str = "en") -> str:
         raw_text = str(entity or "").strip()
         text = raw_text.replace("_", " ")
         text = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text)
         text = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", text)
         if re.fullmatch(r"[A-Za-z0-9_]+", raw_text):
             text = re.sub(r"\s+Community$", "", text, flags=re.IGNORECASE)
-        if text.strip().lower() == "garo":
-            text = "the Garo people"
+        if text.strip().lower() in {
+            "garo",
+            "the garo people",
+            "garo people",
+            "garo community",
+        }:
+            text = {
+                "en": "the Garo people",
+                "es": "el pueblo Garo",
+                "fr": "le peuple Garo",
+                "hi": "गारो लोग",
+                "zh": "加罗人",
+            }.get(language, "the Garo people")
         return text[:1].upper() + text[1:] if text else "another entity"
 
     def _article(self, noun: str) -> str:
@@ -845,7 +1006,7 @@ Answer:"""
         if len(token) <= 7 or not token.isalpha():
             return [token]
         try:
-            import wordninja
+            import wordninja  # type: ignore[import-not-found]
         except ImportError:
             return [token]
         segments = wordninja.split(token)
@@ -884,19 +1045,31 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 payload = json.loads(self.rfile.read(length))
+                if not isinstance(payload, dict):
+                    self._send_json(400, {"error": "Request body must be a JSON object"})
+                    return
                 question = str(payload.get("query", "")).strip()
                 if not question:
                     self._send_json(400, {"error": "query is required"})
                     return
 
-                triples = skeleton.query(question)
+                language = payload.get("language", "en")
+                if (
+                    not isinstance(language, str)
+                    or language not in AnswerSynthesizer.SUPPORTED_LANGUAGES
+                ):
+                    self._send_json(400, {"error": f"Unsupported language: {language}"})
+                    return
+
+                search_question = synthesizer.translate_question(question, language)
+                triples = skeleton.query(search_question)
                 sources = sorted({
                     t.get("source_section", "Unknown")
                     for t in triples
                     if t.get("source_section")
                 })
                 self._send_json(200, {
-                    "answer": synthesizer.answer(question, triples),
+                    "answer": synthesizer.answer(question, triples, language),
                     "evidence": skeleton.format_output(triples),
                     "sources": sources,
                     "triples": triples,
