@@ -10,6 +10,23 @@ class TtsService {
   }
 
   final FlutterTts _tts = FlutterTts();
+  String _language = 'en-US';
+
+  // Tries to infer the best TTS language for the text, while defaulting to the
+  // current language when the text is plain English or no language can be detected.
+  String languageFor(String text) {
+    final normalized = text.toLowerCase();
+
+    if (RegExp(r'[\u0600-\u06FF]').hasMatch(text)) return 'ar-SA';
+    if (RegExp(r'[\u4e00-\u9fff\u3040-\u30ff]').hasMatch(text)) return 'zh-CN';
+    if (RegExp(r'[àâçéèêëîïôûùüÿæœ]').hasMatch(normalized)) return 'fr-FR';
+    if (RegExp(r'[äöüß]').hasMatch(normalized)) return 'de-DE';
+    if (RegExp(r'[áéíóúñü¿¡]').hasMatch(normalized)) return 'es-ES';
+    if (RegExp(r'[àèéìíîòóùú]').hasMatch(normalized)) return 'it-IT';
+    if (RegExp(r'[ãõçáéíóúâêôàü]').hasMatch(normalized)) return 'pt-BR';
+
+    return _language;
+  }
 
   // Speaks [text] aloud, cancelling anything already being read.
   Future<void> speak(String text) async {

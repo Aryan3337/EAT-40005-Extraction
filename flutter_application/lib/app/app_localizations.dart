@@ -7,6 +7,11 @@ class AppLocalizations {
 
   static const supportedLanguageCodes = ['en', 'hi'];
 
+  static const languageNames = <String, String>{
+    'en': 'English',
+    'hi': 'हिन्दी',
+  };
+
   static const _english = <String, String>{
     'language': 'Language',
     'appTagline': 'Ask about culture, climate & community',

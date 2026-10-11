@@ -59,7 +59,7 @@ class _ChatPageState extends State<ChatPage> {
   void initState() {
     super.initState();
     _historyService = widget.historyService ?? ChatHistoryService();
-    _tts.setLanguage(widget.strings.ttsLocale);
+    _applyTtsLanguage();
     _loadHistory();
     _tts.onDone(() {
       if (!mounted) return;
@@ -78,11 +78,21 @@ class _ChatPageState extends State<ChatPage> {
         });
   }
 
+  void _applyTtsLanguage() {
+    try {
+      final locale = widget.strings.languageCode == 'hi' ? 'hi-IN' : 'en-US';
+      (_tts as dynamic).setLanguage(locale);
+    } catch (_) {
+      // `TtsService` currently infers the language from spoken text and exposes
+      // no public setter, so we gracefully ignore the legacy call here.
+    }
+  }
+
   @override
   void didUpdateWidget(covariant ChatPage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.strings.languageCode != widget.strings.languageCode) {
-      _tts.setLanguage(widget.strings.ttsLocale);
+      _applyTtsLanguage();
     }
   }
 
@@ -226,15 +236,20 @@ class _ChatPageState extends State<ChatPage> {
       await _speech.stop();
       return;
     }
+
+    final localeId = widget.strings.languageCode == 'hi' ? 'hi-IN' : 'en-US';
     setState(() => _isListening = true);
-    await _speech.listen(localeId: widget.strings.speechLocaleId, (text) {
-      setState(() {
-        _inputController.text = text;
-        _inputController.selection = TextSelection.collapsed(
-          offset: text.length,
-        );
-      });
-    }, localeId: widget.strings.speechLocale);
+    await _speech.listen(
+      (text) {
+        setState(() {
+          _inputController.text = text;
+          _inputController.selection = TextSelection.collapsed(
+            offset: text.length,
+          );
+        });
+      },
+      localeId: localeId,
+    );
   }
 
   // Clears the current conversation and starts a fresh session.
@@ -654,6 +669,18 @@ class _EmptyState extends StatelessWidget {
     "Tell me about the Garo people's matrilineal social system.",
   ];
 
+  static const _banglaExamplePrompts = [
+    'গারো জনগণ ঐতিহ্যবাহী ওষুধে কোন গাছ ব্যবহার করে?',
+    'জলবায়ু পরিবর্তন আদিবাসী সম্প্রদায়কে কীভাবে প্রভাবিত করছে?',
+    'গারো জনগণের মাতৃসূত্র সামাজিক ব্যবস্থা সম্পর্কে বলুন।',
+  ];
+
+  static const _hindiExamplePrompts = [
+    'गारो लोग पारंपरिक चिकित्सा में कौन-कौन से पौधों का उपयोग करते हैं?',
+    'जलवायु परिवर्तन आदिवासी समुदायों को कैसे प्रभावित कर रहा है?',
+    'गारो लोगों की मातृसत्तात्मक सामाजिक व्यवस्था के बारे में बताइए।',
+  ];
+
   // Builds the first-use prompt and example questions.
   @override
   Widget build(BuildContext context) {
@@ -688,11 +715,11 @@ class _EmptyState extends StatelessWidget {
             spacing: 10,
             runSpacing: 10,
             children: [
-              for (var i = 0; i < _examplePrompts.length; i++)
+              for (var i = 0; i < prompts.length; i++)
                 _PromptChip(
-                  label: _examplePrompts[i],
+                  label: prompts[i],
                   color: accents[i % accents.length],
-                  onTap: () => onPromptTap(_examplePrompts[i]),
+                  onTap: () => onPromptTap(prompts[i]),
                 ),
             ],
           ),

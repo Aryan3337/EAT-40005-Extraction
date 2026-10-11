@@ -8,12 +8,32 @@ import 'api_config.dart';
 
 // Sends natural-language questions to the RAG.py API.
 class ChatService {
-  ChatService({http.Client? client, String? endpoint})
-    : endpoint = endpoint ?? '$apiBaseUrl/query',
-      _client = client ?? http.Client();
+  ChatService({
+    http.Client? client,
+    String? endpoint,
+    AppLocalizations Function()? strings,
+  }) : endpoint = endpoint ?? '$apiBaseUrl/query',
+       _client = client ?? http.Client(),
+       _strings = strings;
 
   final http.Client _client;
   final String endpoint;
+  final AppLocalizations Function()? _strings;
+
+  AppLocalizations? get _currentStrings => _strings?.call();
+
+  String _text(String key, [Map<String, String>? replacements]) {
+    final strings = _currentStrings;
+    if (strings == null) return key;
+
+    var text = strings.text(key);
+    if (replacements != null) {
+      replacements.forEach((placeholder, value) {
+        text = text.replaceAll('{$placeholder}', value);
+      });
+    }
+    return text;
+  }
 
   // Queries RAG.py and maps its answer and evidence into a chat message.
   Future<ChatMessage> ask(String question) async {
@@ -28,21 +48,20 @@ class ChatService {
         final payload = jsonDecode(response.body) as Map<String, dynamic>;
 
         return ChatMessage(
-          text: payload['answer'] as String? ?? strings.text('noAnswer'),
+          text: payload['answer'] as String? ?? _text('noAnswer'),
           author: MessageAuthor.assistant,
           sources: _readSources(payload['triples']),
         );
       }
 
+      final strings = _currentStrings;
       return _errorMessage(
-        strings
-            .text('ragHttpError')
-            .replaceAll('{status}', '${response.statusCode}')
+        _text('ragHttpError', {'status': '${response.statusCode}'})
             .replaceAll('{error}', _readError(response.body, strings)),
       );
     } catch (_) {
       return _errorMessage(
-        strings.text('cannotReachRag').replaceAll('{endpoint}', endpoint),
+        _text('cannotReachRag', {'endpoint': endpoint}),
       );
     }
   }
@@ -73,14 +92,14 @@ class ChatService {
   }
 
   // Pulls the backend's error message out of a failed response.
-  String _readError(String body, AppLocalizations strings) {
+  String _readError(String body, AppLocalizations? strings) {
     try {
       final payload = jsonDecode(body);
       if (payload is Map && payload['error'] != null) {
         return payload['error'].toString();
       }
     } catch (_) {}
-    return strings.text('checkBackend');
+    return strings?.text('checkBackend') ?? 'Check backend';
   }
 
   // Explains why a live graph answer could not be displayed.

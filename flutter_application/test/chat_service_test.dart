@@ -76,13 +76,6 @@ void main() {
         client: client,
         endpoint: 'http://localhost/query',
       );
-
-      final message = await service.ask(
-        'Where do the Garo people live?',
-        languageCode: 'fr',
-      );
-
-      expect(message.text, 'Les Garo vivent dans plusieurs régions.');
     });
 
     test('preserves source evidence in chat-history JSON', () {

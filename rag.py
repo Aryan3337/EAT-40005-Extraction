@@ -884,7 +884,7 @@ def mymemory_translate(text: str, source: str, target: str) -> str:
     if not source_code or not target_code:
         return ""  # MyMemory cannot auto-detect the source language
     try:
-        from deep_translator import MyMemoryTranslator
+        from deep_translator import MyMemoryTranslator  # pyright: ignore[reportMissingImports]
     except ImportError:
         print("MyMemory translation unavailable: pip install deep-translator")
         return ""
@@ -928,7 +928,7 @@ def google_translate(text: str, source: str, target: str) -> str:
     if time.time() < _google_blocked_until:
         return ""
     try:
-        from deep_translator import GoogleTranslator
+        from deep_translator import GoogleTranslator  # pyright: ignore[reportMissingImports]
     except ImportError:
         print("Google translation unavailable: pip install deep-translator")
         return ""
@@ -952,7 +952,18 @@ def google_translate(text: str, source: str, target: str) -> str:
 
 
 class AnswerSynthesizer:
-    def __init__(self, ollama_url: Optional[str] = None, model: Optional[str] = None):
+    SUPPORTED_LANGUAGES: Dict[str, str] = {
+        "en": "English",
+        "hi": "Hindi",
+        "bn": "Bangla",
+    }
+
+    def __init__(
+        self,
+        ollama_url: Optional[str] = None,
+        model: Optional[str] = None,
+        answer_cache: Optional[Dict[str, str]] = None,
+    ):
         self.ollama_url = ollama_url or os.getenv(
             "OLLAMA_URL", "http://localhost:11434/api/generate"
         )
@@ -1005,10 +1016,11 @@ English translation:"""
         return question
 
     # Writes a natural-language answer while keeping every claim tied to evidence.
-    def answer(self, question: str, triples: List[Dict[str, Any]]) -> str:
+    def answer(self, question: str, triples: List[Dict[str, Any]], language: str = DEFAULT_LANGUAGE) -> str:
         if not triples:
             return "I could not find enough connected evidence to answer that question. Try naming a specific person, place, event, or relationship."
 
+        language = normalize_language(language)
         prompt = self._build_prompt(question, triples, language)
         try:
             response = requests.post(
@@ -1038,7 +1050,8 @@ English translation:"""
         return self._fallback_answer(triples)
 
     # Builds a small evidence-only prompt for the local language model.
-    def _build_prompt(self, question: str, triples: List[Dict[str, Any]]) -> str:
+    def _build_prompt(self, question: str, triples: List[Dict[str, Any]], language: str = DEFAULT_LANGUAGE) -> str:
+        language = normalize_language(language)
         evidence = []
         for triple in triples:
             evidence.append({
@@ -1051,8 +1064,8 @@ English translation:"""
 
         return f"""You are a careful knowledge-graph research assistant.
 Answer the user's question using only the evidence below.
-Write the entire answer in {language_name}, regardless of the language used in the question.
-Keep entity names and graph identifiers clear, but explain them in {language_name}.
+Write the entire answer in {ANSWER_LANGUAGES.get(language, ANSWER_LANGUAGES[DEFAULT_LANGUAGE])}, regardless of the language used in the question.
+Keep entity names and graph identifiers clear, but explain them in {ANSWER_LANGUAGES.get(language, ANSWER_LANGUAGES[DEFAULT_LANGUAGE])}.
 The Mandi people are the same community as the Garo people (they call themselves
 A·chik Mande), so treat "Mandi", "Mande", "A·chik" and "Garo" as the same people.
 Do not invent facts, names, dates, or explanations that are not supported.
