@@ -793,6 +793,24 @@ Answer:"""
     # sentence ("X lives in Y, and they speak Z") instead of being written
     # as separate back-to-back "X is... X also..." sentences.
     def _fallback_answer(self, triples: List[Dict[str, Any]]) -> str:
+        # Drop exact-duplicate facts (same subject/predicate/object) before
+        # anything else, so a relationship stored twice in the graph doesn't
+        # read back as a robotic repeated clause ("...live in Mymensingh,
+        # and live in Mymensingh.").
+        deduped: List[Dict[str, Any]] = []
+        seen = set()
+        for triple in triples:
+            key = (
+                str(triple.get("subject", "")).strip().lower(),
+                str(triple.get("predicate", "")).strip().lower(),
+                str(triple.get("object", "")).strip().lower(),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(triple)
+        triples = deduped
+
         groups: List[List[str]] = []
         previous_subject = None
         for triple in triples[:6]:
@@ -828,19 +846,37 @@ Answer:"""
         opener = self._OPENERS[len(sentences) % len(self._OPENERS)]
         return f"{opener}{' '.join(sentences)}"
 
+    # Shared plurality check used by both pronoun selection and verb
+    # conjugation, so the two can never disagree with each other. Accepts
+    # several text forms of the same subject (e.g. the raw graph identifier
+    # AND the already-humanized display text) because stripping a
+    # "...Community" suffix for readability (see _humanize_entity) loses the
+    # plural signal that the raw identifier still carries - checking both
+    # means "AchikCommunity" displayed as "Achik" still conjugates as plural.
+    def _is_plural_subject(self, *texts: Any) -> bool:
+        for value in texts:
+            lowered = str(value or "").strip().lower()
+            if (
+                lowered.endswith("people")
+                or lowered.endswith("community")
+                or lowered.endswith("communities")
+                or lowered == "they"
+                or lowered == "garo"
+            ):
+                return True
+        return False
+
     # Picks "They" for a people/community subject, "It" otherwise, so a
     # repeated subject can be referred back to naturally.
     def _subject_pronoun(self, subject: Any) -> str:
-        text = str(subject or "").strip().lower()
-        if text.endswith("people") or text.endswith("community") or text.endswith("communities"):
-            return "They"
-        return "It"
+        return "They" if self._is_plural_subject(subject) else "It"
 
     # Converts one graph triple into a readable, grounded sentence.
     # subject_override lets a repeated subject be written as a pronoun
     # ("They") instead of the full entity name.
     def _format_triple(self, triple: Dict[str, Any], subject_override: Optional[str] = None) -> str:
-        subject = subject_override or self._humanize_entity(triple.get("subject", "This entity"), is_subject=True)
+        raw_subject = triple.get("subject", "")
+        subject = subject_override or self._humanize_entity(raw_subject or "This entity", is_subject=True)
         raw_predicate = str(triple.get("predicate", ""))
         predicate_key = raw_predicate.upper().replace(" ", "_")
         # is_subject=False: an object such as a language name ("Garo") must
@@ -848,23 +884,26 @@ Answer:"""
         # that expansion only makes sense when Garo IS the thing being
         # talked about, not something it's merely associated with.
         obj = self._humanize_entity(triple.get("object", "another entity"), is_subject=False)
-        subject_lower = subject.lower()
-        # "They" (from a pronoun continuation) is plural just like "...people"
-        # or "...community" - all three take the same verb form.
+        # When this is a pronoun continuation, the pronoun itself already
+        # encodes plurality ("They" vs "It") - trust that rather than
+        # re-deriving it, since the pronoun was chosen from the full raw
+        # subject before any readability trimming happened. Otherwise check
+        # both the raw identifier and the display text (see
+        # _is_plural_subject for why both matter).
         is_plural = (
-            subject_lower.endswith("people")
-            or subject_lower.endswith("community")
-            or subject_lower == "they"
+            subject_override == "They"
+            if subject_override
+            else self._is_plural_subject(raw_subject, subject)
         )
 
         templates = {
-            "IS_A": f"{subject} is {self._article(obj)}",
-            "TYPE": f"{subject} is {self._article(obj)}",
-            "LOCATED_IN": f"{subject} is located in {obj}",
+            "IS_A": f"{subject} are {self._article(obj)}" if is_plural else f"{subject} is {self._article(obj)}",
+            "TYPE": f"{subject} are {self._article(obj)}" if is_plural else f"{subject} is {self._article(obj)}",
+            "LOCATED_IN": f"{subject} are located in {obj}" if is_plural else f"{subject} is located in {obj}",
             "LIVE_IN": f"{subject} live in {obj}" if is_plural else f"{subject} lives in {obj}",
             "SPEAK_LANGUAGE": f"{subject} speak {obj}" if is_plural else f"{subject} speaks {obj}",
             "BELONG_TO": f"{subject} belong to {obj}" if is_plural else f"{subject} belongs to {obj}",
-            "HAS_LANGUAGE": f"{subject} use the {obj} language",
+            "HAS_LANGUAGE": f"{subject} use the {obj} language" if is_plural else f"{subject} uses the {obj} language",
             "HAS_A_POPULATION": f"{subject} have an estimated population of {obj}" if is_plural else f"{subject} has an estimated population of {obj}",
         }
         sentence = templates.get(predicate_key)
@@ -897,8 +936,14 @@ Answer:"""
         return text[:1].upper() + text[1:] if text else "another entity"
 
     def _article(self, noun: str) -> str:
-        readable_noun = noun[:1].lower() + noun[1:]
-        return f"an {readable_noun}" if noun[:1].lower() in "aeiou" else f"a {readable_noun}"
+        # _humanize_entity capitalizes every word that was its own
+        # CamelCase segment (e.g. "TribalLeader" -> "Tribal Leader"), which
+        # reads fine as a label but not as the predicate of a sentence
+        # ("is a tribal Leader"). These are graph-derived category
+        # descriptors, not proper nouns, so lowercase the whole phrase
+        # rather than just its first letter.
+        readable_noun = noun[:1].lower() + noun[1:].lower() if noun else noun
+        return f"an {readable_noun}" if readable_noun[:1].lower() in "aeiou" else f"a {readable_noun}"
 
     # Turns graph labels such as LIVE_IN into readable sentence fragments.
     # Some relation names were upper-cased before being stored in Neo4j,
