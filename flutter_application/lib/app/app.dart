@@ -168,7 +168,7 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
               onClose: () => setState(() => _showingAdmin = false),
             )
           : ChatPage(
-              service: ChatService(),
+              service: ChatService(strings: () => strings),
               onSignOut: _signOut,
               userEmail: _session!.email,
               strings: strings,

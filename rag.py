@@ -24,12 +24,13 @@ import csv
 import re
 import sys
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 from urllib.parse import parse_qs, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import List, Dict, Any, Set, Tuple, Optional, Protocol
+from typing import List, Dict, Any, Set, Tuple, Optional, Protocol, Union
 from collections import defaultdict
 from dotenv import load_dotenv
 import requests
@@ -636,9 +637,7 @@ class Neo4jRAGSkeleton:
                coalesce(r.sentence_ref, '') AS sentence_ref,
                coalesce(r.source_section, '') AS source_section,
                coalesce(r.passage, '') AS passage,
-               coalesce(r.confidence, '') AS confidence,
-               coalesce(r.run_id, '') AS run_id,
-               coalesce(r.ingested_at, '') AS ingested_at
+               coalesce(r.confidence, '') AS confidence
         LIMIT $fetch_limit
         """
 
@@ -845,6 +844,7 @@ def translation_provider() -> str:
 _MYMEMORY_CODES = {"en": "en-GB", "bn": "bn-IN", "hi": "hi-IN"}
 _MYMEMORY_MAX_CHARS = 480
 MYMEMORY_COOLDOWN_SECONDS = 3600
+MYMEMORY_TRANSIENT_COOLDOWN_SECONDS = 30
 _mymemory_blocked_until = 0.0
 
 
@@ -901,10 +901,20 @@ def mymemory_translate(text: str, source: str, target: str) -> str:
                 raise RuntimeError(result)
             translated.append(result)
     except Exception as error:
-        _mymemory_blocked_until = time.time() + MYMEMORY_COOLDOWN_SECONDS
+        message = str(error)
+        quota_error = any(
+            marker in message.lower()
+            for marker in ("quota", "too many requests", "429", "mymemory warning")
+        )
+        cooldown = (
+            MYMEMORY_COOLDOWN_SECONDS
+            if quota_error
+            else MYMEMORY_TRANSIENT_COOLDOWN_SECONDS
+        )
+        _mymemory_blocked_until = time.time() + cooldown
         print(f"MyMemory translation unavailable ({type(error).__name__}: "
-              f"{str(error)[:120]}); not retrying for "
-              f"{MYMEMORY_COOLDOWN_SECONDS // 60} minutes.")
+              f"{message[:120]}); not retrying for "
+              f"{cooldown} seconds.")
         return ""
     return "\n\n".join(part for part in translated if part)
 
@@ -920,6 +930,14 @@ def online_translate(text: str, source: str, target: str) -> str:
     return ""
 
 
+class TranslationUnavailableError(RuntimeError):
+    """Raised when the requested answer language could not be produced."""
+
+    def __init__(self, language: str):
+        self.language = language
+        super().__init__(f"Translation to {language} is currently unavailable.")
+
+
 def google_translate(text: str, source: str, target: str) -> str:
     """Translates with deep-translator; returns "" if it is unavailable."""
     global _google_blocked_until
@@ -933,9 +951,7 @@ def google_translate(text: str, source: str, target: str) -> str:
         print("Google translation unavailable: pip install deep-translator")
         return ""
 
-    # Long answers go paragraph by paragraph to stay under the size limit.
-    chunks = [text] if len(text) <= _GOOGLE_MAX_CHARS else [
-        part for part in text.split("\n\n") if part.strip()]
+    chunks = _split_for_limit(text, _GOOGLE_MAX_CHARS)
     try:
         translator = GoogleTranslator(source=source, target=target)
         translated = [(translator.translate(chunk[:_GOOGLE_MAX_CHARS]) or "").strip()
@@ -976,20 +992,69 @@ class AnswerSynthesizer:
         # mistral:7b has no reasoning-token overhead to vary.
         self.model = model or os.getenv("OLLAMA_MODEL", "mistral:7b")
         self.answer_cache = load_demo_answer_cache() if answer_cache is None else answer_cache
+        self.translation_cache: Dict[Tuple[str, str, str], str] = {}
 
     def translate_question(self, question: str, language: str) -> str:
+        language = normalize_language(language)
         if language not in self.SUPPORTED_LANGUAGES:
             raise ValueError(f"Unsupported language: {language}")
-        if language == "en":
+        if language == "en" or _is_plain_english(question):
             return question
 
-        prompt = f"""Translate this question from {self.SUPPORTED_LANGUAGES[language]} into English.
+        if translation_provider() != "llm":
+            translated = online_translate(question, language, "en")
+            if translated:
+                return translated
+            if translation_provider() == "online":
+                return question
+
+        return self._llm_translate(
+            question,
+            f"Translate this question from {self.SUPPORTED_LANGUAGES[language]} into English.",
+            256,
+            20,
+            "Question translation",
+        ) or question
+
+    def english_question(self, question: str, language: str = DEFAULT_LANGUAGE) -> str:
+        if normalize_language(language) == DEFAULT_LANGUAGE or _is_plain_english(question):
+            return question
+        translated = self.translate_question(question, language)
+        return translated if translated != question else ""
+
+    def question_for_retrieval(
+        self,
+        question: str,
+        language: str = DEFAULT_LANGUAGE,
+        translated: Optional[str] = None,
+    ) -> str:
+        language = normalize_language(language)
+        if language == DEFAULT_LANGUAGE or _is_plain_english(question):
+            return question
+
+        english = (translated or self.english_question(question, language)).strip()
+        glossary = glossary_keywords(question)
+        if english == question and glossary:
+            return f"{question} {glossary}"
+        if glossary and glossary not in english.lower():
+            return f"{english} {glossary}"
+        return english
+
+    def _llm_translate(
+        self,
+        text: str,
+        instruction: str,
+        max_tokens: int,
+        timeout: Union[int, Tuple[int, int]],
+        operation: str,
+    ) -> str:
+        prompt = f"""{instruction}
 Return only the translation. Preserve names of people, places, and communities.
 
-Question:
-{question}
+Text:
+{text}
 
-English translation:"""
+Translation:"""
         try:
             response = requests.post(
                 self.ollama_url,
@@ -997,31 +1062,116 @@ English translation:"""
                     "model": self.model,
                     "prompt": prompt,
                     "stream": False,
-                    "options": {"temperature": 0.0, "num_predict": 256},
+                    "options": {"temperature": 0.0, "num_predict": max_tokens},
                 },
-                timeout=20,
+                headers=ollama_tunnel_headers(),
+                timeout=timeout,
             )
             if response.status_code == 200:
                 translated = response.json().get("response", "").strip()
                 if translated:
-                    return translated
+                    return self._clean_response(translated)
             else:
-                print(
-                    "Question translation unavailable: "
-                    f"Ollama returned HTTP {response.status_code}"
-                )
+                print(f"{operation} unavailable: Ollama returned HTTP {response.status_code}")
         except (requests.RequestException, ValueError, KeyError) as error:
-            print(f"Question translation unavailable: {error}")
+            print(f"{operation} unavailable: {error}")
+        return ""
 
-        return question
+    def translate_answer(self, answer: str, language: str) -> str:
+        language = normalize_language(language)
+        if language == DEFAULT_LANGUAGE:
+            return answer
+        cache_key = (answer, DEFAULT_LANGUAGE, language)
+        if cache_key in self.translation_cache:
+            return self.translation_cache[cache_key]
+
+        translated = ""
+        provider = translation_provider()
+        if provider != "llm":
+            translated = online_translate(answer, DEFAULT_LANGUAGE, language)
+        if not translated and provider != "online":
+            translated = self._llm_translate(
+                answer,
+                f"Translate the following text from English into "
+                f"{self.SUPPORTED_LANGUAGES[language]}.",
+                TRANSLATED_ANSWER_MAX_TOKENS,
+                (
+                    ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS,
+                    TRANSLATION_TIMEOUT_SECONDS,
+                ),
+                "Answer translation",
+            )
+        if translated:
+            self.translation_cache[cache_key] = translated
+        return translated
+
+    def answer_translations(
+        self,
+        question: str,
+        triples: List[Dict[str, Any]],
+        english_question: Optional[str] = None,
+        selected_language: str = DEFAULT_LANGUAGE,
+    ) -> Dict[str, str]:
+        selected_language = normalize_language(selected_language)
+        english_question = english_question or self.english_question(question, "en")
+        english_answer = self.answer(english_question, triples, "en")
+        translations = {"en": english_answer}
+
+        def translate(language: str) -> Tuple[str, str]:
+            result = self.translate_answer(english_answer, language)
+            return language, result or (
+                f"{_ENGLISH_ONLY_NOTES[language]} {english_answer}"
+            )
+
+        languages = ("hi", "bn")
+        selected_translation = None
+        if selected_language in languages:
+            target, selected_translation = translate(selected_language)
+            if not selected_translation or selected_translation.startswith(
+                _ENGLISH_ONLY_NOTES[selected_language]
+            ):
+                raise TranslationUnavailableError(selected_language)
+            translations[target] = selected_translation
+            languages = tuple(language for language in languages if language != target)
+
+        if translation_provider() in {"online", "auto"}:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                for language, result in executor.map(translate, languages):
+                    translations[language] = result
+        else:
+            for language in languages:
+                target, result = translate(language)
+                translations[target] = result
+        return translations
 
     # Writes a natural-language answer while keeping every claim tied to evidence.
-    def answer(self, question: str, triples: List[Dict[str, Any]], language: str = DEFAULT_LANGUAGE) -> str:
-        if not triples:
-            return "I could not find enough connected evidence to answer that question. Try naming a specific person, place, event, or relationship."
-
+    def answer(
+        self,
+        question: str,
+        triples: List[Dict[str, Any]],
+        language: str = DEFAULT_LANGUAGE,
+        english_question: Optional[str] = None,
+    ) -> str:
         language = normalize_language(language)
-        prompt = self._build_prompt(question, triples, language)
+        english_question = english_question or (
+            question if language == DEFAULT_LANGUAGE
+            else self.english_question(question, language)
+        )
+        if language != DEFAULT_LANGUAGE:
+            if not triples:
+                return _NO_EVIDENCE_MESSAGES[language]
+            english_answer = self.answer(english_question, triples, DEFAULT_LANGUAGE)
+            translated = self.translate_answer(english_answer, language)
+            return translated or f"{_ENGLISH_ONLY_NOTES[language]} {english_answer}"
+
+        if not triples:
+            return self._no_evidence_message(DEFAULT_LANGUAGE)
+
+        cached = self.answer_cache.get(normalize_cache_key(english_question))
+        if cached:
+            return cached
+
+        prompt = self._build_prompt(english_question, triples, DEFAULT_LANGUAGE)
         try:
             response = requests.post(
                 self.ollama_url,
@@ -1029,16 +1179,13 @@ English translation:"""
                     "model": self.model,
                     "prompt": prompt,
                     "stream": False,
-                    "options": {
-                        "temperature": 0.2,
-                        "num_predict": 400 if language == DEFAULT_LANGUAGE
-                        else TRANSLATED_ANSWER_MAX_TOKENS,
-                    },
+                    "options": {"temperature": 0.2, "num_predict": 400},
                 },
                 headers=ollama_tunnel_headers(),
-                timeout=(ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS,
-                         ANSWER_SYNTHESIS_TIMEOUT_SECONDS if language == DEFAULT_LANGUAGE
-                         else TRANSLATION_TIMEOUT_SECONDS),
+                timeout=(
+                    ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS,
+                    ANSWER_SYNTHESIS_TIMEOUT_SECONDS,
+                ),
             )
             if response.status_code == 200:
                 text = response.json().get("response", "").strip()
@@ -1047,7 +1194,7 @@ English translation:"""
         except (requests.RequestException, ValueError, KeyError) as error:
             print(f"Answer synthesis unavailable: {error}")
 
-        return self._fallback_answer(triples)
+        return self._fallback_answer(triples, DEFAULT_LANGUAGE)
 
     # Builds a small evidence-only prompt for the local language model.
     def _build_prompt(self, question: str, triples: List[Dict[str, Any]], language: str = DEFAULT_LANGUAGE) -> str:
@@ -1100,7 +1247,7 @@ Answer:"""
     # Removes model-style prefixes that do not belong in the chat response.
     def _clean_response(self, text: str) -> str:
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
-        text = re.sub(r"^\s*(answer|response)\s*:\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"^\s*(answer|response|translation)\s*:\s*", "", text, flags=re.IGNORECASE)
         return text.strip()
 
     # Produces a readable answer when Ollama is offline or unavailable.
@@ -1375,18 +1522,68 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                     self._send_json(400, {"error": "query is required"})
                     return
 
-                triples = skeleton.query(question)
+                language = normalize_language(payload.get("language"))
+                english_question = (
+                    synthesizer.english_question(question, language) or question
+                )
+                retrieval_question = synthesizer.question_for_retrieval(
+                    question, language, translated=english_question
+                )
+                triples = skeleton.query(retrieval_question)
                 sources = sorted({
                     t.get("source_section", "Unknown")
                     for t in triples
                     if t.get("source_section")
                 })
+                translate_all = getattr(synthesizer, "answer_translations", None)
+                if callable(translate_all):
+                    raw_translations = translate_all(
+                        question,
+                        triples,
+                        english_question=english_question,
+                        selected_language=language,
+                    )
+                    if not isinstance(raw_translations, dict):
+                        raise TranslationUnavailableError(language)
+                    translations = {
+                        key: value
+                        for key, value in raw_translations.items()
+                        if isinstance(key, str) and isinstance(value, str)
+                    }
+                    answer = translations.get(language)
+                    if not answer:
+                        raise TranslationUnavailableError(language)
+                else:
+                    answer = synthesizer.answer(
+                        question,
+                        triples,
+                        language,
+                        english_question=english_question,
+                    )
+                    translations = {language: answer}
                 self._send_json(200, {
-                    "answer": synthesizer.answer(question, triples),
+                    "answer": answer,
+                    "language": language,
+                    "translations": translations,
                     "evidence": skeleton.format_output(triples),
                     "sources": sources,
                     "triples": triples,
                 })
+            except TranslationUnavailableError as error:
+                self._send_json(
+                    503,
+                    {
+                        "error": (
+                            f"Could not translate the answer into "
+                            f"{AnswerSynthesizer.SUPPORTED_LANGUAGES[error.language]}. "
+                            "Check the rag.py server log for the provider error. "
+                            "If MyMemory reports a daily quota limit, configure "
+                            "MYMEMORY_EMAIL on the API server or retry after its "
+                            "quota resets."
+                        ),
+                        "language": error.language,
+                    },
+                )
             except (TypeError, ValueError, json.JSONDecodeError) as error:
                 self._send_json(400, {"error": f"Invalid request: {error}"})
             except Exception as error:  # e.g. Neo4j connection or Cypher errors

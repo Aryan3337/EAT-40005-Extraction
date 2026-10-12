@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+import 'package:flutter_application/app/app_localizations.dart';
 import 'package:flutter_application/models/chat_message.dart';
 import 'package:flutter_application/services/chat_service.dart';
 
@@ -76,7 +77,76 @@ void main() {
         client: client,
         endpoint: 'http://localhost/query',
       );
+      final message = await service.ask(
+        'Where do the Garo people live?',
+        language: 'fr',
+      );
+      expect(message.text, 'Les Garo vivent dans plusieurs régions.');
     });
+
+    test('localizes RAG API errors using the active app language', () async {
+      final client = MockClient((request) async {
+        return http.Response(
+          jsonEncode({
+            'error': 'Could not translate the answer into Bangla. Check the translation service connection and retry.',
+            'language': 'bn',
+          }),
+          503,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+
+      final service = ChatService(
+        client: client,
+        endpoint: 'http://localhost/query',
+        strings: () => const AppLocalizations('bn'),
+      );
+      final message = await service.ask(
+        'Where do the Garo people live?',
+        language: 'bn',
+      );
+
+      expect(message.text, startsWith('RAG অনুরোধ ব্যর্থ হয়েছে (HTTP 503):'));
+      expect(
+        message.text,
+        contains('Could not translate the answer into Bangla'),
+      );
+      expect(message.text, isNot('ragHttpError'));
+    });
+
+    test(
+      'keeps all translated answers for instant language switching',
+      () async {
+        final client = MockClient((request) async {
+          return http.Response(
+            jsonEncode({
+              'answer': 'गारो लोग बांग्लादेश में रहते हैं।',
+              'translations': {
+                'en': 'The Garo people live in Bangladesh.',
+                'hi': 'गारो लोग बांग्लादेश में रहते हैं।',
+                'bn': 'গারো জনগণ বাংলাদেশে বাস করে।',
+              },
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        });
+
+        final service = ChatService(
+          client: client,
+          endpoint: 'http://localhost/query',
+        );
+        final message = await service.ask(
+          'गारो लोग कहाँ रहते हैं?',
+          language: 'hi',
+        );
+        final restored = ChatMessage.fromJson(message.toJson());
+
+        expect(restored.textFor('en'), 'The Garo people live in Bangladesh.');
+        expect(restored.textFor('hi'), 'गारो लोग बांग्लादेश में रहते हैं।');
+        expect(restored.textFor('bn'), 'গারো জনগণ বাংলাদেশে বাস করে।');
+      },
+    );
 
     test('preserves source evidence in chat-history JSON', () {
       const original = ChatMessage(

@@ -194,6 +194,60 @@ def test_query_endpoint_passes_the_language_through():
     assert skeleton.queries[-1] == "translated"
 
 
+@pytest.mark.parametrize(
+    ("language", "expected"),
+    [
+        ("hi", "गारो लोग मेघालय में रहते हैं।"),
+        ("bn", "গারো মানুষ মেঘালয়ে বাস করে।"),
+    ],
+)
+def test_query_endpoint_returns_the_answer_in_the_requested_language(
+    monkeypatch, language, expected
+):
+    monkeypatch.setenv("TRANSLATION_PROVIDER", "online")
+    source = "The Garo people live in Meghalaya."
+    translated = {
+        "hi": "गारो लोग मेघालय में रहते हैं।",
+        "bn": "গারো মানুষ মেঘালয়ে বাস করে।",
+    }
+    calls = []
+
+    def fake_translate(text, source_language, target_language):
+        calls.append((source_language, target_language))
+        return translated.get(target_language, "")
+
+    monkeypatch.setattr(rag, "online_translate", fake_translate)
+    synthesizer = _synth(cache={"Where do the Garo people live?": source})
+    response = _post(
+        create_query_handler(_FakeSkeleton(), synthesizer),
+        {"query": "Where do the Garo people live?", "language": language},
+    )
+
+    assert response["status"] == 200
+    assert response["payload"]["language"] == language
+    assert response["payload"]["answer"] == expected
+    assert response["payload"]["translations"][language] == expected
+    assert calls[0] == ("en", language)
+
+
+def test_query_endpoint_does_not_return_english_as_a_failed_translation(
+    monkeypatch,
+):
+    monkeypatch.setenv("TRANSLATION_PROVIDER", "online")
+    monkeypatch.setattr(rag, "online_translate", lambda *args: "")
+    synthesizer = _synth(cache={"Where do the Garo people live?": "English answer"})
+
+    response = _post(
+        create_query_handler(_FakeSkeleton(), synthesizer),
+        {"query": "Where do the Garo people live?", "language": "bn"},
+    )
+
+    assert response["status"] == 503
+    assert response["payload"]["language"] == "bn"
+    assert "Could not translate the answer into Bangla" in response["payload"]["error"]
+    assert "MYMEMORY_EMAIL" in response["payload"]["error"]
+
+
 def test_query_endpoint_defaults_to_english_without_a_language():
     skeleton, synth = _FakeSkeleton(), _FakeSynth()
     sent = _post(create_query_handler(skeleton, synth), {"query": "Where do the Garo live?"})
@@ -405,6 +459,35 @@ def test_online_mode_never_calls_the_local_model(monkeypatch):
     assert answer.endswith("Cached")
 
 
+def test_answer_translations_prepare_switchable_language_variants(monkeypatch):
+    monkeypatch.setenv("TRANSLATION_PROVIDER", "llm")
+    synth = _synth()
+    monkeypatch.setattr(
+        synth,
+        "answer",
+        lambda question, triples, language="en", english_question=None: (
+            "The Garo people live in Bangladesh."
+        ),
+    )
+    monkeypatch.setattr(
+        synth,
+        "translate_answer",
+        lambda answer, language: f"{language}: translated answer",
+    )
+
+    translations = synth.answer_translations(
+        "Where do the Garo people live?",
+        [_triple()],
+        english_question="Where do the Garo people live?",
+    )
+
+    assert translations == {
+        "en": "The Garo people live in Bangladesh.",
+        "hi": "hi: translated answer",
+        "bn": "bn: translated answer",
+    }
+
+
 def test_mymemory_uses_its_language_codes_and_splits_long_text(monkeypatch):
     import deep_translator
     _FakeMyMemory.calls = []
@@ -434,6 +517,33 @@ def test_mymemory_quota_warning_counts_as_failure(monkeypatch):
     assert _real_mymemory_translate("hello", "en", "bn") == ""
     assert _real_mymemory_translate("again", "en", "bn") == ""  # cooling down
     assert len(_FakeMyMemory.calls) == 1
+
+
+def test_mymemory_retries_after_a_short_transient_failure(monkeypatch):
+    import deep_translator
+
+    now = [100.0]
+    calls = []
+
+    class TemporarilyUnavailable:
+        def __init__(self, **kwargs):
+            pass
+
+        def translate(self, text):
+            calls.append(text)
+            raise requests.ConnectionError("temporary network failure")
+
+    monkeypatch.setattr(deep_translator, "MyMemoryTranslator", TemporarilyUnavailable)
+    monkeypatch.setattr(rag.time, "time", lambda: now[0])
+    monkeypatch.setattr(rag, "_mymemory_blocked_until", 0.0)
+
+    assert _real_mymemory_translate("hello", "en", "bn") == ""
+    first_retry = rag._mymemory_blocked_until
+    assert first_retry == now[0] + rag.MYMEMORY_TRANSIENT_COOLDOWN_SECONDS
+
+    now[0] = first_retry + 1
+    assert _real_mymemory_translate("hello again", "en", "bn") == ""
+    assert calls == ["hello", "hello again"]
 
 
 def test_split_keeps_every_word():

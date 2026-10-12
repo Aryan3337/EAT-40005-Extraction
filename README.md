@@ -262,19 +262,22 @@ Pick the language from the menu at the top of the app (English, हिन्द�
 **Setup:** just install the Python requirements (this includes `deep-translator`). No Ollama or model download is needed for Bangla or Hindi:
 
 ```powershell
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
+
+Use the same `python` command for installing requirements and starting `rag.py`; a separate `pip` executable may install packages into a different Python environment.
 
 How it works:
 
 - Interface text (buttons, labels) is hand-written in `flutter_application/lib/app/app_localizations.dart`.
-- For answers, a Bangla/Hindi question is translated to English, answered exactly like an English question (demo cache, then Ollama if you have it, otherwise the template answer), and the finished answer is translated back.
-- Translation tries two free online services through `deep-translator`, with no API key: **Google Translate first, then MyMemory** if Google refuses (Google's free endpoint sometimes returns "429 Too Many Requests", especially on university networks). A refused service is skipped for a while instead of being retried on every question. Only if both fail does it try a local Ollama model, and only if one happens to be running.
-- MyMemory allows about 5,000 characters a day per network without an account. Set `$env:MYMEMORY_EMAIL = "you@example.com"` (any real address) before starting `rag.py` to raise that to about 50,000.
-- English requests are never translated and behave exactly as before.
-- If translation fails completely, nothing breaks: the English answer is shown with a short Bangla/Hindi note, and a small built-in word list (e.g. গারো → garo, ভাষা → language) still lets retrieval find evidence.
+- Flutter sends the selected language with each `/query` request. `rag.py` retrieves English graph evidence, synthesizes an evidence-based English answer, and translates that answer into the selected language before returning it as the API's `answer`. It also returns the other language variants; they are kept with the chat message and in chat history so switching the picker does not repeat Neo4j retrieval.
+- Translation uses the existing `deep-translator` library: **Google Translate first, then MyMemory** if Google refuses. These free online endpoints need no API key, but have no latency or availability guarantee. Google may rate-limit requests, and MyMemory has daily character limits. The requested Hindi/Bangla translation is attempted first; the other language variant is best-effort.
+- If both online services fail, the default `auto` mode tries a local Ollama model. If that also fails, `/query` returns HTTP 503 instead of returning English as though it were translated. Set `$env:TRANSLATION_PROVIDER = "llm"` to use only a local Ollama model (`ollama pull mistral:7b`), or `"online"` to use only the online services.
+- MyMemory allows about 5,000 characters a day per network without an account. Set `$env:MYMEMORY_EMAIL = "you@example.com"` (any real address) before starting `rag.py` to raise that to about 50,000. MyMemory quota/rate-limit errors are paused for an hour; transient errors are retried after 30 seconds. If a translation request returns HTTP 503, check the `rag.py` console for the provider error.
+- English questions are never translated before retrieval, and their graph query behavior stays unchanged.
+- A small built-in word list (e.g. গারো → garo, ভাষা → language) helps retrieve evidence when translation of the question fails. If the selected answer language cannot be produced, the API reports the translation failure rather than silently returning English.
 - **Privacy note:** the question and the answer text are sent to Google/MyMemory. Our supervisor was told that project content stays on our own infrastructure, so check with her before using this for real community data. `$env:TRANSLATION_PROVIDER = "llm"` keeps everything on a local Ollama model (`ollama pull mistral:7b`) instead; `"online"` uses only the online services.
-- Voice input and read-aloud use the browser/device voices. They only work in Bangla if the device has a Bangla voice installed (Chrome works best). In Chrome, voice input is processed by Google's speech service.
+- Read-aloud uses the device's highest-quality installed voice for the selected language where the platform exposes voice selection. In browsers, if `flutter_tts` does not expose a matching voice, the app asks the browser speech engine to synthesize the utterance with the selected locale. Changing the app language during playback stops the current utterance and resumes the same answer in the new language. Speech still depends on the device/browser speech engine and its installed language support; no hosted TTS API is used.
 
 To add another language: add its strings and code in `app_localizations.dart`, and its code and name to `ANSWER_LANGUAGES` in `rag.py`.
 

@@ -57,6 +57,7 @@ class ChatMessage {
     required this.text,
     required this.author,
     this.sources = const [],
+    this.translations = const {},
     this.feedback,
     this.feedbackComment = '',
   });
@@ -64,14 +65,22 @@ class ChatMessage {
   final String text;
   final MessageAuthor author;
   final List<SourceEvidence> sources;
+  final Map<String, String> translations;
   final MessageFeedback? feedback;
   final String feedbackComment;
 
-  ChatMessage copyWith({MessageFeedback? feedback, String? feedbackComment}) {
+  String textFor(String languageCode) => translations[languageCode] ?? text;
+
+  ChatMessage copyWith({
+    MessageFeedback? feedback,
+    String? feedbackComment,
+    Map<String, String>? translations,
+  }) {
     return ChatMessage(
       text: text,
       author: author,
       sources: sources,
+      translations: translations ?? this.translations,
       feedback: feedback ?? this.feedback,
       feedbackComment: feedbackComment ?? this.feedbackComment,
     );
@@ -81,6 +90,7 @@ class ChatMessage {
     'text': text,
     'author': author.name,
     'sources': sources.map((source) => source.toJson()).toList(),
+    'translations': translations,
     'feedback': feedback?.name,
     'feedback_comment': feedbackComment,
   };
@@ -110,10 +120,21 @@ class ChatMessage {
       feedback = MessageFeedback.notHelpful;
     }
 
+    final translations = <String, String>{};
+    final rawTranslations = json['translations'];
+    if (rawTranslations is Map) {
+      for (final entry in rawTranslations.entries) {
+        if (entry.key is String && entry.value is String) {
+          translations[entry.key as String] = entry.value as String;
+        }
+      }
+    }
+
     return ChatMessage(
       text: json['text'] as String? ?? '',
       author: author,
       sources: sources,
+      translations: translations,
       feedback: feedback,
       feedbackComment: json['feedback_comment'] as String? ?? '',
     );

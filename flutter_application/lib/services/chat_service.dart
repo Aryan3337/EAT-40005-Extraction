@@ -11,16 +11,15 @@ class ChatService {
   ChatService({
     http.Client? client,
     String? endpoint,
-    AppLocalizations Function()? strings,
+    this.strings,
   }) : endpoint = endpoint ?? '$apiBaseUrl/query',
-       _client = client ?? http.Client(),
-       _strings = strings;
+       _client = client ?? http.Client();
 
   final http.Client _client;
   final String endpoint;
-  final AppLocalizations Function()? _strings;
+  final AppLocalizations Function()? strings;
 
-  AppLocalizations? get _currentStrings => _strings?.call();
+  AppLocalizations? get _currentStrings => strings?.call();
 
   String _text(String key, [Map<String, String>? replacements]) {
     final strings = _currentStrings;
@@ -36,21 +35,33 @@ class ChatService {
   }
 
   // Queries RAG.py and maps its answer and evidence into a chat message.
-  Future<ChatMessage> ask(String question) async {
+  Future<ChatMessage> ask(String question, {String language = 'en'}) async {
     try {
       final response = await _client.post(
         Uri.parse(endpoint),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'query': question}),
+        body: jsonEncode({'query': question, 'language': language}),
       );
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
         final payload = jsonDecode(response.body) as Map<String, dynamic>;
+        final translations = <String, String>{};
+        final rawTranslations = payload['translations'];
+        if (rawTranslations is Map) {
+          for (final entry in rawTranslations.entries) {
+            if (entry.key is String && entry.value is String) {
+              translations[entry.key as String] = entry.value as String;
+            }
+          }
+        }
+        final answer = payload['answer'] as String? ?? _text('noAnswer');
+        translations.putIfAbsent(language, () => answer);
 
         return ChatMessage(
-          text: payload['answer'] as String? ?? _text('noAnswer'),
+          text: answer,
           author: MessageAuthor.assistant,
           sources: _readSources(payload['triples']),
+          translations: translations,
         );
       }
 

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../app/app_localizations.dart';
@@ -53,18 +55,31 @@ class _ChatPageState extends State<ChatPage> {
   int? _speakingIndex;
   bool _speechAvailable = false;
   bool _isListening = false;
+  int _languageChangeGeneration = 0;
 
   // Loads saved chats and wires up TTS/voice-input callbacks.
   @override
   void initState() {
     super.initState();
     _historyService = widget.historyService ?? ChatHistoryService();
-    _applyTtsLanguage();
     _loadHistory();
-    _tts.onDone(() {
-      if (!mounted) return;
-      setState(() => _speakingIndex = null);
-    });
+    _tts.onDone(
+      () {
+        if (!mounted) return;
+        setState(() => _speakingIndex = null);
+      },
+      onError: (error) {
+        if (!mounted) return;
+        setState(() => _speakingIndex = null);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              widget.strings.text('speechError').replaceAll('{error}', error),
+            ),
+          ),
+        );
+      },
+    );
     _speech
         .init(
           onListeningChanged: (listening) {
@@ -78,22 +93,33 @@ class _ChatPageState extends State<ChatPage> {
         });
   }
 
-  void _applyTtsLanguage() {
-    try {
-      final locale = widget.strings.languageCode == 'hi' ? 'hi-IN' : 'en-US';
-      (_tts as dynamic).setLanguage(locale);
-    } catch (_) {
-      // `TtsService` currently infers the language from spoken text and exposes
-      // no public setter, so we gracefully ignore the legacy call here.
-    }
-  }
-
   @override
   void didUpdateWidget(covariant ChatPage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.strings.languageCode != widget.strings.languageCode) {
-      _applyTtsLanguage();
+      final generation = ++_languageChangeGeneration;
+      final speakingIndex = _speakingIndex;
+      if (speakingIndex != null) {
+        unawaited(_restartSpeechForLanguage(speakingIndex, generation));
+      }
     }
+  }
+
+  Future<void> _restartSpeechForLanguage(int index, int generation) async {
+    await _stopSpeaking();
+    if (!mounted ||
+        generation != _languageChangeGeneration ||
+        index >= _messages.length) {
+      return;
+    }
+    final message = _messages[index];
+    if (message.author != MessageAuthor.assistant) return;
+    final languageCode = widget.strings.languageCode;
+    await _speak(
+      index,
+      message.textFor(languageCode),
+      languageCode: languageCode,
+    );
   }
 
   Future<void> _loadHistory() async {
@@ -127,7 +153,10 @@ class _ChatPageState extends State<ChatPage> {
       _isLoading = true;
     });
 
-    final answer = await widget.service.ask(question);
+    final answer = await widget.service.ask(
+      question,
+      language: widget.strings.languageCode,
+    );
     if (!mounted) return;
     setState(() {
       _messages.add(answer);
@@ -137,7 +166,11 @@ class _ChatPageState extends State<ChatPage> {
     _scrollToBottom();
 
     if (_autoSpeak) {
-      _speak(_messages.length - 1, answer.text);
+      _speak(
+        _messages.length - 1,
+        answer.textFor(widget.strings.languageCode),
+        languageCode: widget.strings.languageCode,
+      );
     }
   }
 
@@ -200,9 +233,45 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   // Speaks the message at [index] aloud, replacing any speech in progress.
-  Future<void> _speak(int index, String text) async {
+  Future<void> _speak(
+    int index,
+    String text, {
+    required String languageCode,
+  }) async {
     setState(() => _speakingIndex = index);
-    await _tts.speak(text);
+    try {
+      final voiceAvailable = await _tts.speak(
+        text,
+        languageCode: languageCode,
+      );
+      if (!mounted) return;
+      if (!voiceAvailable) {
+        final language =
+            AppLocalizations.languageNames[languageCode] ?? languageCode;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              widget.strings.text(
+                'speechVoiceUnavailable',
+              ).replaceAll('{language}', language),
+            ),
+          ),
+        );
+        setState(() => _speakingIndex = null);
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            widget.strings.text(
+              'speechError',
+            ).replaceAll('{error}', error.toString()),
+          ),
+        ),
+      );
+      setState(() => _speakingIndex = null);
+    }
   }
 
   // Stops whatever the assistant is currently reading aloud.
@@ -217,7 +286,7 @@ class _ChatPageState extends State<ChatPage> {
     if (_speakingIndex == index) {
       _stopSpeaking();
     } else {
-      _speak(index, text);
+      _speak(index, text, languageCode: widget.strings.languageCode);
     }
   }
 
@@ -237,19 +306,20 @@ class _ChatPageState extends State<ChatPage> {
       return;
     }
 
-    final localeId = widget.strings.languageCode == 'hi' ? 'hi-IN' : 'en-US';
+    final localeId = switch (widget.strings.languageCode) {
+      'hi' => 'hi-IN',
+      'bn' => 'bn-BD',
+      _ => 'en-US',
+    };
     setState(() => _isListening = true);
-    await _speech.listen(
-      (text) {
-        setState(() {
-          _inputController.text = text;
-          _inputController.selection = TextSelection.collapsed(
-            offset: text.length,
-          );
-        });
-      },
-      localeId: localeId,
-    );
+    await _speech.listen((text) {
+      setState(() {
+        _inputController.text = text;
+        _inputController.selection = TextSelection.collapsed(
+          offset: text.length,
+        );
+      });
+    }, localeId: localeId);
   }
 
   // Clears the current conversation and starts a fresh session.
@@ -641,6 +711,9 @@ class _ConversationView extends StatelessWidget {
           );
         }
         final message = messages[index];
+        final displayText = message.author == MessageAuthor.assistant
+            ? message.textFor(strings.languageCode)
+            : message.text;
         return _MessageBubble(
           message: message,
           messageIndex: index,
@@ -648,7 +721,7 @@ class _ConversationView extends StatelessWidget {
           onFeedback: onFeedback,
           isSpeaking: speakingIndex == index,
           onToggleSpeak: message.author == MessageAuthor.assistant
-              ? () => onToggleSpeak(index, message.text)
+              ? () => onToggleSpeak(index, displayText)
               : null,
         );
       },
@@ -812,12 +885,18 @@ class _MessageBubble extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
-                child: Text(
-                  message.text,
-                  style: TextStyle(
-                    color: isUser ? Colors.white : const Color(0xFF26343D),
-                    height: 1.45,
-                    fontSize: 15,
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 180),
+                  child: Text(
+                    message.author == MessageAuthor.assistant
+                        ? message.textFor(strings.languageCode)
+                        : message.text,
+                    key: ValueKey(strings.languageCode),
+                    style: TextStyle(
+                      color: isUser ? Colors.white : const Color(0xFF26343D),
+                      height: 1.45,
+                      fontSize: 15,
+                    ),
                   ),
                 ),
               ),
