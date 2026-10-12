@@ -39,6 +39,7 @@ Exit codes:
 import sys
 import csv
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -47,14 +48,42 @@ from enum import Enum
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import requests
+
+from llm_endpoint import ollama_tunnel_headers, resolve_llm_endpoint
 import pdfplumber
 
 # ============================================================
 # Configuration
 # ============================================================
 
-OLLAMA_URL      = "http://localhost:11434/api/chat"
+# Env-driven so this can reach the ollama service inside Docker, where
+# "localhost" is the app container itself -- it was hardcoded, so it could
+# only ever work on the host. Its own variable rather than OLLAMA_URL
+# because this endpoint is /api/chat, not /api/generate.
+# resolve_llm_endpoint refuses a host outside our own network: papers and
+# human-generated data go to a local model only.
+OLLAMA_URL      = resolve_llm_endpoint(
+    os.getenv("CONFIDENCE_OLLAMA_URL", "http://localhost:11434/api/chat")
+)
 OLLAMA_MODEL    = "mistral:7b"
+
+# How many tokens the model may use for its reply. It has to emit a COMPLETE
+# JSON object scoring four criteria, each with a justification sentence.
+#
+# This was 256, which was not enough, and the failure was silent. Measured on
+# garo_1.pdf chunk 1 with mistral:7b: 256 produced 876 characters that stopped
+# mid-object with no closing brackets, so parse_model_response returned None,
+# the chunk was skipped ("parse error (skipped)"), and with every chunk of
+# every paper skipped all four model-scored criteria fell to 0 -- leaving only
+# the two code-based criteria and a total around 5/100, reported as REJECTED.
+#
+# That is what the 5,5,5 scores in confidence_logs/rejected/ actually are. They
+# were read as an unreachable Ollama; the model was answering fine and being
+# cut off. It fired on every paper, not intermittently.
+#
+# 1024 was measured on the same chunk: 1561 characters, parses, all 4 criteria
+# returned. Costs roughly 30s more per chunk (50s -> 82s).
+MODEL_RESPONSE_TOKEN_BUDGET = 1024
 
 REJECT_THRESHOLD = 60   # score <  60        → REJECTED
 REVIEW_THRESHOLD = 75   # score 60–75        → MANUAL REVIEW
@@ -274,9 +303,10 @@ def call_ollama(system_prompt: str, user_prompt: str, retries: int = 2) -> Optio
                     "stream": False,
                     "options": {
                         "temperature": 0.1,   # low temp for consistent scoring
-                        "num_predict": 2048,
+                        "num_predict": MODEL_RESPONSE_TOKEN_BUDGET,
                     }
                 },
+                headers=ollama_tunnel_headers(),
                 timeout=300   # longer timeout — full paper evaluation takes time
             )
             if response.status_code == 200:
