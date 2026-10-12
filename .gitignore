@@ -15,3 +15,7 @@ Prompt_Iteration_Log_backup_*.xlsx
 # Local git worktrees
 .worktrees/
 uploads/
+
+# Local speech model weights and pronunciation samples
+models/tts/
+tts-sample*.wav

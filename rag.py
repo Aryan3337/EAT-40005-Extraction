@@ -39,6 +39,7 @@ from admin_ingest import (check_admin_secret, current_queue, ingest_pdf,
                           read_paper_bytes, record_manual_decision,
                           validate_upload)
 from llm_endpoint import ollama_tunnel_headers, resolve_llm_endpoint
+import local_tts
 
 try:
     from neo4j import GraphDatabase  # type: ignore[import-not-found]
@@ -1484,8 +1485,17 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
             self._send_cors_headers()
             self.end_headers()
 
+        def do_HEAD(self) -> None:
+            if self.path.startswith("/tts/audio/"):
+                local_tts.handle_audio(self, head=True)
+                return
+            self._send_json(404, {"error": "Not found"})
+
         # Handles browser health checks and API requests.
         def do_GET(self) -> None:
+            if self.path.startswith("/tts/audio/"):
+                local_tts.handle_audio(self)
+                return
             if self.path == "/health":
                 self._send_json(200, {"status": "ok"})
                 return
@@ -1501,6 +1511,9 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
 
         # Handles questions sent by the Flutter client.
         def do_POST(self) -> None:
+            if self.path == "/tts":
+                local_tts.handle_post(self)
+                return
             if self.path == "/admin/upload":
                 self._handle_admin_upload()
                 return

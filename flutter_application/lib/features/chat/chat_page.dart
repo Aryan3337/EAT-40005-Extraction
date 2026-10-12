@@ -240,10 +240,7 @@ class _ChatPageState extends State<ChatPage> {
   }) async {
     setState(() => _speakingIndex = index);
     try {
-      final voiceAvailable = await _tts.speak(
-        text,
-        languageCode: languageCode,
-      );
+      final voiceAvailable = await _tts.speak(text, languageCode: languageCode);
       if (!mounted) return;
       if (!voiceAvailable) {
         final language =
@@ -251,9 +248,9 @@ class _ChatPageState extends State<ChatPage> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              widget.strings.text(
-                'speechVoiceUnavailable',
-              ).replaceAll('{language}', language),
+              widget.strings
+                  .text('speechVoiceUnavailable')
+                  .replaceAll('{language}', language),
             ),
           ),
         );
@@ -264,9 +261,9 @@ class _ChatPageState extends State<ChatPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            widget.strings.text(
-              'speechError',
-            ).replaceAll('{error}', error.toString()),
+            widget.strings
+                .text('speechError')
+                .replaceAll('{error}', error.toString()),
           ),
         ),
       );
@@ -932,27 +929,30 @@ class _MessageBubble extends StatelessWidget {
             Theme(
               data: Theme.of(context)
                   .copyWith(dividerColor: Colors.transparent),
-              child: ExpansionTile(
-                tilePadding: EdgeInsets.zero,
-                childrenPadding: EdgeInsets.zero,
-                leading: const Icon(
-                  Icons.verified_outlined,
-                  color: Color(0xFF2E7D5B),
-                ),
-                title: Text(
-                  strings
-                      .text('verifiedSources')
-                      .replaceAll('{count}', '${message.sources.length}'),
-                  style: const TextStyle(
+              child: Material(
+                type: MaterialType.transparency,
+                child: ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: EdgeInsets.zero,
+                  leading: const Icon(
+                    Icons.verified_outlined,
                     color: Color(0xFF2E7D5B),
-                    fontWeight: FontWeight.w600,
-                    fontSize: 14,
                   ),
+                  title: Text(
+                    strings
+                        .text('verifiedSources')
+                        .replaceAll('{count}', '${message.sources.length}'),
+                    style: const TextStyle(
+                      color: Color(0xFF2E7D5B),
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                    ),
+                  ),
+                  children: [
+                    for (var index = 0; index < message.sources.length; index++)
+                      _buildSourceCard(message.sources[index], index + 1),
+                  ],
                 ),
-                children: [
-                  for (var index = 0; index < message.sources.length; index++)
-                    _buildSourceCard(message.sources[index], index + 1),
-                ],
               ),
             ),
           ],

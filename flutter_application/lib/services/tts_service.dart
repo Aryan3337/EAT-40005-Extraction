@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 
 import 'web_speech_fallback.dart';
+import 'backend_audio_service.dart';
 import 'web_speech_fallback_stub.dart'
     if (dart.library.js_interop) 'web_speech_fallback_web.dart'
     as platform;
@@ -27,6 +28,12 @@ class TtsService {
   final bool? _useWebSpeechFallbackOverride;
   final WebSpeechFallback _webSpeechFallback;
   String _language = 'en-US';
+  BackendAudioService? _backendAudio;
+  bool _backendActive = false;
+  static const _backendLanguages = String.fromEnvironment(
+    'BACKEND_TTS_LANGUAGES',
+    defaultValue: '',
+  );
   int _speechRequestId = 0;
   void Function() _completionCallback = () {};
   void Function(String error)? _speechErrorCallback;
@@ -119,11 +126,34 @@ class TtsService {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return true;
     final requestId = ++_speechRequestId;
-    await _tts.stop();
-    if (requestId != _speechRequestId) return true;
     final language = languageCode == null
         ? languageFor(trimmed, fallbackLanguage: _language)
         : localeForLanguage(languageCode);
+    final code = _normalizeLocale(language).split('-').first;
+    if (_backendLanguages.split(',').map((s) => s.trim()).contains(code)) {
+      _backendActive = true;
+      await _tts.stop();
+      if (_useWebSpeechFallback) _webSpeechFallback.stop();
+      if (requestId != _speechRequestId) return true;
+      _backendAudio ??= BackendAudioService();
+      return _backendAudio!.speak(
+        trimmed,
+        code,
+        onDone: () {
+          if (requestId == _speechRequestId) {
+            _backendActive = false;
+            _completionCallback();
+          }
+        },
+        onError: (error) {
+          if (requestId == _speechRequestId) _speechErrorCallback?.call(error);
+        },
+      );
+    }
+    await _backendAudio?.stop();
+    await _tts.stop();
+    _backendActive = false;
+    if (requestId != _speechRequestId) return true;
     final voiceAvailable = await setLanguage(language);
     if (requestId != _speechRequestId) return true;
     if (_useWebSpeechFallback && !voiceAvailable) {
@@ -142,10 +172,11 @@ class TtsService {
   }
 
   // Stops speech in progress, if any.
-  Future<void> stop() {
+  Future<void> stop() async {
     _speechRequestId++;
     if (_useWebSpeechFallback) _webSpeechFallback.stop();
-    return _tts.stop();
+    await _backendAudio?.stop();
+    await _tts.stop();
   }
 
   // Calls [callback] when speech finishes, is stopped, or errors, so the
@@ -156,16 +187,25 @@ class TtsService {
   }) {
     _completionCallback = callback;
     _speechErrorCallback = onError;
-    _tts.setCompletionHandler(callback);
-    _tts.setCancelHandler(callback);
+    _tts.setCompletionHandler(() {
+      if (!_backendActive) callback();
+    });
+    _tts.setCancelHandler(() {
+      if (!_backendActive) callback();
+    });
     _tts.setErrorHandler((error) {
+      if (_backendActive) return;
       onError?.call(error.toString());
       callback();
     });
   }
 
   // Releases the underlying TTS engine.
-  Future<void> dispose() => _tts.stop();
+  Future<void> dispose() async {
+    _speechRequestId++;
+    await _backendAudio?.dispose();
+    await _tts.stop();
+  }
 
   bool get _useWebSpeechFallback => _useWebSpeechFallbackOverride ?? kIsWeb;
 
