@@ -21,9 +21,12 @@ as the primary retrieval strategy for the current KG.
 import os
 import json
 import csv
+import math
 import re
 import sys
 import argparse
+import threading
+from urllib.parse import parse_qs, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import List, Dict, Any, Set, Tuple, Optional, Protocol
@@ -31,12 +34,199 @@ from collections import defaultdict
 from dotenv import load_dotenv
 import requests
 
+from admin_ingest import (check_admin_secret, current_queue, ingest_pdf,
+                          read_paper_bytes, record_manual_decision,
+                          validate_upload)
+from llm_endpoint import ollama_tunnel_headers, resolve_llm_endpoint
+
 try:
     from neo4j import GraphDatabase  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - optional dependency for Neo4j mode
     GraphDatabase = None
 
 load_dotenv()
+
+
+# ============================================================================
+# Retrieval scoring
+# ============================================================================
+
+# Measured on the 16 gated garo_1 triples: the keyword "garo" matches 13 of
+# them. A top_k of 10 therefore discarded real evidence on the most obvious
+# question anyone would ask, silently.
+DEFAULT_TOP_K = 25
+
+# The old keyword regex kept every word of 3+ characters, so "what", "are",
+# "the" and "and" became search terms -- and those appear in nearly every
+# sentence_ref, which is much of why retrieval matched so broadly.
+_STOPWORDS = {
+    "the", "and", "are", "was", "were", "what", "who", "whom", "whose", "which",
+    "how", "why", "when", "where", "does", "did", "for", "with", "about", "from",
+    "into", "that", "this", "these", "those", "their", "them", "they", "there",
+    "have", "has", "had", "can", "could", "would", "should", "will", "shall",
+    "you", "your", "our", "its", "his", "her", "him", "she", "any", "all",
+    "but", "not", "than", "then", "also", "some", "more", "most", "many",
+    "tell", "give", "show", "say", "said", "know", "please", "thing", "things",
+}
+
+
+def question_keywords(question: str) -> List[str]:
+    """Content words from the question, lowercased, duplicates collapsed.
+
+    Order is preserved so the scoring is deterministic and reproducible for
+    a given question.
+    """
+    words = re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", question or "")
+    keywords = []
+    for word in words:
+        lowered = word.lower()
+        if lowered in _STOPWORDS or lowered in keywords:
+            continue
+        keywords.append(lowered)
+    return keywords
+
+
+# Where a keyword matches decides how much it counts. A triple ABOUT the
+# thing asked about should beat one that merely mentions it in passing in its
+# source sentence. The previous scoring looked for a fixed list of terms in
+# the predicate NAME -- speak/language/dialect, population, live/locat --
+# against a graph whose predicates are LANGUAGE_USED, EXTENT_OF_USE,
+# HAS_LANGUAGE_Maintenance and so on. Only POPULATION ever matched, so 10 of
+# 11 predicate types scored 0 and ORDER BY relevance was a tie across almost
+# everything, leaving Neo4j's scan order to pick the answer.
+_FIELD_WEIGHTS = (("subject", 3), ("object", 3), ("predicate", 2), ("sentence_ref", 1))
+
+
+def score_triple(triple: Dict[str, Any], keywords: List[str]) -> int:
+    """How well one triple answers a question, given its content words."""
+    score = 0
+    for field, weight in _FIELD_WEIGHTS:
+        haystack = str(triple.get(field) or "").lower()
+        if not haystack:
+            continue
+        for keyword in keywords:
+            if keyword in haystack:
+                score += weight
+    return score
+
+
+# Keyword -> other word forms that should count as the same match. WHY A
+# CURATED LIST, NOT A GENERAL STEMMING RULE: tried a shared-prefix heuristic
+# first (e.g. "match if two words share a long enough common prefix") and
+# measured it before shipping -- it still MISSES "live"/"living" under a
+# safe threshold (their shared prefix "liv" is too short to pass safely),
+# and under a looser threshold it produces real false positives on this
+# exact corpus: "status" matches "statute", "family" matches "familiar",
+# and "community" matches "communicate" (which would partially UNDO this
+# morning's fix, since "Insufficient Communication" is a real object value
+# and "community" is already the graph's most over-matching word). Same
+# lesson as _PLURAL_SUBJECT_SUFFIXES: a bounded, curated list beats a
+# general rule that misfires on this graph. Confirmed live 2026-10-07:
+# "live" is not a literal substring of "living" (silent-e), and
+# "religious" is not a literal substring of "religion" -- both caused a
+# real triple (LIVING_IN, HAS_TRADITIONAL_RELIGION) to under-rank.
+_KEYWORD_EQUIVALENTS: Dict[str, Tuple[str, ...]] = {
+    "live": ("living", "lived", "lives"),
+    "religious": ("religion", "religions"),
+}
+
+# Words that would substring-match a keyword but mean something unrelated --
+# the same false-positive family _KEYWORD_EQUIVALENTS' docstring already
+# warns about ("community" in "communicate"), found live 2026-10-08 on the
+# overnight batch's new LivelihoodPatterns/MAINLYREFERS triples: "live" is a
+# literal substring of "livelihood", so every one of those 8 triples
+# false-matched "Where do the Garo live?" at the same score as the real
+# LIVING_IN triple, and (being 8 near-identical rows -- see dedupe_triples)
+# crowded the genuinely relevant RESIDENTS triple out of the top 10. Stripped
+# from the haystack before matching, the same way a stopword is removed,
+# rather than blocked with a word-boundary regex -- entity names like
+# "GaroCommunity" rely on substring matching across a camelCase join with no
+# boundary, so a general regex fix would break those matches too.
+_KEYWORD_FALSE_POSITIVES: Dict[str, Tuple[str, ...]] = {
+    "live": ("livelihood", "livelihoods"),
+}
+
+
+def _keyword_matches(keyword: str, haystack: str) -> bool:
+    for excluded in _KEYWORD_FALSE_POSITIVES.get(keyword, ()):
+        haystack = haystack.replace(excluded, "")
+    if keyword in haystack:
+        return True
+    return any(form in haystack for form in _KEYWORD_EQUIVALENTS.get(keyword, ()))
+
+
+def _keyword_in_triple(triple: Dict[str, Any], keyword: str) -> bool:
+    for field, _ in _FIELD_WEIGHTS:
+        if _keyword_matches(keyword, str(triple.get(field) or "").lower()):
+            return True
+    return False
+
+
+def keyword_weights(keywords: List[str], triples: List[Dict[str, Any]]) -> Dict[str, float]:
+    """How much each keyword should count in score_triple_weighted, discounted
+    by how common it is across `triples` -- a classic smoothed IDF.
+
+    WHY: measured 2026-10-07 on the real 45-triple production graph, "garo"
+    appears in 22 of 45 triples and "community" in 17, because GaroCommunity
+    is the graph's one hub entity (13 of 45 triples). Under flat scoring, a
+    triple that only matches on "garo"/"community" outranks one that matches
+    a genuinely rare, on-topic word like "religious" (3 of 45) or
+    "traditional" (2 of 45) -- so a specific question gets buried in generic
+    hub noise. Confirmed live: a religion question retrieved no real religion
+    evidence, and the model invented a speculative connection to compensate
+    (see tests/test_answer_synthesis.py's synthesis tests) -- the model was
+    honest given what it was handed, it just was not handed the right
+    evidence. A keyword present in every triple contributes a weight just
+    above 1 (counts, but barely); one present in only one or two triples
+    contributes several times that.
+    """
+    n = len(triples) or 1
+    weights = {}
+    for keyword in keywords:
+        document_frequency = sum(1 for triple in triples if _keyword_in_triple(triple, keyword))
+        weights[keyword] = math.log((n + 1) / (document_frequency + 1)) + 1
+    return weights
+
+
+def score_triple_weighted(triple: Dict[str, Any], weights: Dict[str, float]) -> float:
+    """Like score_triple, but each keyword counts by its keyword_weights()
+    weight instead of equally. See keyword_weights for why."""
+    score = 0.0
+    for field, field_weight in _FIELD_WEIGHTS:
+        haystack = str(triple.get(field) or "").lower()
+        if not haystack:
+            continue
+        for keyword, weight in weights.items():
+            if _keyword_matches(keyword, haystack):
+                score += field_weight * weight
+    return score
+
+
+def resolve_port(explicit_port: Optional[int]) -> int:
+    """The port to serve on: an explicit --port always wins; otherwise a
+    hosting platform's injected $PORT (Render, Railway, Fly.io all set
+    this), falling back to 8000 if neither is set -- unchanged local
+    development behaviour.
+    """
+    if explicit_port is not None:
+        return explicit_port
+    return int(os.environ.get("PORT", 8000))
+
+
+def dedupe_triples(triples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop duplicate facts -- same (subject, predicate, object) cited from
+    several passages -- keeping the first (i.e. highest-ranked, if the
+    caller already sorted) occurrence of each.
+    """
+    seen: Set[Tuple[Any, Any, Any]] = set()
+    unique = []
+    for triple in triples:
+        key = (triple.get("subject"), triple.get("predicate"), triple.get("object"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(triple)
+    return unique
 
 
 # ============================================================================
@@ -143,7 +333,12 @@ class CypherRetriever:
         # Reads from the environment so this works correctly inside Docker, where
         # docker-compose.yml overrides OLLAMA_URL to point at the ollama service
         # rather than localhost. Falls back to localhost for native (non-Docker) runs.
-        self.ollama_url = ollama_url or os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+        # resolve_llm_endpoint refuses a host outside our own network: this
+        # project committed that paper content goes to a local model only.
+        # Checked here so `rag.py --serve` fails at startup, not mid-query.
+        self.ollama_url = resolve_llm_endpoint(
+            ollama_url or os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+        )
         self.model = os.getenv("OLLAMA_MODEL", "deepseek-r1:7b")
 
     def _generate_cypher(self, question: str) -> str:
@@ -219,8 +414,9 @@ Return only the query, no explanation."""
 
 class ConceptRetriever:
     """
-    Retrieves triples by extracting known entities from the question using word‑boundary matching.
-    If no entities are found, it falls back to matching predicates or searching the sentence_ref fields.
+    Retrieves triples by scoring every triple against the question's content
+    words -- the same question_keywords/score_triple ranking
+    Neo4jRAGSkeleton.query uses on the graph path.
 
     This approach is fast, deterministic, and does not require an LLM.
     It is the recommended primary retrieval strategy.
@@ -228,15 +424,14 @@ class ConceptRetriever:
 
     def __init__(self, kg: KnowledgeGraph):
         self.kg = kg
-        # Common stopwords to ignore when extracting keywords.
-        self.stopwords = {'what', 'is', 'are', 'the', 'of', 'in', 'for', 'on', 'at', 'to', 'with',
-                          'by', 'from', 'up', 'about', 'do', 'does', 'did', 'have', 'has', 'had',
-                          'how', 'why', 'when', 'where', 'which', 'who', 'whom', 'whose'}
 
     def _extract_entities(self, question: str) -> Set[str]:
         """
         Find known entities from the KG that appear in the question as whole words.
         This avoids partial matches (e.g., 'Garo' should not match 'GaroWomen').
+        Used by RetrieverComparator for its diagnostic entity count; retrieve()
+        no longer needs it, since score_triple already rewards a subject/object
+        match over one that merely appears in a source sentence.
         """
         question_lower = question.lower()
         entities = set()
@@ -245,84 +440,34 @@ class ConceptRetriever:
                 entities.add(entity)
         return entities
 
-    def _extract_keywords(self, question: str) -> List[str]:
-        """
-        Extract meaningful keywords (words with at least 3 letters, excluding stopwords).
-        These are used for predicate matching and sentence search fallbacks.
-        """
-        question_lower = question.lower()
-        words = re.findall(r'\b[a-z][a-z]{2,}\b', question_lower)
-        return [w for w in words if w not in self.stopwords]
+    def retrieve(self, question: str, top_k: int = DEFAULT_TOP_K) -> List[Dict]:
+        """Scores every triple against the question's content words and
+        returns the highest-ranked, deduped matches.
 
-    def _match_predicates(self, question: str) -> List[Dict]:
+        Previously this had its own three-stage fallback (known-entity
+        match, then predicate keyword match, then sentence_ref search) with
+        its own scoring: 2 points per entity match, 1 per predicate keyword,
+        plus a bonus for the LENGTH of sentence_ref ("longer = more
+        context"). That rewarded verbose citations -- precisely the
+        pathology MAX_SENTENCE_REF_CHARS exists to stop on the extraction
+        side -- and ranked this CSV fallback differently from the graph
+        path it is meant to stand in for. Scoring now goes through the same
+        score_triple() the graph path uses, so a question gets the same
+        answer whether or not AuraDB happens to be reachable.
         """
-        Find triples whose predicate contains any of the keywords extracted from the question.
-        This is useful when the question does not mention a known entity but does describe a relationship.
-        """
-        keywords = self._extract_keywords(question)
-        results = []
-        for t in self.kg.triples:
-            pred = t['predicate'].lower()
-            if any(kw in pred or pred in kw for kw in keywords):
-                results.append(t)
-        return results
+        keywords = question_keywords(question)
+        if not keywords:
+            return []
 
-    def _search_sentences(self, question: str) -> List[Dict]:
-        """
-        Final fallback: search the sentence_ref fields of all triples for keywords.
-        This can retrieve triples whose source sentence contains the relevant terms,
-        even if the triple itself does not directly match the question.
-        """
-        keywords = self._extract_keywords(question)
-        results = []
-        for t in self.kg.triples:
-            sent = t.get('sentence_ref', '').lower()
-            if sent and any(kw in sent for kw in keywords):
-                results.append(t)
-        return results
-
-    def retrieve(self, question: str, top_k: int = 10) -> List[Dict]:
-        """
-        Main retrieval pipeline:
-            1. Attempt to extract known entities from the question.
-            2. If entities are found, retrieve all triples containing them and rank by relevance.
-            3. If no entities, try matching predicates.
-            4. If still nothing, search sentence references.
-
-        Ranking is based on:
-            - Number of entity matches (weighted 2 points each).
-            - Keyword matches in the predicate (1 point each).
-            - Length of the sentence_ref (longer = more context).
-        """
-        entities = self._extract_entities(question)
-        if entities:
-            results = self.kg.get_triples_by_entities(entities)
-            scored = []
-            for t in results:
-                score = 0
-                subj = t['subject'].lower()
-                obj = t['object'].lower()
-                for ent in entities:
-                    if ent in subj or ent in obj:
-                        score += 2
-                pred_lower = t['predicate'].lower()
-                for kw in self._extract_keywords(question):
-                    if kw in pred_lower:
-                        score += 1
-                # Add a small bonus for longer sentence references (more informative).
-                score += len(t.get('sentence_ref', '')) / 200
-                scored.append((score, t))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            return [t for _, t in scored[:top_k]]
-
-        # No entities found – try predicate matching.
-        pred_results = self._match_predicates(question)
-        if pred_results:
-            return pred_results[:top_k]
-
-        # Final fallback – search sentence references.
-        sent_results = self._search_sentences(question)
-        return sent_results[:top_k]
+        # Weighted by keyword_weights so a rare, on-topic keyword outranks a
+        # flat match on the graph's hub entity -- see keyword_weights.
+        weights = keyword_weights(keywords, self.kg.triples)
+        scored = [(score_triple_weighted(triple, weights), triple) for triple in self.kg.triples]
+        # Stable sort on the negated score keeps the CSV's row order as the
+        # tie-break, so equal-scoring results do not shuffle between calls.
+        scored.sort(key=lambda pair: -pair[0])
+        matches = [triple for score, triple in scored if score > 0]
+        return dedupe_triples(matches)[:top_k]
 
 
 # ============================================================================
@@ -449,11 +594,11 @@ class RetrieverComparator:
 
         print("\nDecision:")
         if total_concept >= total_cypher and concept_nonzero >= cypher_nonzero:
-            print("  ✅ Select Concept Matching as the primary retrieval approach.")
+            print("  Select Concept Matching as the primary retrieval approach.")
             print(f"     It retrieved {total_concept - total_cypher} more triples overall and returned something for {concept_nonzero - cypher_nonzero} more questions.")
             print("     For the current KG (simple triples, single‑hop facts), this is the most reliable and efficient choice.")
         else:
-            print("  ⚠️ Consider Cypher Translation if complex queries become frequent.")
+            print("  Consider Cypher Translation if complex queries become frequent.")
 
         print("\nFuture Enhancement:")
         print("  - Keep Cypher Translation as an optional route for advanced queries (e.g., multi‑hop).")
@@ -494,7 +639,7 @@ class RAGSkeleton:
         # return re.sub(r'\bGaro\b', 'Garo people', question, flags=re.IGNORECASE)
         return question
 
-    def query(self, question: str, top_k: int = 10) -> List[Dict]:
+    def query(self, question: str, top_k: int = DEFAULT_TOP_K) -> List[Dict]:
         """Main entry: question in → triples out."""
         normalized = self.normalize_question(question)
         return self.retriever.retrieve(normalized, top_k)
@@ -525,6 +670,12 @@ class RAGSkeleton:
 
 # Queries Entity nodes and their relationships directly from Neo4j.
 class Neo4jRAGSkeleton:
+    # Upper bound on rows pulled back for ranking. Well above the current
+    # graph (45 triples) and above the ~350 expected after 20 more papers,
+    # so it never truncates in practice -- it exists so an unexpectedly
+    # large graph degrades instead of pulling everything into memory.
+    FETCH_LIMIT = 500
+
     # Opens a Neo4j driver using the project's environment configuration.
     def __init__(self):
         from config import PASSWORD, URI, USERNAME
@@ -541,89 +692,39 @@ class Neo4jRAGSkeleton:
 
         self.driver = GraphDatabase.driver(uri, auth=(username, password))
 
-    # Words that carry no topic meaning and would match almost every fact.
-    STOPWORDS = {
-        "the", "and", "for", "are", "was", "were", "what", "who", "whom", "whose",
-        "which", "when", "where", "why", "how", "does", "did", "do", "can", "could",
-        "would", "should", "will", "about", "tell", "me", "please", "give", "some",
-        "any", "all", "their", "they", "them", "there", "this", "that", "these",
-        "those", "with", "from", "into", "have", "has", "had", "you", "your", "our",
-        "its", "his", "her", "is", "an", "a", "of", "in", "on", "to", "or", "be",
-        "been", "being", "more", "most", "much", "many", "information", "know",
-        "explain", "describe", "people", "peoples", "person", "community",
-        "communities", "tribe", "tribal", "group", "info",
-    }
-
-    # Names the community is known by; a question using one should find facts
-    # stored under any of the others.
-    COMMUNITY_NAMES = {"mandi", "mande", "garo", "garos", "achik", "a'chik", "achik-mande"}
-
     # Finds graph relationships whose entities or source text match the question.
-    # Topic words decide what is relevant; community names alone only act as a
-    # fallback so general questions ("Who are the Mandi people?") still get facts.
-    def query(self, question: str, top_k: int = 10) -> List[Dict]:
-        question_lower = question.lower()
-        words = [w.lower() for w in re.findall(r"[A-Za-z][A-Za-z0-9_'-]{1,}", question)]
+    def query(self, question: str, top_k: int = DEFAULT_TOP_K) -> List[Dict]:
+        """Fetch every triple the question's words touch, then rank in Python.
 
-        mentions_community = any(w in self.COMMUNITY_NAMES for w in words)
-        keywords: List[str] = []
-        for word in words:
-            if word in self.COMMUNITY_NAMES or word in self.STOPWORDS or len(word) < 3:
-                continue
-            # Light stemming so "festivals" matches "festival", "farming" matches "farm".
-            for suffix in ("ies", "ing", "es", "s"):
-                if word.endswith(suffix) and len(word) - len(suffix) >= 4:
-                    word = word[: -len(suffix)] + ("y" if suffix == "ies" else "")
-                    break
-            if word not in keywords:
-                keywords.append(word)
+        Ranking moved out of Cypher deliberately. The old query scored with
+        `reduce` over a hardcoded relationship_terms list -- speak/language/
+        dialect, population, live/locat/resid, is_a/type -- matched against
+        the predicate NAME. The graph's predicates are LANGUAGE_USED,
+        EXTENT_OF_USE, HAS_LANGUAGE_Maintenance, HAS_TRADITIONAL_RELIGION and
+        so on; only POPULATION ever matched one, so 10 of 11 predicate types
+        scored 0, ORDER BY relevance was a tie across nearly everything, and
+        Neo4j's scan order chose the answer.
 
-        community_terms = ["garo", "mandi", "mande", "achik"]
+        Scoring here instead makes the ranking unit-testable without a live
+        database, and lets a match on the subject or object outrank one that
+        merely mentions the word in a source sentence.
 
-        relationship_terms = []
-        if re.search(r"\b(where|live|lives|located|location|reside|resides|home)\b", question_lower):
-            relationship_terms.extend(["live", "locat", "resid", "home", "place"])
-        if re.search(r"\b(language|speak|speaks|dialect)\b", question_lower):
-            relationship_terms.extend(["speak", "language", "dialect"])
-        if re.search(r"\b(population|many|number)\b", question_lower):
-            relationship_terms.extend(["population", "number", "count"])
-        if re.search(r"\b(religion|believe|belief|god|deity|deities|worship)\b", question_lower):
-            relationship_terms.extend(["believ", "worship", "religi", "deit"])
-        if re.search(r"\b(inherit|inheritance|descent|lineage|matrilineal|clan)\b", question_lower):
-            relationship_terms.extend(["inherit", "descent", "lineage", "clan"])
-        if re.search(r"\b(what is|who is|what are|who are)\b", question_lower):
-            relationship_terms.extend(["is_a", "type", "identity", "about", "known", "call"])
-
-        if not keywords and not mentions_community:
+        This is a full relationship scan with no index -- free at the current
+        45 triples and fine into the low thousands, but it is the documented
+        ceiling on this read path. FETCH_LIMIT bounds the worst case.
+        """
+        keywords = question_keywords(question)
+        if not keywords:
             return []
-
-        # With no topic words ("Who are the Mandi?") fall back to community facts.
-        search_terms = keywords if keywords else community_terms
 
         cypher = """
         MATCH (s:Entity)-[r]->(o:Entity)
-        WITH s, r, o,
-             toLower(coalesce(s.name, '')) AS sname,
-             toLower(coalesce(o.name, '')) AS oname,
-             toLower(coalesce(r.passage, '') + ' ' + coalesce(r.sentence_ref, '')) AS text,
-             toLower(type(r)) AS rtype
-        WITH s, r, o, sname, oname, text, rtype,
-             size([k IN $search_terms WHERE sname CONTAINS k OR oname CONTAINS k]) AS entity_hits,
-             size([k IN $search_terms WHERE rtype CONTAINS k]) AS predicate_hits,
-             size([k IN $search_terms WHERE text CONTAINS k]) AS text_hits
-        WHERE entity_hits + predicate_hits + text_hits > 0
-        WITH s, r, o, entity_hits, predicate_hits, text_hits,
-             entity_hits * 6 + predicate_hits * 5 + text_hits * 2
-             + reduce(score = 0, term IN $relationship_terms |
-                 score + CASE
-                     WHEN rtype CONTAINS term THEN 10
-                     WHEN text CONTAINS term THEN 3
-                     ELSE 0
-                 END)
-             + CASE WHEN $mentions_community AND any(c IN $community_terms
-                    WHERE sname CONTAINS c OR oname CONTAINS c OR text CONTAINS c)
-                    THEN 4 ELSE 0 END
-             + CASE WHEN r.paper_id IS NOT NULL THEN -2 ELSE 0 END AS relevance
+        WHERE any(keyword IN $keywords WHERE
+            toLower(coalesce(s.name, '')) CONTAINS keyword OR
+            toLower(coalesce(o.name, '')) CONTAINS keyword OR
+            toLower(type(r)) CONTAINS keyword OR
+            toLower(coalesce(r.sentence_ref, '')) CONTAINS keyword OR
+            toLower(coalesce(r.passage, '')) CONTAINS keyword)
         RETURN s.name AS subject,
                type(r) AS predicate,
                o.name AS object,
@@ -631,32 +732,30 @@ class Neo4jRAGSkeleton:
                coalesce(r.source_section, '') AS source_section,
                coalesce(r.passage, '') AS passage,
                coalesce(r.confidence, '') AS confidence,
-               relevance
-        ORDER BY relevance DESC
-        LIMIT $top_k
+               coalesce(r.run_id, '') AS run_id,
+               coalesce(r.ingested_at, '') AS ingested_at
+        LIMIT $fetch_limit
         """
 
         with self.driver.session() as session:
             result = session.run(
                 cypher,
-                search_terms=search_terms,
-                relationship_terms=relationship_terms,
-                community_terms=community_terms,
-                mentions_community=mentions_community,
-                top_k=top_k,
+                keywords=keywords,
+                fetch_limit=self.FETCH_LIMIT,
             )
-            triples = [dict(record) for record in result]
+            candidates = [dict(record) for record in result]
 
-        # Drop duplicate facts (same subject/predicate/object from several passages).
-        seen = set()
-        unique = []
-        for triple in triples:
-            key = (triple.get("subject"), triple.get("predicate"), triple.get("object"))
-            if key in seen:
-                continue
-            seen.add(key)
-            unique.append(triple)
-        return unique
+        # Weighted by keyword_weights so a rare, on-topic keyword outranks a
+        # flat match on the graph's hub entity -- see keyword_weights.
+        # Stable sort on the negated score keeps Cypher's order as the
+        # tie-break, so equal-scoring results do not shuffle between calls.
+        weights = keyword_weights(keywords, candidates)
+        candidates.sort(key=lambda triple: -score_triple_weighted(triple, weights))
+
+        # Dedupe before truncating, so a duplicate doesn't cost a real
+        # candidate its place in top_k. Sorting first means the
+        # highest-scoring instance of each fact is the one kept.
+        return dedupe_triples(candidates)[:top_k]
 
     # Formats Neo4j triples for the Flutter assistant response.
     def format_output(self, triples: List[Dict]) -> str:
@@ -680,36 +779,191 @@ class Neo4jRAGSkeleton:
         self.driver.close()
 
     # Converts retrieved graph evidence into a concise, grounded answer.
+# Benchmarked on this machine's CPU Ollama: deepseek-r1:7b took 40.8s and
+# mistral:7b took 40.3s for a real synthesis call. The old timeout=30 was
+# below both, so every real answer timed out and silently fell back to the
+# templated response -- a bug, not a deliberate tradeoff. 90s clears both
+# with headroom for a slow first call, while still failing well short of
+# mistral-small3.1's measured 151.3s if that model is ever selected (a
+# different, deliberately slow, model choice).
+#
+# Raised to 130s 2026-10-07: 90s was still not enough for a genuinely COLD
+# question (no matching prompt in llama.cpp's own prompt cache). Measured via
+# Ollama's own timing log on the real hosted-demo tunnel path: prefill of the
+# ~2460-token evidence prompt alone took ~62s at this CPU's ~40 tokens/sec
+# prefill speed, before decoding even starts; decode then added another
+# ~50-60s. A same-prompt retest looked like a fast 52.7s total, but that was
+# a prompt-cache hit (cached n_tokens = 2459 of 2460) from the first,
+# cancelled attempt -- not representative, since every real question has a
+# different evidence prompt. See SYNTHESIS_EVIDENCE_LIMIT below, which
+# attacks the actual bottleneck (prefill length) directly; this timeout is
+# the safety margin on top of that fix, not a substitute for it.
+ANSWER_SYNTHESIS_TIMEOUT_SECONDS = 130
+
+# Caps how many retrieved triples go into the synthesis PROMPT (citations in
+# the "View verified sources" panel still show all of DEFAULT_TOP_K=25 --
+# this only shrinks what gets sent to the model). WHY: prefill time scales
+# ~linearly with prompt length, and all 25 triples as JSON evidence produce a
+# ~2460-token prompt that alone takes ~62s to prefill on this CPU (~40
+# tokens/sec), which is most of the timeout budget before decoding even
+# starts. Triples already arrive score-sorted, so keeping the top N keeps the
+# most relevant evidence.
+SYNTHESIS_EVIDENCE_LIMIT = 10
+
+# How long to wait for Ollama to even ACCEPT a connection, separate from how
+# long to wait for it to finish generating (above). This matters once the
+# hosted demo architecture is live: the hosted API's OLLAMA_URL points at a
+# Tailscale Funnel tunnel to a team laptop that is only turned on during the
+# live demo. The rest of the time nothing is listening there, so every
+# uncached question would otherwise make a real visitor wait the full 90s
+# before falling back to the template. A short connect timeout fails fast
+# when nothing is there, while still allowing the full 90s once a real
+# connection is made and generation has actually started.
+ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS = 10
+
+# How many times to retry a request that failed to connect at all (not one
+# that connected and then ran out of time generating -- see answer() for the
+# distinction). WHY: live-tested 2026-10-07 against the real hosted tunnel
+# with the laptop/Funnel genuinely up and every layer individually confirmed
+# healthy (Ollama, the authenticating proxy, Funnel itself) -- one request in
+# three still failed to connect at all in well under a second, while the
+# next two identical requests succeeded with real generation. The proxy's own
+# log showed no trace of the failed attempt ever arriving, so the drop is
+# somewhere in the Render-to-Funnel network path itself, not in this code.
+# One retry is enough to mask a single transient blip without materially
+# changing the worst case: retrying a connection failure (fast) is cheap;
+# retrying a full generation timeout would double a 130s wait, which is why
+# this only catches ConnectionError, not the broader Timeout/RequestException
+# that a slow-but-connected generation can raise.
+ANSWER_SYNTHESIS_CONNECTION_RETRIES = 1
+
+# Same spelling of "off" as llm_endpoint.py's ALLOW_EXTERNAL_LLM check,
+# rather than a second convention in the same codebase. Defined here rather
+# than imported because llm_endpoint._FALSEY is private to that module.
+_FALSEY = {"", "0", "false", "no", "off"}
+
+
+# The relevance gate makes the model declare on its first line whether the
+# evidence actually answers the question, and rag.py discards everything
+# after a "no" instead of trusting the model to stop writing (see
+# _parse_gated_response). Defaults ON.
+#
+# SYNTHESIS_RELEVANCE_GATE=0 restores pre-2026-10-08 behaviour without a code
+# change -- a rollback switch for the 2026-10-09 demo, settable from the
+# Render dashboard. NOTE the "on" default below: os.getenv's fallback must
+# not be "", which is itself in _FALSEY and would invert the default.
+def relevance_gate_enabled() -> bool:
+    return os.getenv("SYNTHESIS_RELEVANCE_GATE", "on").strip().lower() not in _FALSEY
+
+
+# Shown when retrieval found nothing, and when the relevance gate judged that
+# nothing retrieved actually answers the question. One constant so the two
+# paths cannot drift into saying different things about the same situation.
+NO_GROUNDED_ANSWER_MESSAGE = (
+    "I could not find enough connected evidence to answer that question. "
+    "Try naming a specific person, place, event, or relationship."
+)
+
+# Pre-computed answers for the demo's scripted questions (chat_page.dart's
+# _examplePrompts). WHY: even after the timeout fix and the model switch
+# above, measured 2026-10-05 showed real synthesis calls still taking 90s+
+# on this machine -- 2x the ~40s benchmark from earlier sessions, cause not
+# yet diagnosed -- and falling back to the templated answer when they
+# exceeded even that ceiling. The scripted questions are known in advance,
+# so their answers are precomputed once (see generate_demo_answer_cache.py)
+# and served instantly and reliably from here; anything else still goes
+# through live synthesis unchanged.
+DEMO_ANSWER_CACHE_PATH = Path("data") / "demo_answer_cache.json"
+
+
+def normalize_cache_key(question: str) -> str:
+    """Collapses whitespace/case differences so a question matches its cache
+    entry even if retyped, not just when sent verbatim by a suggested-prompt
+    chip click."""
+    return " ".join(question.strip().lower().split())
+
+
+def load_demo_answer_cache(path: Path = DEMO_ANSWER_CACHE_PATH) -> Dict[str, str]:
+    if not path.exists():
+        return {}
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+    return {normalize_cache_key(question): answer for question, answer in raw.items()}
+
+
 class AnswerSynthesizer:
-    def __init__(self, ollama_url: Optional[str] = None, model: Optional[str] = None):
-        self.ollama_url = ollama_url or os.getenv(
-            "OLLAMA_URL", "http://localhost:11434/api/generate"
+    def __init__(self, ollama_url: Optional[str] = None, model: Optional[str] = None,
+                 answer_cache: Optional[Dict[str, str]] = None):
+        # Answer synthesis sends sentence_ref -- verbatim paper text -- to
+        # the model on every query, so this is the call site that most
+        # needs the guard. Checked at construction: the hosted deployment
+        # runs with no LLM at all and answers from _fallback_answer.
+        self.ollama_url = resolve_llm_endpoint(
+            ollama_url or os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
         )
-        self.model = model or os.getenv("OLLAMA_MODEL", "deepseek-r1:7b")
+        # mistral:7b, not deepseek-r1:7b: both benchmarked around 40s, but
+        # deepseek-r1 is a "thinking" model whose internal reasoning length
+        # (stripped by _clean_response's <think> regex) varies the actual
+        # wall-clock time unpredictably. Measured 2026-10-05: 2 of 3 real
+        # deepseek-r1 calls exceeded even the 90s ANSWER_SYNTHESIS_TIMEOUT
+        # and fell back to the template, including one live chat request.
+        # mistral:7b has no reasoning-token overhead to vary.
+        self.model = model or os.getenv("OLLAMA_MODEL", "mistral:7b")
+        self.answer_cache = load_demo_answer_cache() if answer_cache is None else answer_cache
 
     # Writes a natural-language answer while keeping every claim tied to evidence.
     def answer(self, question: str, triples: List[Dict[str, Any]]) -> str:
         if not triples:
-            return "I could not find enough connected evidence to answer that question. Try naming a specific person, place, event, or relationship."
+            return NO_GROUNDED_ANSWER_MESSAGE
 
-        prompt = self._build_prompt(question, triples)
-        try:
-            response = requests.post(
-                self.ollama_url,
-                json={
-                    "model": self.model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"temperature": 0.4, "num_predict": 700},
-                },
-                timeout=30,
-            )
-            if response.status_code == 200:
-                text = response.json().get("response", "").strip()
-                if text:
-                    return self._clean_response(text)
-        except (requests.RequestException, ValueError, KeyError) as error:
-            print(f"Answer synthesis unavailable: {error}")
+        cached = self.answer_cache.get(normalize_cache_key(question))
+        if cached:
+            return cached
+
+        prompt = self._build_prompt(question, triples[:SYNTHESIS_EVIDENCE_LIMIT])
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.2, "num_predict": 400},
+        }
+        # Retries only a bare connection failure (see ANSWER_SYNTHESIS_CONNECTION_RETRIES
+        # for why), never a slow-but-connected generation that ran out of time.
+        for attempt in range(ANSWER_SYNTHESIS_CONNECTION_RETRIES + 1):
+            try:
+                response = requests.post(
+                    self.ollama_url,
+                    json=payload,
+                    headers=ollama_tunnel_headers(),
+                    timeout=(ANSWER_SYNTHESIS_CONNECT_TIMEOUT_SECONDS, ANSWER_SYNTHESIS_TIMEOUT_SECONDS),
+                )
+            except requests.ConnectionError as error:
+                print(f"Answer synthesis connection failed (attempt {attempt + 1}): {error}")
+                continue
+            except (requests.RequestException, ValueError, KeyError) as error:
+                print(f"Answer synthesis unavailable: {error}")
+                break
+            else:
+                if response.status_code == 200:
+                    text = response.json().get("response", "").strip()
+                    if text:
+                        if not relevance_gate_enabled():
+                            return self._clean_response(text)
+                        verdict, gated = self._parse_gated_verdict(text)
+                        # OLLAMA_MODEL is env-overridable; swap in a model
+                        # that does not honour the RELEVANT: format and every
+                        # answer silently becomes a refusal. Print which
+                        # branch fired so an explicit "no" is distinguishable
+                        # from format collapse mid-demo.
+                        if verdict == self._GATE_NO:
+                            print("Answer synthesis gate refused: the model judged the evidence irrelevant (RELEVANT: no).")
+                        elif verdict == self._GATE_UNREADABLE:
+                            print("Answer synthesis gate refused: the RELEVANT marker was missing or unreadable in the model's response.")
+                        # A refusal is the intended output, not a failure:
+                        # deliberately NOT _fallback_answer, whose templated
+                        # triple soup is the off-topic padding being removed.
+                        return gated if gated is not None else NO_GROUNDED_ANSWER_MESSAGE
+                break
 
         return self._fallback_answer(triples)
 
@@ -725,42 +979,50 @@ class AnswerSynthesizer:
                 "source_section": triple.get("source_section", ""),
             })
 
-        return f"""You are a knowledgeable, approachable guide to Garo (Mandi) culture and
-history, talking with someone who's genuinely curious to learn.
+        # Asking for a bounded first-line verdict, then enforcing the
+        # consequence in code, is the part that differs from the two
+        # prompt-only attempts reverted on 2026-10-07 -- both asked the model
+        # to self-regulate its prose and it simply did not.
+        gate_instruction = """Before answering, judge whether the evidence below directly answers the question.
+Your FIRST line must be exactly one of:
+RELEVANT: yes
+RELEVANT: no
+Write "no" if the evidence only touches the topic indirectly, mentions a
+related word, or would require you to infer a connection the evidence does
+not itself state. If "no", write nothing after that line.
+If "yes", write the answer below it, using only evidence that directly
+supports it.
+
+""" if relevance_gate_enabled() else ""
+
+        return f"""You are a careful knowledge-graph research assistant.
 Answer the user's question using only the evidence below.
 The Mandi people are the same community as the Garo people (they call themselves
 A·chik Mande), so treat "Mandi", "Mande", "A·chik" and "Garo" as the same people.
 Do not invent facts, names, dates, or explanations that are not supported.
+    Answer ONLY the question asked. Use evidence that directly answers it; ignore
+    evidence about other topics even if it is about the same subject -- a question
+    about health status should not discuss language, location, or unrelated challenges.
+    Do not restate background facts (where they live, what they are also called)
+    unless the question asks for them.
+    If the question asks what an entity is, begin with a direct definition and then add
+    one or two supported details such as location, language, or community identity.
+    Translate every graph identifier (CamelCase or underscore_joined names such as
+    GaroCommunity, HAS_A_POPULATION, or source_section) into plain natural language;
+    never expose raw graph identifiers in the answer.
+    Write in a natural, conversational style rather than listing disconnected facts.
+    Vary sentence openings, use pronouns after the first clear mention, and use natural
+    connectors only where they help. Write plain prose only: no markdown, headings,
+    bullets, or numbered lists. Do not describe your answering process or use phrases
+    such as "the evidence supports" or "according to the data".
+    Write 1-2 short sentences for a simple factual question; use more only if the
+    question genuinely requires several distinct facts. Do not mention prompts, models,
+    retrieval, graph triples, JSON, or page numbers.
+    Only add a sentence about incomplete evidence if the evidence truly does not answer
+    the question. If it does answer the question, answer it plainly and stop -- do not
+    add a closing disclaimer out of habit.
 
-Write the way a well-informed person would explain this in conversation, not the
-way a database would print it out:
-- Open with a direct answer to the question, in your own words.
-- After the first mention, refer back with "they", "their", or the group's name
-  instead of repeating the full identifier every sentence.
-- Vary your sentence openings and length rather than stacking similar
-  "X is Y. X also Z." sentences back to back.
-- Use natural connectors where they fit ("They also...", "Because of this,",
-  "Over time,") instead of listing facts as disconnected statements.
-- Never let a raw graph identifier (CamelCase or underscore_joined names like
-  GaroCommunity, HAS_A_POPULATION, source_section) appear anywhere in your
-  answer, including later in the same paragraph. Translate every single one
-  into plain words the first time and every time it recurs - "GaroCommunity"
-  is always "the Garo community", never the bare identifier.
-- Write 1-3 natural paragraphs. Do not mention prompts, models, retrieval,
-  graph triples, or JSON.
-- Write in plain prose only - no markdown. Never use **bold**, *italics*,
-  `code` formatting, bullet points, numbered lists, or headings. This answer
-  is displayed as plain text, so markdown symbols would show up as literal
-  asterisks or hashes instead of formatting.
-- Do not describe your own process of answering. Never write phrases like
-  "the evidence supports", "according to the data", "the sources indicate",
-  or "based on the information provided". State facts plainly, the way a
-  knowledgeable person states something they simply know - not the way a
-  report cites its sources.
-- If the evidence is incomplete, say what is known and work the gap into the
-  answer naturally, rather than appending it as a separate disclaimer sentence.
-
-User question:
+{gate_instruction}User question:
 {question}
 
 Evidence:
@@ -772,26 +1034,59 @@ Answer:"""
     def _clean_response(self, text: str) -> str:
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
         text = re.sub(r"^\s*(answer|response)\s*:\s*", "", text, flags=re.IGNORECASE)
-        # Belt-and-braces: strip common markdown the model may still slip in
-        # despite the prompt instruction, since the Flutter app has no
-        # markdown renderer and would otherwise show literal ** or # symbols.
-        text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
-        text = re.sub(r"(?<!\w)\*(.+?)\*(?!\w)", r"\1", text)
-        text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
-        text = re.sub(r"^\s*[-*]\s+", "", text, flags=re.MULTILINE)
         return text.strip()
 
-    # A few openers and connectors to rotate through so the template-only
-    # fallback doesn't read as a fixed, repeated phrase. These only ever sit
-    # in front of a new subject - a continuation of the same subject never
-    # uses one, since it's merged straight into that subject's sentence.
-    _OPENERS = ["Here's what's recorded: ", "From the available sources: ", ""]
-    _CONNECTORS = ["", "Also, ", "In addition, ", "Beyond that, "]
+    # _parse_gated_verdict's three possible verdicts. GATE_NO is an explicit
+    # "RELEVANT: no"; GATE_UNREADABLE covers everything else that fails
+    # closed (missing marker, unrecognised value, or a "yes" with no answer
+    # body) -- answer() logs the two differently so a genuine refusal is
+    # distinguishable from the model's output format collapsing.
+    _GATE_YES = "yes"
+    _GATE_NO = "no"
+    _GATE_UNREADABLE = "unreadable"
+
+    # Reads the RELEVANT: yes/no marker the gate instruction asks for.
+    # Returns (verdict, answer): answer is non-None only when verdict is
+    # _GATE_YES. An unparseable response is not evidence that the answer is
+    # grounded, and this project prefers an honest refusal to a confident
+    # wrong one. See docs/superpowers/specs/2026-10-08-synthesis-relevance-gate-design.md
+    #
+    # _clean_response runs FIRST, and that order is load-bearing: deepseek-r1
+    # emits <think>...</think> before anything else, and _clean_response also
+    # strips a leading "Answer:" prefix, so "Answer: RELEVANT: yes" still
+    # leaves the marker on line one.
+    def _parse_gated_verdict(self, text: str) -> Tuple[str, Optional[str]]:
+        cleaned = self._clean_response(text)
+        lines = [line for line in cleaned.splitlines() if line.strip()]
+        if not lines:
+            return self._GATE_UNREADABLE, None
+
+        # [.:,;-]? consumes a single trailing punctuation mark after yes/no
+        # (a model writing "RELEVANT: yes," must not leak a stray leading
+        # comma -- and the meta-commentary after it -- into the answer).
+        match = re.match(r"\s*RELEVANT\s*:\s*(yes|no)\b[.:,;-]?\s*", lines[0], flags=re.IGNORECASE)
+        if not match:
+            return self._GATE_UNREADABLE, None
+        if match.group(1).lower() == "no":
+            return self._GATE_NO, None
+
+        # Keep anything trailing the marker on its own line: a model that
+        # writes "RELEVANT: yes The Garo..." has still answered, and dropping
+        # it would be a false refusal.
+        head = lines[0][match.end():].strip()
+        tail = "\n".join(lines[1:]).strip()
+        remainder = "\n".join(part for part in (head, tail) if part).strip()
+        if not remainder:
+            return self._GATE_UNREADABLE, None
+        return self._GATE_YES, remainder
+
+    # Thin wrapper over _parse_gated_verdict for callers that only care
+    # about None (refuse) vs the answer prose -- unchanged contract.
+    def _parse_gated_response(self, text: str) -> Optional[str]:
+        _, answer = self._parse_gated_verdict(text)
+        return answer
 
     # Produces a readable answer when Ollama is offline or unavailable.
-    # Consecutive facts about the same subject are merged into one flowing
-    # sentence ("X lives in Y, and they speak Z") instead of being written
-    # as separate back-to-back "X is... X also..." sentences.
     def _fallback_answer(self, triples: List[Dict[str, Any]]) -> str:
         # Drop exact-duplicate facts (same subject/predicate/object) before
         # anything else, so a relationship stored twice in the graph doesn't
@@ -846,34 +1141,7 @@ Answer:"""
         opener = self._OPENERS[len(sentences) % len(self._OPENERS)]
         return f"{opener}{' '.join(sentences)}"
 
-    # Shared plurality check used by both pronoun selection and verb
-    # conjugation, so the two can never disagree with each other. Accepts
-    # several text forms of the same subject (e.g. the raw graph identifier
-    # AND the already-humanized display text) because stripping a
-    # "...Community" suffix for readability (see _humanize_entity) loses the
-    # plural signal that the raw identifier still carries - checking both
-    # means "AchikCommunity" displayed as "Achik" still conjugates as plural.
-    def _is_plural_subject(self, *texts: Any) -> bool:
-        for value in texts:
-            lowered = str(value or "").strip().lower()
-            if (
-                lowered.endswith("people")
-                or lowered.endswith("community")
-                or lowered.endswith("communities")
-                or lowered == "they"
-                or lowered == "garo"
-            ):
-                return True
-        return False
-
-    # Picks "They" for a people/community subject, "It" otherwise, so a
-    # repeated subject can be referred back to naturally.
-    def _subject_pronoun(self, subject: Any) -> str:
-        return "They" if self._is_plural_subject(subject) else "It"
-
     # Converts one graph triple into a readable, grounded sentence.
-    # subject_override lets a repeated subject be written as a pronoun
-    # ("They") instead of the full entity name.
     def _format_triple(self, triple: Dict[str, Any], subject_override: Optional[str] = None) -> str:
         raw_subject = triple.get("subject", "")
         subject = subject_override or self._humanize_entity(raw_subject or "This entity", is_subject=True)
@@ -917,11 +1185,95 @@ Answer:"""
         readable_predicate = self._humanize_predicate(raw_predicate, is_plural)
         return f"{subject} {readable_predicate} {obj}."
 
+    # Entities that read as a group rather than one named thing -- "the Garo
+    # people", "Informants", "Traditional Garo Houses" -- need a plural verb
+    # ("face", not "faces"). Curated from the real production graph rather
+    # than a general "ends in s" rule: that rule looks appealing (every
+    # plural subject here happens to end in "s" or is "people"/"children"),
+    # but a blanket version would misfire on this SAME graph -- "Garo
+    # Community Health Status" ends in "s" too and is singular. Checked
+    # deliberately rather than assumed. A known, bounded list, not a claim
+    # of covering every future subject -- see _PREDICATE_TEMPLATES'
+    # docstring for the same tradeoff.
+    _PLURAL_SUBJECT_SUFFIXES = (
+        "people", "authorities", "houses", "utensils", "members", "informants",
+        "children", "programs", "domains",
+    )
+
+    def _is_plural_subject(self, *texts: Any) -> bool:
+        for value in texts:
+            lowered = str(value or "").strip().lower()
+            if (
+                lowered.endswith("people")
+                or lowered.endswith("community")
+                or lowered.endswith("communities")
+                or lowered == "they"
+                or lowered == "garo"
+            ):
+                return True
+        return False
+
+    def _subject_pronoun(self, subject: Any) -> str:
+        return "They" if self._is_plural_subject(subject) else "It"
+
+
+    # One sentence-building function per predicate in the current production
+    # graph (data/production_graph/, 32 distinct predicates), keyed the same
+    # way _format_triple already computed a lookup key. WHY THIS EXISTS: a
+    # live test 2026-10-07 ("What is the Garo community?") showed the OLD
+    # 8-entry dict matched NONE of the real predicates -- including a literal
+    # typo, "LIVE_IN" against the real "LIVING_IN" -- so every answer fell
+    # through to naive concatenation: "The Garo people faces Unemployment"
+    # (wrong verb number) and "Garo People bilingual Bengali" (missing verb
+    # entirely). Each function takes (self, subject, object, is_plural) and
+    # returns a sentence with no trailing period. A predicate from a FUTURE
+    # paper that isn't one of these 32 falls through to _humanize_predicate's
+    # generic word-segmentation path, now at least plural-aware for the
+    # common single-word-verb case -- but closing this for good needs a
+    # controlled predicate vocabulary at extraction time (KNOWN_LIMITATIONS.md
+    # #5), not an ever-growing dict here.
+    _PREDICATE_TEMPLATES: Dict[str, Any] = {
+        "POPULATION": lambda self, s, o, p: f"{s} recorded a population of {o}",
+        "BILINGUAL": lambda self, s, o, p: f"{s} {'are' if p else 'is'} bilingual in {o}",
+        "HAD_INTEREST_IN": lambda self, s, o, p: f"{s} had an interest in {o}",
+        "HAVE_PROPERTY": lambda self, s, o, p: f"{s} {'have' if p else 'has'} {self._article(o)} as a feature",
+        "EVOLVE": lambda self, s, o, p: f"{s} evolved to use {o}",
+        "NAMED": lambda self, s, o, p: f"{s} {'are' if p else 'is'} named {o}",
+        "HAS_TRADITIONAL_RELIGION": lambda self, s, o, p: f"{s} {'have' if p else 'has'} a traditional religious practice of {o}",
+        "HAS_HEALTH_STATUS": lambda self, s, o, p: f"{s} {'have' if p else 'has'} a health status of {o}",
+        "HAS_PERCENTAGE": lambda self, s, o, p: f"{s} {'stand' if p else 'stands'} at {o}",
+        "FACES": lambda self, s, o, p: f"{s} {'face' if p else 'faces'} {o}",
+        "HAS_CONCERN": lambda self, s, o, p: f"{s} {'have' if p else 'has'} a concern about {o}",
+        "HAS_ORIGIN": lambda self, s, o, p: f"{s} {'originate' if p else 'originates'} from {o}",
+        "LIVING_IN": lambda self, s, o, p: f"{s} {'live' if p else 'lives'} in {o}",
+        "LANGUAGE_USED": lambda self, s, o, p: f"{s} {'speak' if p else 'speaks'} {o}",
+        "HAS_LANGUAGE_MAINTENANCE": lambda self, s, o, p: f"{s} {'maintain' if p else 'maintains'} {o}",
+        "DEFINED_BY": lambda self, s, o, p: f"{s} {'are' if p else 'is'} defined by {o}",
+        "IDENTIFIED_DOMAINS": lambda self, s, o, p: f"{s} identified {o} as a domain of language use",
+        "USES": lambda self, s, o, p: f"{s} {'use' if p else 'uses'} {o}",
+        "HAS_USES_IN": lambda self, s, o, p: f"{s} {'have' if p else 'has'} uses in {o}",
+        "ARE_MORE_INVOLVED_THAN": lambda self, s, o, p: f"{s} are more involved than {o}",
+        "EXTENT_OF_USE": lambda self, s, o, p: f"{s} {'have' if p else 'has'} an extent of use in {o}",
+        "RELIGIOUS_DOMAIN": lambda self, s, o, p: f"{s} {'are' if p else 'is'} characterized by the religious domain of {o}",
+        "ISCHRISTIAN": lambda self, s, o, p: f"{s} {'are' if p else 'is'} Christian and attend {o}",
+        "HAS_RELIGIOUS_SCRIPT": lambda self, s, o, p: f"{s} {'have' if p else 'has'} a religious script in {o}",
+        "IS_MAINTAINED_LESS": lambda self, s, o, p: f"{s} {'are' if p else 'is'} maintained less in {o}",
+        "MEDIA_BROADCAST": lambda self, s, o, p: f"{s} {'are' if p else 'is'} broadcast through {o}",
+        "IS_USED_IN": lambda self, s, o, p: f"{s} {'are' if p else 'is'} used in {o}",
+        "HASPOSITIVEATTITUDES": lambda self, s, o, p: f"{s} {'have' if p else 'has'} positive attitudes toward {o}",
+        "EMPHASIZES_LANGUAGES": lambda self, s, o, p: f"{s} {'emphasize' if p else 'emphasizes'} {o}",
+        "RESIDENTS": lambda self, s, o, p: f"{s} {'are residents' if p else 'is a resident'} of {o}",
+        "ABANDONED": lambda self, s, o, p: f"{s} {'have' if p else 'has'} abandoned {o}",
+        "INCLUDES": lambda self, s, o, p: f"{s} {'include' if p else 'includes'} {o}",
+    }
+
     # Makes CamelCase graph identifiers readable in a response, and refers
     # to the Garo people by their full, respectful name rather than just
-    # the bare entity label - but only when Garo IS the subject being
-    # described. An object (e.g. the language someone speaks) keeps the
-    # plain name, since "speak the Garo people" doesn't make sense.
+    # the bare entity label -- but only when used AS a subject. A bare
+    # "Garo" as an OBJECT usually names the language, not the people (e.g.
+    # LANGUAGE_USED's "GaroCommunity -> Garo"); collapsing it the same way
+    # produced a real, confirmed bug: "The Garo people language used The
+    # Garo people" (self-referential, from the object also collapsing).
     def _humanize_entity(self, entity: Any, is_subject: bool = True) -> str:
         raw_text = str(entity or "").strip()
         text = raw_text.replace("_", " ")
@@ -1019,6 +1371,26 @@ class RAGQuerySkeleton(Protocol):
     def close(self) -> None: ...
 
 
+# Where admin uploads and the decision queue live.
+UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", "uploads"))
+
+# Papers in this corpus run well under 10 MB; the cap stops a single request
+# pulling an arbitrary amount into memory.
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+
+def _confidence_scorer(pdf_path: str):
+    """Scores an uploaded paper with the confidence framework.
+
+    Imported lazily so starting the API does not require spaCy, Ollama or the
+    framework's own import-time endpoint resolution -- the chatbot must come
+    up even when admin ingestion cannot run.
+    """
+    from confidence_framework import run_confidence_check
+
+    return run_confidence_check(pdf_path)
+
+
 # Creates an HTTP handler backed by the selected RAG retriever.
 def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesizer):
     class QueryHandler(BaseHTTPRequestHandler):
@@ -1033,10 +1405,24 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
             if self.path == "/health":
                 self._send_json(200, {"status": "ok"})
                 return
+            if self.path == "/admin/queue":
+                if not self._admin_authorised():
+                    return
+                self._send_json(200, {"queue": current_queue(UPLOADS_DIR)})
+                return
+            if self.path.startswith("/admin/paper"):
+                self._handle_paper_download()
+                return
             self._send_json(404, {"error": "Not found"})
 
         # Handles questions sent by the Flutter client.
         def do_POST(self) -> None:
+            if self.path == "/admin/upload":
+                self._handle_admin_upload()
+                return
+            if self.path == "/admin/review":
+                self._handle_manual_review()
+                return
             if self.path != "/query":
                 self._send_json(404, {"error": "Not found"})
                 return
@@ -1049,7 +1435,25 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                     self._send_json(400, {"error": "query is required"})
                     return
 
-                triples = skeleton.query(question)
+                # Capped to what synthesizer.answer() actually sends the model
+                # (SYNTHESIS_EVIDENCE_LIMIT), not the full DEFAULT_TOP_K=25
+                # retrieval. WHY: live-tested 2026-10-07 -- a one-fact answer
+                # like "The population... is not explicitly stated..." was
+                # showing "View verified sources (25)", because the Flutter
+                # client's source count comes straight from this list
+                # (chat_service.dart's _readSources(payload['triples'])), and
+                # it was never trimmed to match what the model actually saw.
+                # A real per-question relevance threshold would be more
+                # honest still, but was tested against all of today's example
+                # questions and found unsafe to ship: for the religion
+                # question fixed earlier today, a threshold would have cut
+                # the two genuinely relevant triples (Judgment, Informants)
+                # while keeping an irrelevant one that outscores them on a
+                # keyword-overlap artifact ("traditional" in both the
+                # question and an unrelated subject name). That needs the
+                # retrieval scorer's stemming gaps (e.g. "live" vs "living")
+                # closed first -- a bigger, separate piece of work.
+                triples = skeleton.query(question, top_k=SYNTHESIS_EVIDENCE_LIMIT)
                 sources = sorted({
                     t.get("source_section", "Unknown")
                     for t in triples
@@ -1066,8 +1470,128 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
             except Exception as error:  # e.g. Neo4j connection or Cypher errors
                 # Report the real problem instead of dropping the connection,
                 # which the app would otherwise show as "Cannot reach RAG.py".
-                print(f"RAG API error: {type(error).__name__}: {error}")
-                self._send_json(500, {"error": f"{type(error).__name__}: {error}"})
+                print(f"Query backend error: {type(error).__name__}: {error}")
+                self._send_json(
+                    502,
+                    {"error": f"Knowledge graph query failed ({type(error).__name__}: {error}). Check Neo4j URI and network/DNS."},
+                )
+
+        # Refuses unless the request carries the shared admin secret. The
+        # Flutter admin role only decides which buttons render -- a role held
+        # in the browser is not access control -- so this is what actually
+        # protects an endpoint that spends inference time and writes files.
+        def _admin_authorised(self) -> bool:
+            expected = os.getenv("ADMIN_UPLOAD_SECRET")
+            if check_admin_secret(self.headers.get("X-Admin-Secret"), expected=expected):
+                return True
+            if not expected:
+                self._send_json(503, {"error":
+                    "ADMIN_UPLOAD_SECRET is not set on the server, so admin "
+                    "endpoints are disabled. Set it in .env."})
+            else:
+                self._send_json(401, {"error": "Admin secret missing or incorrect."})
+            return False
+
+        # Accepts a PDF as the raw request body, with its filename in a header.
+        # Raw bytes rather than multipart/form-data on purpose: the stdlib cgi
+        # module that parsed multipart was removed in Python 3.13, and a Flutter
+        # client posts bodyBytes just as easily.
+        def _handle_admin_upload(self) -> None:
+            if not self._admin_authorised():
+                return
+
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0:
+                self._send_json(400, {"error": "No file was uploaded."})
+                return
+            if length > MAX_UPLOAD_BYTES:
+                self._send_json(413, {"error":
+                    f"That file is {length} bytes; the limit is "
+                    f"{MAX_UPLOAD_BYTES}."})
+                return
+
+            data = self.rfile.read(length)
+            filename = self.headers.get("X-Filename", "")
+
+            # Validated synchronously so a bad upload gets an immediate 400
+            # rather than a 202 and silence.
+            try:
+                name = validate_upload(data, filename)
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+                return
+
+            # Scoring is an LLM job -- minutes per paper on local Ollama, with
+            # a 300s timeout per call -- so it cannot run inside the request.
+            # The admin polls /admin/queue for the verdict.
+            def score_in_background():
+                try:
+                    ingest_pdf(data, name, scorer=_confidence_scorer,
+                               uploads_dir=UPLOADS_DIR)
+                except Exception as error:
+                    print(f"Admin upload scoring failed for {name}: {error}")
+
+            threading.Thread(target=score_in_background, daemon=True).start()
+
+            self._send_json(202, {
+                "status": "scoring",
+                "paper": name,
+                "message": "Upload accepted and being scored. Poll /admin/queue "
+                           "for the verdict; this takes minutes per paper.",
+            })
+
+        # Serves a stored PDF so a reviewer can read what they are judging.
+        # The paper name travels in the query string, which is fine -- it is
+        # not sensitive. The SECRET stays in a header, where it belongs.
+        def _handle_paper_download(self) -> None:
+            if not self._admin_authorised():
+                return
+
+            name = parse_qs(urlparse(self.path).query).get("name", [""])[0]
+            try:
+                data = read_paper_bytes(name, uploads_dir=UPLOADS_DIR)
+            except FileNotFoundError as error:
+                self._send_json(404, {"error": str(error)})
+                return
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+                return
+
+            self.send_response(200)
+            self._send_cors_headers()
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        # Records a person's approve/reject on a paper held for review.
+        def _handle_manual_review(self) -> None:
+            if not self._admin_authorised():
+                return
+
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                paper = str(payload.get("paper", "")).strip()
+                if not paper or "approve" not in payload:
+                    raise ValueError("paper and approve are both required")
+                approve = bool(payload["approve"])
+                note = payload.get("note")
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                self._send_json(400, {"error": f"Invalid request: {error}"})
+                return
+
+            try:
+                outcome = record_manual_decision(
+                    paper, approve=approve, note=note, uploads_dir=UPLOADS_DIR)
+            except FileNotFoundError as error:
+                self._send_json(404, {"error": str(error)})
+                return
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+                return
+
+            self._send_json(200, outcome.to_json())
 
         # Writes a JSON response with CORS enabled for local Flutter clients.
         def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
@@ -1083,7 +1607,8 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
         def _send_cors_headers(self) -> None:
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Allow-Headers",
+                             "Content-Type, X-Admin-Secret, X-Filename")
 
         # Keeps routine request logs concise during local development.
         def log_message(self, format: str, *args: Any) -> None:
@@ -1133,13 +1658,17 @@ def main() -> None:
                         help="Read Entity relationships directly from Neo4j")
     parser.add_argument("--host", default="127.0.0.1",
                         help="API host (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8000,
-                        help="API port (default: 8000)")
+    # default=None, not 8000: lets a hosting platform's injected $PORT win
+    # when --port is not given explicitly, while an explicit --port (local
+    # development) still wins over $PORT.
+    parser.add_argument("--port", type=int, default=None,
+                        help="API port (default: $PORT, or 8000 if that is also unset)")
     parser.add_argument("--approach", choices=["concept", "cypher"], default="concept",
                         help="Retrieval approach (default: concept)")
-    parser.add_argument("--top-k", type=int, default=10,
-                        help="Number of triples to return (default: 10)")
+    parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K,
+                        help=f"Number of triples to return (default: {DEFAULT_TOP_K})")
     args = parser.parse_args()
+    args.port = resolve_port(args.port)
 
     # Verify that the KG file exists.
     if args.neo4j and not args.serve:
