@@ -21,6 +21,7 @@ class ChatPage extends StatefulWidget {
     this.strings = const AppLocalizations('en'),
     this.onLanguageChanged,
     this.onOpenAdmin,
+    this.onOpenUserManagement,
   });
 
   final ChatService service;
@@ -34,6 +35,7 @@ class ChatPage extends StatefulWidget {
   // to the paper-admission screen. This is presentation, not access control:
   // the server's shared secret authorises the requests.
   final VoidCallback? onOpenAdmin;
+  final VoidCallback? onOpenUserManagement;
 
   // Creates the mutable conversation state.
   @override
@@ -589,6 +591,7 @@ class _ChatPageState extends State<ChatPage> {
                   onSignOut: widget.onSignOut,
                   onLanguageChanged: widget.onLanguageChanged,
                   onOpenAdmin: widget.onOpenAdmin,
+                  onOpenUserManagement: widget.onOpenUserManagement,
                   onShowFeedbackHistory: _showFeedbackHistory,
                   autoSpeak: _autoSpeak,
                   onToggleAutoSpeak: _toggleAutoSpeak,
@@ -631,6 +634,7 @@ class _ChatHeader extends StatelessWidget {
     this.onSignOut,
     this.onLanguageChanged,
     this.onOpenAdmin,
+    this.onOpenUserManagement,
     required this.onShowFeedbackHistory,
   });
 
@@ -641,6 +645,7 @@ class _ChatHeader extends StatelessWidget {
   final VoidCallback? onSignOut;
   final ValueChanged<String>? onLanguageChanged;
   final VoidCallback? onOpenAdmin;
+  final VoidCallback? onOpenUserManagement;
   final Future<void> Function() onShowFeedbackHistory;
 
   // Builds the product identity and session controls.
@@ -722,6 +727,12 @@ class _ChatHeader extends StatelessWidget {
             tooltip: strings.text('feedbackHistory'),
             icon: const Icon(Icons.rate_review_outlined),
           ),
+          if (onOpenUserManagement != null)
+            IconButton(
+              onPressed: onOpenUserManagement,
+              tooltip: 'Manage users',
+              icon: const Icon(Icons.people_outline),
+            ),
           const SizedBox(width: 8),
           _RoundIconButton(
             icon: autoSpeak

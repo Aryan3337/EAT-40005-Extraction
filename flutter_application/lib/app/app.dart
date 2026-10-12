@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_localizations.dart';
 import '../features/admin/admin_page.dart';
+import '../features/admin/admin_users_page.dart';
 import '../features/chat/chat_page.dart';
 import '../features/auth/login_page.dart';
 import '../services/admin_service.dart';
@@ -27,6 +28,7 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
   bool _isRestoringSession = true;
   String _languageCode = 'en';
   bool _showingAdmin = false;
+  bool _showingUsers = false;
   String _adminSecret = '';
 
   // showDialog needs a context BELOW MaterialApp -- one that can see the
@@ -75,6 +77,11 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
     }
     if (!mounted) return;
     setState(() => _showingAdmin = true);
+  }
+
+  void _openUsers() {
+    if (!mounted) return;
+    setState(() => _showingUsers = true);
   }
 
   Future<void> _restoreLanguage() async {
@@ -133,6 +140,7 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
     setState(() {
       _session = null;
       _showingAdmin = false;
+      _showingUsers = false;
     });
   }
 
@@ -175,6 +183,14 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
               strings: strings,
               onLanguageChanged: _setLanguage,
             )
+          : _showingUsers && _session!.isAdmin
+          ? AdminUsersPage(
+              service: AdminService(
+                secret: _adminSecret,
+                authToken: _session!.token,
+              ),
+              onClose: () => setState(() => _showingUsers = false),
+            )
           : _showingAdmin && _session!.isAdmin
           ? AdminPage(
               service: AdminService(
@@ -199,6 +215,7 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
               // shared secret is what actually authorises the requests -- a
               // role held in the browser is not access control.
               onOpenAdmin: _session!.isAdmin ? _openAdmin : null,
+              onOpenUserManagement: _session!.isAdmin ? _openUsers : null,
             ),
     );
   }

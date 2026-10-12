@@ -90,6 +90,95 @@ class AuthStore:
     def session(self, token: str) -> Optional[Dict[str, str]]:
         return self._sessions.get(token)
 
+    def users(self) -> list[Dict[str, object]]:
+        with self._driver.session() as session:
+            records = session.run(
+                "MATCH (u:User) "
+                "CALL (u) { "
+                "OPTIONAL MATCH (u)-[:LEFT_FEEDBACK]->(f:Feedback) "
+                "RETURN count(f) AS feedback_count "
+                "} "
+                "CALL (u) { "
+                "OPTIONAL MATCH (u)-[:HAS_CONVERSATION]->(c:Conversation) "
+                "RETURN count(c) AS conversation_count "
+                "} "
+                "CALL (u) { "
+                "OPTIONAL MATCH (u)-[:HAS_CONVERSATION]->(:Conversation)"
+                "-[:HAS_MESSAGE]->(m:ChatMessage) "
+                "RETURN count(m) AS message_count "
+                "} "
+                "RETURN u.email AS email, u.role AS role, "
+                "toString(u.created_at) AS created_at, "
+                "feedback_count, conversation_count, message_count "
+                "ORDER BY u.created_at DESC"
+            )
+            return [dict(record) for record in records]
+
+    def update_user(
+        self,
+        current_email: str,
+        new_email: str,
+        role: str,
+        password: str = "",
+    ) -> None:
+        current_email = self._normalise_identifier(current_email)
+        new_email = self._normalise_identifier(new_email)
+        if role not in {"user", "admin"}:
+            raise ValueError("Role must be user or admin.")
+        if password:
+            self._validate_password(password)
+        with self._driver.session() as session:
+            if current_email != new_email:
+                existing = session.run(
+                    "MATCH (u:User {email: $email}) RETURN u.email AS email",
+                    email=new_email,
+                ).single()
+                if existing is not None:
+                    raise ValueError("An account already exists with that identifier.")
+            user = session.run(
+                "MATCH (u:User {email: $email}) RETURN u.role AS role",
+                email=current_email,
+            ).single()
+            if user is None:
+                raise ValueError("User account not found.")
+            if user["role"] == "admin" and role != "admin":
+                remaining = session.run(
+                    "MATCH (u:User {role: 'admin'}) RETURN count(u) AS count"
+                ).single()
+                if remaining is not None and remaining["count"] <= 1:
+                    raise ValueError("At least one administrator account is required.")
+            password_clause = ", u.password_hash = $password_hash" if password else ""
+            session.run(
+                f"MATCH (u:User {{email: $current_email}}) "
+                f"SET u.email = $new_email, u.role = $role{password_clause}",
+                current_email=current_email,
+                new_email=new_email,
+                role=role,
+                password_hash=self._hash_password(password) if password else None,
+            ).consume()
+            for token, session_user in list(self._sessions.items()):
+                if session_user["email"] == current_email:
+                    del self._sessions[token]
+
+    def delete_user(self, email: str) -> None:
+        email = self._normalise_identifier(email)
+        with self._driver.session() as session:
+            user = session.run(
+                "MATCH (u:User {email: $email}) RETURN u.role AS role",
+                email=email,
+            ).single()
+            if user is None:
+                raise ValueError("User account not found.")
+            if user["role"] == "admin":
+                raise ValueError("Administrator accounts cannot be deleted here.")
+            session.run(
+                "MATCH (u:User {email: $email}) DETACH DELETE u",
+                email=email,
+            ).consume()
+        for token, session_user in list(self._sessions.items()):
+            if session_user["email"] == email:
+                del self._sessions[token]
+
     def save_feedback(
         self,
         user_email: str,

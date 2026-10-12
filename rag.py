@@ -27,7 +27,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import List, Dict, Any, Set, Tuple, Optional, Protocol, Union
@@ -1530,6 +1530,15 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                     print(f"Chat history error: {type(error).__name__}: {error}")
                     self._send_json(503, {"error": "Chat history is unavailable."})
                 return
+            if self.path == "/admin/users":
+                if not self._admin_role_authorised():
+                    return
+                try:
+                    self._send_json(200, {"users": get_auth_store().users()})
+                except Exception as error:
+                    print(f"Admin user list error: {type(error).__name__}: {error}")
+                    self._send_json(503, {"error": "User accounts are unavailable."})
+                return
             if self.path == "/admin/queue":
                 if not self._admin_authorised():
                     return
@@ -1539,6 +1548,32 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 self._handle_paper_download()
                 return
             self._send_json(404, {"error": "Not found"})
+
+        def do_PATCH(self) -> None:
+            prefix = "/admin/users/"
+            if not self.path.startswith(prefix):
+                self._send_json(404, {"error": "Not found"})
+                return
+            if not self._admin_role_authorised():
+                return
+            current_email = unquote(self.path[len(prefix):]).strip()
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                if not isinstance(payload, dict):
+                    raise ValueError("Request body must be a JSON object.")
+                get_auth_store().update_user(
+                    current_email=current_email,
+                    new_email=str(payload.get("email", "")).strip(),
+                    role=str(payload.get("role", "")).strip(),
+                    password=str(payload.get("password", "")),
+                )
+                self._send_json(200, {"status": "updated"})
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                self._send_json(400, {"error": str(error)})
+            except Exception as error:
+                print(f"Admin user update error: {type(error).__name__}: {error}")
+                self._send_json(503, {"error": "User account could not be updated."})
 
         # Handles questions sent by the Flutter client.
         def do_POST(self) -> None:
@@ -1651,6 +1686,19 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 )
 
         def do_DELETE(self) -> None:
+            if self.path.startswith("/admin/users/"):
+                if not self._admin_role_authorised():
+                    return
+                email = unquote(self.path[len("/admin/users/"):]).strip()
+                try:
+                    get_auth_store().delete_user(email)
+                    self._send_json(200, {"status": "deleted"})
+                except (TypeError, ValueError) as error:
+                    self._send_json(400, {"error": str(error)})
+                except Exception as error:
+                    print(f"Admin user delete error: {type(error).__name__}: {error}")
+                    self._send_json(503, {"error": "User account could not be deleted."})
+                return
             user = self._authenticated_user()
             if user is None:
                 return
@@ -1762,6 +1810,15 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
             else:
                 self._send_json(401, {"error": "Admin secret missing or incorrect."})
             return False
+
+        def _admin_role_authorised(self) -> bool:
+            user = self._authenticated_user()
+            if user is None:
+                return False
+            if user.get("role") != "admin":
+                self._send_json(403, {"error": "Administrator access is required."})
+                return False
+            return True
 
         # Accepts a PDF as the raw request body, with its filename in a header.
         # Raw bytes rather than multipart/form-data on purpose: the stdlib cgi

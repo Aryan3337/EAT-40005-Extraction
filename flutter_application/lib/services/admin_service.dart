@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 import '../models/ingest_entry.dart';
+import '../models/admin_user.dart';
 import 'api_config.dart';
 
 // Talks to rag.py's admin endpoints.
@@ -26,10 +27,63 @@ class AdminService {
   final String secret;
   final String authToken;
 
+  String get _baseUrl => endpoint.replaceAll(RegExp(r'/$'), '');
+
   Map<String, String> get _authHeaders => {
     'X-Admin-Secret': secret,
     'Authorization': ['Bearer', authToken].join(' '),
   };
+
+  Map<String, String> get _userAuthHeaders => {
+    'Authorization': ['Bearer', authToken].join(' '),
+  };
+
+  Future<List<AdminUser>> fetchUsers() async {
+    final response = await _client.get(
+      Uri.parse('$_baseUrl/admin/users'),
+      headers: _userAuthHeaders,
+    );
+    if (response.statusCode != 200) {
+      throw AdminException(_errorFor(response));
+    }
+
+    final rows = _decode(response.body)['users'];
+    if (rows is! List) return const [];
+    return rows
+        .whereType<Map>()
+        .map((row) => AdminUser.fromJson(Map<String, dynamic>.from(row)))
+        .toList();
+  }
+
+  Future<void> updateUser({
+    required String currentEmail,
+    required String email,
+    required String role,
+    String password = '',
+  }) async {
+    final response = await _client.patch(
+      Uri.parse('$_baseUrl/admin/users/${Uri.encodeComponent(currentEmail)}'),
+      headers: {..._userAuthHeaders, 'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'email': email,
+        'role': role,
+        if (password.isNotEmpty) 'password': password,
+      }),
+    );
+    if (response.statusCode != 200) {
+      throw AdminException(_errorFor(response));
+    }
+  }
+
+  Future<void> deleteUser(String email) async {
+    final response = await _client.delete(
+      Uri.parse('$_baseUrl/admin/users/${Uri.encodeComponent(email)}'),
+      headers: _userAuthHeaders,
+    );
+    if (response.statusCode != 200) {
+      throw AdminException(_errorFor(response));
+    }
+  }
 
   // Sends the PDF as the raw request body with its name in a header. Raw bytes
   // rather than multipart because the stdlib module that parsed multipart was

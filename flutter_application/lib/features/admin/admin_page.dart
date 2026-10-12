@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../../models/ingest_entry.dart';
+import '../../models/admin_user.dart';
 import '../../services/admin_service.dart';
 
 // A PDF chosen by the admin. The picker is injected rather than imported here
@@ -67,6 +68,9 @@ class _AdminPageState extends State<AdminPage> {
   List<IngestEntry> _queue = const [];
   bool _isLoadingQueue = true;
   bool _isUploading = false;
+  bool _isLoadingUsers = false;
+  final bool _showingUsers = false;
+  List<AdminUser> _users = const [];
   String? _error;
   String? _notice;
   IngestDecision? _openCategory;
@@ -84,6 +88,75 @@ class _AdminPageState extends State<AdminPage> {
     final interval = widget.pollInterval;
     if (interval != null) {
       _poller = Timer.periodic(interval, (_) => _refreshQueue(quietly: true));
+    }
+  }
+
+  Future<void> _refreshUsers() async {
+    setState(() => _isLoadingUsers = true);
+    try {
+      final users = await widget.service.fetchUsers();
+      if (!mounted) return;
+      setState(() {
+        _users = users;
+        _isLoadingUsers = false;
+        _error = null;
+      });
+    } on AdminException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _isLoadingUsers = false;
+        _error = error.message;
+      });
+    }
+  }
+
+  Future<void> _editUser(AdminUser user) async {
+    final result = await showDialog<_UserEditResult>(
+      context: context,
+      builder: (context) => _UserEditDialog(user: user),
+    );
+    if (result == null) return;
+    try {
+      await widget.service.updateUser(
+        currentEmail: user.email,
+        email: result.email,
+        role: result.role,
+        password: result.password,
+      );
+      await _refreshUsers();
+      _say('User account updated.');
+    } on AdminException catch (error) {
+      _say(error.message);
+    }
+  }
+
+  Future<void> _deleteUser(AdminUser user) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete user account?'),
+        content: Text(
+          'Delete ${user.email} and their feedback and chat history?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await widget.service.deleteUser(user.email);
+      await _refreshUsers();
+      _say('User account deleted.');
+    } on AdminException catch (error) {
+      _say(error.message);
     }
   }
 
@@ -223,7 +296,9 @@ class _AdminPageState extends State<AdminPage> {
     return Scaffold(
       appBar: AppBar(
         title: Text(
-          open == null ? 'Paper admission' : _categoryFor(open).label,
+          open == null
+              ? (_showingUsers ? 'Manage users' : 'Paper admission')
+              : _categoryFor(open).label,
         ),
         leading: open != null
             ? IconButton(
@@ -249,16 +324,70 @@ class _AdminPageState extends State<AdminPage> {
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (open == null) _buildUploadSection(),
-          if (open == null) const Divider(height: 24),
+          if (!_showingUsers && open == null) _buildUploadSection(),
+          if (!_showingUsers && open == null) const Divider(height: 24),
           Expanded(
-            child: _isLoadingQueue
+            child: _showingUsers
+                ? _buildUsers()
+                : _isLoadingQueue
                 ? const Center(child: CircularProgressIndicator())
                 : open == null
                 ? _buildCategories()
                 : _buildCategoryDetail(open),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildUsers() {
+    if (_isLoadingUsers) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_users.isEmpty) {
+      return const Center(child: Text('No user accounts found.'));
+    }
+    return RefreshIndicator(
+      onRefresh: _refreshUsers,
+      child: ListView.builder(
+        padding: const EdgeInsets.all(16),
+        itemCount: _users.length,
+        itemBuilder: (context, index) {
+          final user = _users[index];
+          return Card(
+            child: ListTile(
+              leading: CircleAvatar(
+                child: Icon(
+                  user.role == 'admin'
+                      ? Icons.admin_panel_settings_outlined
+                      : Icons.person_outline,
+                ),
+              ),
+              title: Text(user.email),
+              subtitle: Text(
+                '${user.role} • ${user.feedbackCount} feedback • '
+                '${user.conversationCount} conversations • '
+                '${user.messageCount} messages',
+              ),
+              isThreeLine: true,
+              trailing: Wrap(
+                children: [
+                  IconButton(
+                    tooltip: 'Edit user',
+                    onPressed: () => _editUser(user),
+                    icon: const Icon(Icons.edit_outlined),
+                  ),
+                  if (user.role != 'admin')
+                    IconButton(
+                      tooltip: 'Delete user',
+                      onPressed: () => _deleteUser(user),
+                      icon: const Icon(Icons.delete_outline),
+                    ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -619,6 +748,105 @@ class _Banner extends StatelessWidget {
 }
 
 // Asks for the reason behind a manual decision.
+class _UserEditResult {
+  const _UserEditResult({
+    required this.email,
+    required this.role,
+    required this.password,
+  });
+
+  final String email;
+  final String role;
+  final String password;
+}
+
+class _UserEditDialog extends StatefulWidget {
+  const _UserEditDialog({required this.user});
+
+  final AdminUser user;
+
+  @override
+  State<_UserEditDialog> createState() => _UserEditDialogState();
+}
+
+class _UserEditDialogState extends State<_UserEditDialog> {
+  late final TextEditingController _emailController;
+  late final TextEditingController _passwordController;
+  late String _role;
+
+  @override
+  void initState() {
+    super.initState();
+    _emailController = TextEditingController(text: widget.user.email);
+    _passwordController = TextEditingController();
+    _role = widget.user.role;
+  }
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Edit user account'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _emailController,
+              decoration: const InputDecoration(labelText: 'Email or username'),
+            ),
+            DropdownButtonFormField<String>(
+              initialValue: _role,
+              decoration: const InputDecoration(labelText: 'Role'),
+              items: const [
+                DropdownMenuItem(value: 'user', child: Text('User')),
+                DropdownMenuItem(value: 'admin', child: Text('Administrator')),
+              ],
+              onChanged: (value) {
+                if (value != null) setState(() => _role = value);
+              },
+            ),
+            TextField(
+              controller: _passwordController,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'New password (optional)',
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () {
+            final email = _emailController.text.trim();
+            if (email.isEmpty) return;
+            Navigator.pop(
+              context,
+              _UserEditResult(
+                email: email,
+                role: _role,
+                password: _passwordController.text,
+              ),
+            );
+          },
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
+}
+
 class _ReviewDialog extends StatefulWidget {
   const _ReviewDialog({required this.paper, required this.approve});
 
