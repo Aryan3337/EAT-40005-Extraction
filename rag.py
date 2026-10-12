@@ -70,11 +70,39 @@ _STOPWORDS = {
 }
 
 
+# Question phrasings that ask for a quantity the graph stores under a
+# different word. WHY: "What is the population of the Garo community?" and
+# "How many people live in the garo community?" ask the same thing, but only
+# the first contains "population" -- the word that matches the POPULATION
+# predicate. In the second, "many" is a stopword and "people"/"live" match
+# LIVING_IN / RESIDENTS triples instead, so the POPULATION triple ranked low
+# (or fell outside SYNTHESIS_EVIDENCE_LIMIT), the model was shown location
+# evidence for a "how many" question, the relevance gate answered
+# "RELEVANT: no", and the user got NO_GROUNDED_ANSWER_MESSAGE.
+#
+# Applied to the RAW question, before stopword removal, because the trigger
+# phrase "how many" is exactly what the stopword list throws away. A curated
+# list, not a general synonym engine, for the same reason as
+# _KEYWORD_EQUIVALENTS: a bounded list is predictable on this graph.
+_INTENT_EXPANSIONS: List[Tuple["re.Pattern[str]", Tuple[str, ...]]] = [
+    (
+        re.compile(
+            r"\bhow\s+many\b|\bhow\s+much\b|\bnumber\s+of\b|\bheadcount\b"
+            r"|\binhabitants?\b|\bpopulat\w*|\bpopulous\b|\bsize\s+of\b",
+            re.IGNORECASE,
+        ),
+        ("population",),
+    ),
+]
+
+
 def question_keywords(question: str) -> List[str]:
     """Content words from the question, lowercased, duplicates collapsed.
 
     Order is preserved so the scoring is deterministic and reproducible for
-    a given question.
+    a given question. Intent expansions (see _INTENT_EXPANSIONS) are appended
+    after the question's own words, so a question's literal words still come
+    first.
     """
     words = re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", question or "")
     keywords = []
@@ -83,6 +111,12 @@ def question_keywords(question: str) -> List[str]:
         if lowered in _STOPWORDS or lowered in keywords:
             continue
         keywords.append(lowered)
+
+    for pattern, extra_words in _INTENT_EXPANSIONS:
+        if pattern.search(question or ""):
+            for extra in extra_words:
+                if extra not in keywords:
+                    keywords.append(extra)
     return keywords
 
 
