@@ -10,6 +10,64 @@ import 'package:flutter_application/services/chat_service.dart';
 
 void main() {
   group('ChatService source verification', () {
+    test('saves feedback using the signed-in user session', () async {
+      final client = MockClient((request) async {
+        expect(request.url.path, '/feedback');
+        expect(request.headers['authorization'], 'Bearer session-token');
+        expect(jsonDecode(request.body), {
+          'conversation_id': 'conversation-1',
+          'response_text': 'Verified answer',
+          'rating': 'helpful',
+          'comment': 'Useful answer',
+        });
+        return http.Response('{"status":"saved"}', 201);
+      });
+      final service = ChatService(
+        client: client,
+        endpoint: 'http://localhost/query',
+        authToken: 'session-token',
+      );
+
+      await service.saveFeedback(
+        conversationId: 'conversation-1',
+        responseText: 'Verified answer',
+        feedback: MessageFeedback.helpful,
+        comment: 'Useful answer',
+      );
+    });
+
+    test('loads only the signed-in user feedback history', () async {
+      final client = MockClient((request) async {
+        expect(request.method, 'GET');
+        expect(request.url.path, '/feedback');
+        expect(request.headers['authorization'], 'Bearer session-token');
+        return http.Response(
+          jsonEncode({
+            'feedback': [
+              {
+                'response_text': 'Verified answer',
+                'rating': 'notHelpful',
+                'comment': 'Please add more detail.',
+                'created_at': '2026-10-12T09:00:00Z',
+              },
+            ],
+          }),
+          200,
+        );
+      });
+      final service = ChatService(
+        client: client,
+        endpoint: 'http://localhost/query',
+        authToken: 'session-token',
+      );
+
+      final feedback = await service.feedbackHistory();
+
+      expect(feedback, hasLength(1));
+      expect(feedback.single.rating, MessageFeedback.notHelpful);
+      expect(feedback.single.comment, 'Please add more detail.');
+    });
+
     test('parses knowledge-graph triples as source evidence', () async {
       final client = MockClient((request) async {
         expect(jsonDecode(request.body), {

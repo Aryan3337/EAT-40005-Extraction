@@ -56,16 +56,23 @@ void main() {
   // pollInterval is null in most of these on purpose: a periodic timer never
   // lets pumpAndSettle settle. The live-update group opts in and drives the
   // clock with pump() instead.
-  Future<void> pumpPage(WidgetTester tester, AdminService service,
-      {PdfPicker? picker, Duration? pollInterval, PdfViewer? viewer}) async {
-    await tester.pumpWidget(MaterialApp(
-      home: AdminPage(
-        service: service,
-        pickPdf: picker ?? () async => null,
-        viewPdf: viewer,
-        pollInterval: pollInterval,
+  Future<void> pumpPage(
+    WidgetTester tester,
+    AdminService service, {
+    PdfPicker? picker,
+    Duration? pollInterval,
+    PdfViewer? viewer,
+  }) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AdminPage(
+          service: service,
+          pickPdf: picker ?? () async => null,
+          viewPdf: viewer,
+          pollInterval: pollInterval,
+        ),
       ),
-    ));
+    );
     await tester.pumpAndSettle();
   }
 
@@ -78,14 +85,21 @@ void main() {
       _FakeClient((_) => _json(200, {'queue': entries}));
 
   group('the verdict categories', () {
-    testWidgets('the top level is the verdicts, not a list of papers',
-        (tester) async {
+    testWidgets('the top level is the verdicts, not a list of papers', (
+      tester,
+    ) async {
       // Previously every admission was listed flat. An admin wants to know
       // how many are waiting on them, not to scroll a history.
-      await pumpPage(tester, AdminService(client: queueOf([
-        _entry(paper: 'a.pdf'),
-        _entry(paper: 'b.pdf', decision: 'rejected', storedPath: null),
-      ]), secret: 's'));
+      await pumpPage(
+        tester,
+        AdminService(
+          client: queueOf([
+            _entry(paper: 'a.pdf'),
+            _entry(paper: 'b.pdf', decision: 'rejected', storedPath: null),
+          ]),
+          secret: 's',
+        ),
+      );
 
       expect(find.text('Approved'), findsOneWidget);
       expect(find.text('Manual review'), findsOneWidget);
@@ -95,23 +109,34 @@ void main() {
     });
 
     testWidgets('each category counts the papers in it', (tester) async {
-      await pumpPage(tester, AdminService(client: queueOf([
-        _entry(paper: 'a.pdf'),
-        _entry(paper: 'b.pdf'),
-        _entry(paper: 'c.pdf', decision: 'rejected', storedPath: null),
-      ]), secret: 's'));
+      await pumpPage(
+        tester,
+        AdminService(
+          client: queueOf([
+            _entry(paper: 'a.pdf'),
+            _entry(paper: 'b.pdf'),
+            _entry(paper: 'c.pdf', decision: 'rejected', storedPath: null),
+          ]),
+          secret: 's',
+        ),
+      );
 
       expect(find.text('2'), findsOneWidget);
       expect(find.text('1'), findsWidgets);
     });
 
-    testWidgets('a scoring failure is kept apart from the verdicts',
-        (tester) async {
+    testWidgets('a scoring failure is kept apart from the verdicts', (
+      tester,
+    ) async {
       // Folding it into Rejected would tell an admin their paper failed on
       // merit when the confidence model was simply unreachable.
-      await pumpPage(tester, AdminService(client: queueOf([
-        _entry(decision: 'scoring_failed', score: 5),
-      ]), secret: 's'));
+      await pumpPage(
+        tester,
+        AdminService(
+          client: queueOf([_entry(decision: 'scoring_failed', score: 5)]),
+          secret: 's',
+        ),
+      );
 
       expect(find.text('Rejected'), findsOneWidget);
       expect(find.textContaining("Scoring didn't run"), findsOneWidget);
@@ -120,10 +145,16 @@ void main() {
 
   group('drilling into a category', () {
     testWidgets('it lists only that category\'s papers', (tester) async {
-      await pumpPage(tester, AdminService(client: queueOf([
-        _entry(paper: 'approved.pdf'),
-        _entry(paper: 'denied.pdf', decision: 'rejected', storedPath: null),
-      ]), secret: 's'));
+      await pumpPage(
+        tester,
+        AdminService(
+          client: queueOf([
+            _entry(paper: 'approved.pdf'),
+            _entry(paper: 'denied.pdf', decision: 'rejected', storedPath: null),
+          ]),
+          secret: 's',
+        ),
+      );
 
       await openCategory(tester, 'Approved');
 
@@ -131,22 +162,40 @@ void main() {
       expect(find.text('denied.pdf'), findsNothing);
     });
 
-    testWidgets('a rejected paper shows why it was turned down',
-        (tester) async {
-      await pumpPage(tester, AdminService(client: queueOf([
-        _entry(paper: 'denied.pdf', decision: 'rejected', storedPath: null,
-               reasons: ['Scored below the approval threshold.']),
-      ]), secret: 's'));
+    testWidgets('a rejected paper shows why it was turned down', (
+      tester,
+    ) async {
+      await pumpPage(
+        tester,
+        AdminService(
+          client: queueOf([
+            _entry(
+              paper: 'denied.pdf',
+              decision: 'rejected',
+              storedPath: null,
+              reasons: ['Scored below the approval threshold.'],
+            ),
+          ]),
+          secret: 's',
+        ),
+      );
 
       await openCategory(tester, 'Rejected');
 
-      expect(find.textContaining('below the approval threshold'), findsOneWidget);
+      expect(
+        find.textContaining('below the approval threshold'),
+        findsOneWidget,
+      );
     });
 
     testWidgets('going back returns to the categories', (tester) async {
-      await pumpPage(tester, AdminService(client: queueOf([
-        _entry(paper: 'approved.pdf'),
-      ]), secret: 's'));
+      await pumpPage(
+        tester,
+        AdminService(
+          client: queueOf([_entry(paper: 'approved.pdf')]),
+          secret: 's',
+        ),
+      );
       await openCategory(tester, 'Approved');
       expect(find.text('approved.pdf'), findsOneWidget);
 
@@ -157,8 +206,9 @@ void main() {
       expect(find.text('approved.pdf'), findsNothing);
     });
 
-    testWidgets('an empty category says so rather than looking broken',
-        (tester) async {
+    testWidgets('an empty category says so rather than looking broken', (
+      tester,
+    ) async {
       await pumpPage(tester, AdminService(client: queueOf([]), secret: 's'));
 
       await openCategory(tester, 'Approved');
@@ -169,9 +219,13 @@ void main() {
 
   group('the extraction placeholder', () {
     testWidgets('only an approved paper offers extraction', (tester) async {
-      await pumpPage(tester, AdminService(client: queueOf([
-        _entry(paper: 'approved.pdf'),
-      ]), secret: 's'));
+      await pumpPage(
+        tester,
+        AdminService(
+          client: queueOf([_entry(paper: 'approved.pdf')]),
+          secret: 's',
+        ),
+      );
 
       await openCategory(tester, 'Approved');
 
@@ -179,9 +233,15 @@ void main() {
     });
 
     testWidgets('a manual-review paper does not', (tester) async {
-      await pumpPage(tester, AdminService(client: queueOf([
-        _entry(paper: 'maybe.pdf', decision: 'held_for_review'),
-      ]), secret: 's'));
+      await pumpPage(
+        tester,
+        AdminService(
+          client: queueOf([
+            _entry(paper: 'maybe.pdf', decision: 'held_for_review'),
+          ]),
+          secret: 's',
+        ),
+      );
 
       await openCategory(tester, 'Manual review');
 
@@ -190,9 +250,15 @@ void main() {
     });
 
     testWidgets('a rejected paper does not', (tester) async {
-      await pumpPage(tester, AdminService(client: queueOf([
-        _entry(paper: 'denied.pdf', decision: 'rejected', storedPath: null),
-      ]), secret: 's'));
+      await pumpPage(
+        tester,
+        AdminService(
+          client: queueOf([
+            _entry(paper: 'denied.pdf', decision: 'rejected', storedPath: null),
+          ]),
+          secret: 's',
+        ),
+      );
 
       await openCategory(tester, 'Rejected');
 
@@ -202,9 +268,13 @@ void main() {
     testWidgets('it says plainly that it is not wired up', (tester) async {
       // A button that looks real but silently does nothing is worse than no
       // button: an admin would believe extraction had started.
-      await pumpPage(tester, AdminService(client: queueOf([
-        _entry(paper: 'approved.pdf'),
-      ]), secret: 's'));
+      await pumpPage(
+        tester,
+        AdminService(
+          client: queueOf([_entry(paper: 'approved.pdf')]),
+          secret: 's',
+        ),
+      );
       await openCategory(tester, 'Approved');
 
       await tester.tap(find.widgetWithText(FilledButton, 'Extract'));
@@ -215,23 +285,28 @@ void main() {
   });
 
   group('live updates', () {
-    testWidgets('a verdict appears without the admin refreshing',
-        (tester) async {
+    testWidgets('a verdict appears without the admin refreshing', (
+      tester,
+    ) async {
       // Why this exists: scoring takes minutes, and the admin previously had
       // to reload the page to discover what had happened.
       var polls = 0;
       final client = _FakeClient((_) {
         polls++;
-        return _json(200, {'queue': polls > 1 ? [_entry(paper: 'late.pdf')] : []});
+        return _json(200, {
+          'queue': polls > 1 ? [_entry(paper: 'late.pdf')] : [],
+        });
       });
 
-      await tester.pumpWidget(MaterialApp(
-        home: AdminPage(
-          service: AdminService(client: client, secret: 's'),
-          pickPdf: () async => null,
-          pollInterval: const Duration(seconds: 2),
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AdminPage(
+            service: AdminService(client: client, secret: 's'),
+            pickPdf: () async => null,
+            pollInterval: const Duration(seconds: 2),
+          ),
         ),
-      ));
+      );
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 50));
       expect(find.text('1'), findsNothing, reason: 'nothing approved yet');
@@ -240,7 +315,11 @@ void main() {
       await tester.pump(const Duration(milliseconds: 50));
 
       expect(polls, greaterThan(1));
-      expect(find.text('1'), findsWidgets, reason: 'the approved count arrived');
+      expect(
+        find.text('1'),
+        findsWidgets,
+        reason: 'the approved count arrived',
+      );
 
       await tester.pumpWidget(const SizedBox.shrink());
     });
@@ -252,13 +331,15 @@ void main() {
         return _json(200, {'queue': []});
       });
 
-      await tester.pumpWidget(MaterialApp(
-        home: AdminPage(
-          service: AdminService(client: client, secret: 's'),
-          pickPdf: () async => null,
-          pollInterval: const Duration(seconds: 1),
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AdminPage(
+            service: AdminService(client: client, secret: 's'),
+            pickPdf: () async => null,
+            pollInterval: const Duration(seconds: 1),
+          ),
         ),
-      ));
+      );
       await tester.pump();
       await tester.pump(const Duration(seconds: 2));
       final before = polls;
@@ -269,8 +350,9 @@ void main() {
       expect(polls, before, reason: 'a disposed page must not keep polling');
     });
 
-    testWidgets('an uploaded paper shows as scoring before its verdict lands',
-        (tester) async {
+    testWidgets('an uploaded paper shows as scoring before its verdict lands', (
+      tester,
+    ) async {
       // Between upload and verdict the paper is in no category at all, so
       // without this the admin uploads and sees nothing change for minutes.
       final client = _FakeClient((request) {
@@ -280,8 +362,11 @@ void main() {
         return _json(200, {'queue': []});
       });
 
-      await pumpPage(tester, AdminService(client: client, secret: 's'),
-          picker: () async => PickedPdf(filename: 'garo_4.pdf', bytes: _pdf));
+      await pumpPage(
+        tester,
+        AdminService(client: client, secret: 's'),
+        picker: () async => PickedPdf(filename: 'garo_4.pdf', bytes: _pdf),
+      );
 
       await tester.tap(find.text('Choose a PDF'));
       // pump, not pumpAndSettle: the pending tile carries a progress spinner
@@ -297,11 +382,19 @@ void main() {
   });
 
   group('manual review', () {
-    testWidgets('a paper under review offers view, approve and reject',
-        (tester) async {
-      await pumpPage(tester, AdminService(client: queueOf([
-        _entry(paper: 'maybe.pdf', decision: 'held_for_review'),
-      ]), secret: 's'), viewer: (name, bytes) async {});
+    testWidgets('a paper under review offers view, approve and reject', (
+      tester,
+    ) async {
+      await pumpPage(
+        tester,
+        AdminService(
+          client: queueOf([
+            _entry(paper: 'maybe.pdf', decision: 'held_for_review'),
+          ]),
+          secret: 's',
+        ),
+        viewer: (name, bytes) async {},
+      );
 
       await openCategory(tester, 'Manual review');
 
@@ -310,11 +403,17 @@ void main() {
       expect(find.widgetWithText(OutlinedButton, 'Reject'), findsOneWidget);
     });
 
-    testWidgets('an approved paper offers neither approve nor reject',
-        (tester) async {
-      await pumpPage(tester, AdminService(client: queueOf([
-        _entry(paper: 'done.pdf'),
-      ]), secret: 's'), viewer: (name, bytes) async {});
+    testWidgets('an approved paper offers neither approve nor reject', (
+      tester,
+    ) async {
+      await pumpPage(
+        tester,
+        AdminService(
+          client: queueOf([_entry(paper: 'done.pdf')]),
+          secret: 's',
+        ),
+        viewer: (name, bytes) async {},
+      );
 
       await openCategory(tester, 'Approved');
 
@@ -322,13 +421,20 @@ void main() {
       expect(find.widgetWithText(OutlinedButton, 'Reject'), findsNothing);
     });
 
-    testWidgets('without a viewer the app does not offer to show the paper',
-        (tester) async {
+    testWidgets('without a viewer the app does not offer to show the paper', (
+      tester,
+    ) async {
       // A build that cannot render a PDF must hide the button rather than
       // present one that silently does nothing.
-      await pumpPage(tester, AdminService(client: queueOf([
-        _entry(paper: 'maybe.pdf', decision: 'held_for_review'),
-      ]), secret: 's'));
+      await pumpPage(
+        tester,
+        AdminService(
+          client: queueOf([
+            _entry(paper: 'maybe.pdf', decision: 'held_for_review'),
+          ]),
+          secret: 's',
+        ),
+      );
 
       await openCategory(tester, 'Manual review');
 
@@ -338,29 +444,40 @@ void main() {
     testWidgets('a rejected paper is not offered for viewing', (tester) async {
       // An automatically rejected paper was never stored, so there is nothing
       // on the server to fetch.
-      await pumpPage(tester, AdminService(client: queueOf([
-        _entry(paper: 'gone.pdf', decision: 'rejected', storedPath: null),
-      ]), secret: 's'), viewer: (name, bytes) async {});
+      await pumpPage(
+        tester,
+        AdminService(
+          client: queueOf([
+            _entry(paper: 'gone.pdf', decision: 'rejected', storedPath: null),
+          ]),
+          secret: 's',
+        ),
+        viewer: (name, bytes) async {},
+      );
 
       await openCategory(tester, 'Rejected');
 
       expect(find.text('View paper'), findsNothing);
     });
 
-    testWidgets('viewing fetches the bytes and hands them to the viewer',
-        (tester) async {
+    testWidgets('viewing fetches the bytes and hands them to the viewer', (
+      tester,
+    ) async {
       Uint8List? shown;
       final client = _FakeClient((request) {
         if (request.url.path == '/admin/paper') {
           return http.Response.bytes(_pdf, 200);
         }
-        return _json(200, {'queue': [
-          _entry(paper: 'maybe.pdf', decision: 'held_for_review'),
-        ]});
+        return _json(200, {
+          'queue': [_entry(paper: 'maybe.pdf', decision: 'held_for_review')],
+        });
       });
 
-      await pumpPage(tester, AdminService(client: client, secret: 's'),
-          viewer: (name, bytes) async => shown = bytes);
+      await pumpPage(
+        tester,
+        AdminService(client: client, secret: 's'),
+        viewer: (name, bytes) async => shown = bytes,
+      );
       await openCategory(tester, 'Manual review');
 
       await tester.tap(find.text('View paper'));
@@ -376,13 +493,16 @@ void main() {
           submitted = jsonDecode(request.body) as Map<String, dynamic>;
           return _json(200, {});
         }
-        return _json(200, {'queue': [
-          _entry(paper: 'maybe.pdf', decision: 'held_for_review'),
-        ]});
+        return _json(200, {
+          'queue': [_entry(paper: 'maybe.pdf', decision: 'held_for_review')],
+        });
       });
 
-      await pumpPage(tester, AdminService(client: client, secret: 's'),
-          viewer: (name, bytes) async {});
+      await pumpPage(
+        tester,
+        AdminService(client: client, secret: 's'),
+        viewer: (name, bytes) async {},
+      );
       await openCategory(tester, 'Manual review');
 
       await tester.tap(find.widgetWithText(FilledButton, 'Approve'));
@@ -405,13 +525,16 @@ void main() {
           submitted = jsonDecode(request.body) as Map<String, dynamic>;
           return _json(200, {});
         }
-        return _json(200, {'queue': [
-          _entry(paper: 'maybe.pdf', decision: 'held_for_review'),
-        ]});
+        return _json(200, {
+          'queue': [_entry(paper: 'maybe.pdf', decision: 'held_for_review')],
+        });
       });
 
-      await pumpPage(tester, AdminService(client: client, secret: 's'),
-          viewer: (name, bytes) async {});
+      await pumpPage(
+        tester,
+        AdminService(client: client, secret: 's'),
+        viewer: (name, bytes) async {},
+      );
       await openCategory(tester, 'Manual review');
 
       await tester.tap(find.widgetWithText(OutlinedButton, 'Reject'));
@@ -426,13 +549,16 @@ void main() {
       var posts = 0;
       final client = _FakeClient((request) {
         if (request.method == 'POST') posts++;
-        return _json(200, {'queue': [
-          _entry(paper: 'maybe.pdf', decision: 'held_for_review'),
-        ]});
+        return _json(200, {
+          'queue': [_entry(paper: 'maybe.pdf', decision: 'held_for_review')],
+        });
       });
 
-      await pumpPage(tester, AdminService(client: client, secret: 's'),
-          viewer: (name, bytes) async {});
+      await pumpPage(
+        tester,
+        AdminService(client: client, secret: 's'),
+        viewer: (name, bytes) async {},
+      );
       await openCategory(tester, 'Manual review');
 
       await tester.tap(find.widgetWithText(FilledButton, 'Approve'));

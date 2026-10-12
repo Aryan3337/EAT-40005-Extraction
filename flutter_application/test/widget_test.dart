@@ -18,6 +18,8 @@ import 'package:flutter_application/features/auth/login_page.dart';
 import 'package:flutter_application/services/auth_service.dart';
 import 'package:flutter_application/services/chat_service.dart';
 
+import 'test_auth_client.dart';
+
 class _FakeRagClient extends http.BaseClient {
   // Returns the same response shape as the RAG.py HTTP bridge.
   @override
@@ -41,17 +43,15 @@ void main() {
     SharedPreferences.setMockInitialValues({});
   });
 
-  // Role behaviour and the second account are covered in auth_service_test.dart;
-  // this stays as a smoke check that sign-in works at all from the app's side.
-  test('the demo account signs in and an unknown account does not', () async {
-    final service = AuthService();
+  test('a user account signs in and an unknown account does not', () async {
+    final service = AuthService(client: TestAuthClient());
 
     final validSession = await service.signIn(
-      email: AuthService.demoUsername,
-      password: AuthService.demoPassword,
+      email: testUser,
+      password: testUserPassword,
       rememberMe: false,
     );
-    expect(validSession.email, AuthService.demoUsername);
+    expect(validSession.email, testUser);
 
     expect(
       () => service.signIn(
@@ -99,7 +99,7 @@ void main() {
     expect(find.text('वापसी पर स्वागत है'), findsOneWidget);
   });
 
-  testWidgets('offers the five requested interface languages', (
+  testWidgets('offers the supported interface languages', (
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(const KnowledgeGraphApp());
@@ -109,18 +109,16 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('English'), findsNWidgets(2));
-    expect(find.text('Español'), findsOneWidget);
-    expect(find.text('Français'), findsOneWidget);
     expect(find.text('हिन्दी'), findsOneWidget);
-    expect(find.text('中文（普通话）'), findsOneWidget);
+    expect(find.text('বাংলা'), findsOneWidget);
 
-    await tester.tap(find.text('Español').last);
+    await tester.tap(find.text('বাংলা').last);
     await tester.pumpAndSettle();
 
-    expect(find.text('Te damos la bienvenida'), findsOneWidget);
-    expect(find.text('Usuario / Correo electrónico'), findsOneWidget);
+    expect(find.text('আবারও স্বাগতম'), findsOneWidget);
+    expect(find.text('ব্যবহারকারীর নাম / ইমেইল'), findsOneWidget);
     final preferences = await SharedPreferences.getInstance();
-    expect(preferences.getString('app.language'), 'es');
+    expect(preferences.getString('app.language'), 'bn');
   });
 
   testWidgets('sends a question and renders the response', (

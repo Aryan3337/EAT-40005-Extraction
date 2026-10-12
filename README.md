@@ -75,6 +75,27 @@ NEO4J_PASSWORD=your-password-here
 
 **Never commit this file.** It's already excluded via `.gitignore` — don't remove it from there.
 
+### Account login
+
+The Flutter app requires an account before the knowledge graph can be used.
+Choose **Create an account** on the login screen, enter an email address and a
+password of at least eight characters, then sign in with those credentials.
+The Python API stores a salted PBKDF2 password hash on a `User` node in Neo4j;
+the raw password is never stored. The API, not the Flutter client, connects to
+Neo4j, and chat requests use an opaque server-side session token.
+
+Each signed-in user's response ratings and optional comments are stored in
+Neo4j as `(:User)-[:LEFT_FEEDBACK]->(:Feedback)` records. Feedback is linked
+to the user's account and conversation, rather than being shared between
+users or stored only in the browser.
+
+Administrator credentials are also stored in Neo4j as a salted password hash,
+not in `.env`. Create or reset the administrator interactively with:
+
+```powershell
+python bootstrap_admin.py
+```
+
 ### Step 4: Build and start the containers
 
 ```bash

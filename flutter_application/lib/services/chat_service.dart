@@ -6,17 +6,44 @@ import '../app/app_localizations.dart';
 import '../models/chat_message.dart';
 import 'api_config.dart';
 
+class FeedbackRecord {
+  const FeedbackRecord({
+    required this.responseText,
+    required this.rating,
+    required this.comment,
+    required this.createdAt,
+  });
+
+  final String responseText;
+  final MessageFeedback rating;
+  final String comment;
+  final String createdAt;
+
+  factory FeedbackRecord.fromJson(Map<String, dynamic> json) {
+    return FeedbackRecord(
+      responseText: json['response_text'] as String? ?? '',
+      rating: json['rating'] == MessageFeedback.notHelpful.name
+          ? MessageFeedback.notHelpful
+          : MessageFeedback.helpful,
+      comment: json['comment'] as String? ?? '',
+      createdAt: json['created_at'] as String? ?? '',
+    );
+  }
+}
+
 // Sends natural-language questions to the RAG.py API.
 class ChatService {
   ChatService({
     http.Client? client,
     String? endpoint,
+    this.authToken,
     this.strings,
   }) : endpoint = endpoint ?? '$apiBaseUrl/query',
        _client = client ?? http.Client();
 
   final http.Client _client;
   final String endpoint;
+  final String? authToken;
   final AppLocalizations Function()? strings;
 
   AppLocalizations? get _currentStrings => strings?.call();
@@ -39,7 +66,10 @@ class ChatService {
     try {
       final response = await _client.post(
         Uri.parse(endpoint),
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+          'Content-Type': 'application/json',
+          if (authToken != null) 'Authorization': _bearerToken,
+        },
         body: jsonEncode({'query': question, 'language': language}),
       );
 
@@ -67,15 +97,84 @@ class ChatService {
 
       final strings = _currentStrings;
       return _errorMessage(
-        _text('ragHttpError', {'status': '${response.statusCode}'})
-            .replaceAll('{error}', _readError(response.body, strings)),
+        _text('ragHttpError', {
+          'status': '${response.statusCode}',
+        }).replaceAll('{error}', _readError(response.body, strings)),
       );
     } catch (_) {
-      return _errorMessage(
-        _text('cannotReachRag', {'endpoint': endpoint}),
-      );
+      return _errorMessage(_text('cannotReachRag', {'endpoint': endpoint}));
     }
   }
+
+  Future<void> saveFeedback({
+    required String conversationId,
+    required String responseText,
+    required MessageFeedback feedback,
+    required String comment,
+  }) async {
+    if (authToken == null || authToken!.isEmpty) {
+      throw StateError('Sign in is required to save feedback.');
+    }
+    final feedbackEndpoint = endpoint.replaceFirst(
+      RegExp(r'/query$'),
+      '/feedback',
+    );
+    final response = await _client.post(
+      Uri.parse(feedbackEndpoint),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': _bearerToken,
+      },
+      body: jsonEncode({
+        'conversation_id': conversationId,
+        'response_text': responseText,
+        'rating': feedback.name,
+        'comment': comment.trim(),
+      }),
+    );
+    if (response.statusCode != 201) {
+      throw StateError(_readError(response.body, _currentStrings));
+    }
+  }
+
+  Future<List<FeedbackRecord>> feedbackHistory() async {
+    if (authToken == null || authToken!.isEmpty) {
+      throw StateError('Sign in is required to view feedback.');
+    }
+    final feedbackEndpoint = endpoint.replaceFirst(
+      RegExp(r'/query$'),
+      '/feedback',
+    );
+    final response = await _client.get(
+      Uri.parse(feedbackEndpoint),
+      headers: {'Authorization': _bearerToken},
+    );
+    if (response.statusCode != 200) {
+      throw StateError(_readError(response.body, _currentStrings));
+    }
+    final payload = jsonDecode(response.body) as Map<String, dynamic>;
+    final rows = payload['feedback'];
+    if (rows is! List) return const [];
+    return rows
+        .whereType<Map>()
+        .map((row) => FeedbackRecord.fromJson(Map<String, dynamic>.from(row)))
+        .toList();
+  }
+
+  Future<void> clearFeedbackHistory() async {
+    if (authToken == null || authToken!.isEmpty) {
+      throw StateError('Sign in is required to delete feedback.');
+    }
+    final response = await _client.delete(
+      Uri.parse(endpoint.replaceFirst(RegExp(r'/query$'), '/feedback')),
+      headers: {'Authorization': _bearerToken},
+    );
+    if (response.statusCode != 200) {
+      throw StateError(_readError(response.body, _currentStrings));
+    }
+  }
+
+  String get _bearerToken => ['Bearer', authToken!].join(' ');
 
   // Converts knowledge-graph triples into evidence shown beneath the answer.
   List<SourceEvidence> _readSources(dynamic value) {

@@ -13,15 +13,23 @@ import 'api_config.dart';
 // constant-time compare and refuses when it is unset, so a deployment that
 // forgot to configure one has the endpoints disabled rather than open.
 class AdminService {
-  AdminService({http.Client? client, String? endpoint, required this.secret})
-    : endpoint = endpoint ?? apiBaseUrl,
-      _client = client ?? http.Client();
+  AdminService({
+    http.Client? client,
+    String? endpoint,
+    required this.secret,
+    this.authToken = '',
+  }) : endpoint = endpoint ?? apiBaseUrl,
+       _client = client ?? http.Client();
 
   final http.Client _client;
   final String endpoint;
   final String secret;
+  final String authToken;
 
-  Map<String, String> get _authHeaders => {'X-Admin-Secret': secret};
+  Map<String, String> get _authHeaders => {
+    'X-Admin-Secret': secret,
+    'Authorization': ['Bearer', authToken].join(' '),
+  };
 
   // Sends the PDF as the raw request body with its name in a header. Raw bytes
   // rather than multipart because the stdlib module that parsed multipart was
@@ -93,8 +101,9 @@ class AdminService {
   // name travels in the query string -- it is not sensitive -- while the
   // secret stays in a header.
   Future<Uint8List> fetchPaper(String paper) async {
-    final uri = Uri.parse('${endpoint.replaceAll(RegExp(r'/$'), '')}/admin/paper')
-        .replace(queryParameters: {'name': paper});
+    final uri = Uri.parse(
+      '${endpoint.replaceAll(RegExp(r'/$'), '')}/admin/paper',
+    ).replace(queryParameters: {'name': paper});
 
     http.Response response;
     try {
@@ -121,7 +130,11 @@ class AdminService {
   // Records a person's approve/reject on a paper held for review. The server
   // appends it rather than replacing the machine verdict, so the audit trail
   // keeps both.
-  Future<void> submitReview(String paper, {required bool approve, String? note}) async {
+  Future<void> submitReview(
+    String paper, {
+    required bool approve,
+    String? note,
+  }) async {
     http.Response response;
     try {
       response = await _client.post(

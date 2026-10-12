@@ -8,18 +8,21 @@ import '../features/auth/login_page.dart';
 import '../services/admin_service.dart';
 import '../services/auth_service.dart';
 import '../services/chat_service.dart';
+import '../services/chat_history_service.dart';
 import 'pdf_opener.dart';
 import 'pdf_picker.dart';
 
 class KnowledgeGraphApp extends StatefulWidget {
-  const KnowledgeGraphApp({super.key});
+  const KnowledgeGraphApp({super.key, this.authService});
+
+  final AuthService? authService;
 
   @override
   State<KnowledgeGraphApp> createState() => _KnowledgeGraphAppState();
 }
 
 class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
-  final _authService = AuthService();
+  late final AuthService _authService;
   AuthSession? _session;
   bool _isRestoringSession = true;
   String _languageCode = 'en';
@@ -37,6 +40,7 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
   @override
   void initState() {
     super.initState();
+    _authService = widget.authService ?? AuthService();
     _restoreSession();
     _restoreLanguage();
     _restoreAdminSecret();
@@ -113,6 +117,16 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
     setState(() => _session = session);
   }
 
+  Future<void> _register(String email, String password, bool rememberMe) async {
+    final session = await _authService.register(
+      email: email,
+      password: password,
+      rememberMe: rememberMe,
+    );
+    if (!mounted) return;
+    setState(() => _session = session);
+  }
+
   Future<void> _signOut() async {
     await _authService.signOut();
     if (!mounted) return;
@@ -157,18 +171,26 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
           : _session == null
           ? LoginPage(
               onSignIn: _signIn,
+              onRegister: _register,
               strings: strings,
               onLanguageChanged: _setLanguage,
             )
           : _showingAdmin && _session!.isAdmin
           ? AdminPage(
-              service: AdminService(secret: _adminSecret),
+              service: AdminService(
+                secret: _adminSecret,
+                authToken: _session!.token,
+              ),
               pickPdf: pickPdfFile,
               viewPdf: openPdfInNewTab,
               onClose: () => setState(() => _showingAdmin = false),
             )
           : ChatPage(
-              service: ChatService(strings: () => strings),
+              service: ChatService(
+                strings: () => strings,
+                authToken: _session!.token,
+              ),
+              historyService: ChatHistoryService(authToken: _session!.token),
               onSignOut: _signOut,
               userEmail: _session!.email,
               strings: strings,
@@ -190,7 +212,6 @@ class _SessionLoader extends StatelessWidget {
     return const Scaffold(body: Center(child: CircularProgressIndicator()));
   }
 }
-
 
 // Collects the shared secret that authorises admin uploads. It must match
 // ADMIN_UPLOAD_SECRET on the server, which refuses every request when it is

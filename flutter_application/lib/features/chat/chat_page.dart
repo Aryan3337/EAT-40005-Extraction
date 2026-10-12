@@ -123,7 +123,16 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Future<void> _loadHistory() async {
-    final history = await _historyService.load(widget.userEmail);
+    List<ChatConversation> history = [];
+    try {
+      history = await _historyService.load(widget.userEmail);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not load chat history: $error')),
+        );
+      }
+    }
     if (!mounted) return;
     setState(() {
       _history = history;
@@ -196,7 +205,16 @@ class _ChatPageState extends State<ChatPage> {
       conversation,
       ..._history.where((item) => item.id != conversation.id),
     ]..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-    await _historyService.save(widget.userEmail, updated);
+    try {
+      await _historyService.save(widget.userEmail, updated);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not save chat history: $error')),
+        );
+      }
+      return;
+    }
     if (!mounted) return;
     setState(() => _history = updated);
   }
@@ -209,15 +227,171 @@ class _ChatPageState extends State<ChatPage> {
     String comment,
   ) async {
     if (messageIndex < 0 || messageIndex >= _messages.length) return;
+    final message = _messages[messageIndex];
+    if (_conversationId == null || message.author != MessageAuthor.assistant) {
+      return;
+    }
+
+    try {
+      await widget.service.saveFeedback(
+        conversationId: _conversationId!,
+        responseText: message.text,
+        feedback: feedback,
+        comment: comment,
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not save feedback: $error')),
+        );
+      }
+      return;
+    }
 
     setState(() {
-      _messages[messageIndex] = _messages[messageIndex].copyWith(
+      _messages[messageIndex] = message.copyWith(
         feedback: feedback,
         feedbackComment: comment.trim(),
       );
     });
 
     await _saveCurrentConversation();
+  }
+
+  Future<void> _showFeedbackHistory() async {
+    try {
+      final feedback = await widget.service.feedbackHistory();
+      if (!mounted) return;
+      await showModalBottomSheet<void>(
+        context: context,
+        showDragHandle: true,
+        isScrollControlled: true,
+        builder: (context) => SafeArea(
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 12, 0),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        widget.strings.text('feedbackHistory'),
+                        style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: widget.strings.text('clearFeedback'),
+                      icon: const Icon(Icons.delete_sweep_outlined),
+                      onPressed: () async {
+                        final confirmed = await _confirmAction(
+                          widget.strings.text('confirmClearFeedback'),
+                        );
+                        if (!confirmed) return;
+                        await widget.service.clearFeedbackHistory();
+                        if (context.mounted) Navigator.of(context).pop();
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: SizedBox(
+                  height: MediaQuery.sizeOf(context).height * 0.72,
+                  child: feedback.isEmpty
+                      ? Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Text(
+                              widget.strings.text('noFeedbackYet'),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        )
+                      : ListView.separated(
+                          padding: const EdgeInsets.all(20),
+                          itemCount: feedback.length,
+                          separatorBuilder: (_, _) => const Divider(height: 28),
+                          itemBuilder: (context, index) {
+                            final item = feedback[index];
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Icon(
+                                      item.rating == MessageFeedback.helpful
+                                          ? Icons.thumb_up_outlined
+                                          : Icons.thumb_down_outlined,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      item.rating == MessageFeedback.helpful
+                                          ? widget.strings.text('helpful')
+                                          : widget.strings.text('notHelpful'),
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  item.responseText,
+                                  maxLines: 3,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                if (item.comment.isNotEmpty) ...[
+                                  const SizedBox(height: 8),
+                                  Text(item.comment),
+                                ],
+                                if (item.createdAt.isNotEmpty) ...[
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    item.createdAt,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodySmall,
+                                  ),
+                                ],
+                              ],
+                            );
+                          },
+                        ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not load feedback: $error')),
+      );
+    }
+  }
+
+  Future<bool> _confirmAction(String message) async {
+    return await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            content: Text(message),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: Text(widget.strings.text('cancel')),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: Text(widget.strings.text('clearHistory')),
+              ),
+            ],
+          ),
+        ) ??
+        false;
   }
 
   void _scrollToBottom() {
@@ -240,10 +414,7 @@ class _ChatPageState extends State<ChatPage> {
   }) async {
     setState(() => _speakingIndex = index);
     try {
-      final voiceAvailable = await _tts.speak(
-        text,
-        languageCode: languageCode,
-      );
+      final voiceAvailable = await _tts.speak(text, languageCode: languageCode);
       if (!mounted) return;
       if (!voiceAvailable) {
         final language =
@@ -251,9 +422,9 @@ class _ChatPageState extends State<ChatPage> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              widget.strings.text(
-                'speechVoiceUnavailable',
-              ).replaceAll('{language}', language),
+              widget.strings
+                  .text('speechVoiceUnavailable')
+                  .replaceAll('{language}', language),
             ),
           ),
         );
@@ -264,9 +435,9 @@ class _ChatPageState extends State<ChatPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            widget.strings.text(
-              'speechError',
-            ).replaceAll('{error}', error.toString()),
+            widget.strings
+                .text('speechError')
+                .replaceAll('{error}', error.toString()),
           ),
         ),
       );
@@ -349,7 +520,16 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Future<void> _deleteConversation(ChatConversation conversation) async {
-    await _historyService.delete(widget.userEmail, conversation.id);
+    try {
+      await _historyService.delete(widget.userEmail, conversation.id);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not delete chat history: $error')),
+        );
+      }
+      return;
+    }
     if (!mounted) return;
     setState(() {
       _history.removeWhere((item) => item.id == conversation.id);
@@ -358,6 +538,30 @@ class _ChatPageState extends State<ChatPage> {
         _conversationId = null;
       }
     });
+  }
+
+  Future<void> _clearHistory() async {
+    final confirmed = await _confirmAction(
+      widget.strings.text('confirmClearHistory'),
+    );
+    if (!confirmed) return;
+    try {
+      await _historyService.clear(widget.userEmail);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not clear chat history: $error')),
+        );
+      }
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _history.clear();
+      _messages.clear();
+      _conversationId = null;
+    });
+    Navigator.of(context).pop();
   }
 
   // Builds the complete assistant workspace.
@@ -370,6 +574,7 @@ class _ChatPageState extends State<ChatPage> {
         isLoading: _isHistoryLoading,
         onOpen: _openConversation,
         onDelete: _deleteConversation,
+        onClear: _clearHistory,
         onNewChat: _startNewChat,
       ),
       body: SafeArea(
@@ -384,6 +589,7 @@ class _ChatPageState extends State<ChatPage> {
                   onSignOut: widget.onSignOut,
                   onLanguageChanged: widget.onLanguageChanged,
                   onOpenAdmin: widget.onOpenAdmin,
+                  onShowFeedbackHistory: _showFeedbackHistory,
                   autoSpeak: _autoSpeak,
                   onToggleAutoSpeak: _toggleAutoSpeak,
                 ),
@@ -425,6 +631,7 @@ class _ChatHeader extends StatelessWidget {
     this.onSignOut,
     this.onLanguageChanged,
     this.onOpenAdmin,
+    required this.onShowFeedbackHistory,
   });
 
   final Future<void> Function() onNewChat;
@@ -434,6 +641,7 @@ class _ChatHeader extends StatelessWidget {
   final VoidCallback? onSignOut;
   final ValueChanged<String>? onLanguageChanged;
   final VoidCallback? onOpenAdmin;
+  final Future<void> Function() onShowFeedbackHistory;
 
   // Builds the product identity and session controls.
   @override
@@ -509,6 +717,11 @@ class _ChatHeader extends StatelessWidget {
               tooltip: 'Paper admission',
               icon: const Icon(Icons.admin_panel_settings_outlined),
             ),
+          IconButton(
+            onPressed: onShowFeedbackHistory,
+            tooltip: strings.text('feedbackHistory'),
+            icon: const Icon(Icons.rate_review_outlined),
+          ),
           const SizedBox(width: 8),
           _RoundIconButton(
             icon: autoSpeak
@@ -543,6 +756,7 @@ class _HistoryDrawer extends StatelessWidget {
     required this.isLoading,
     required this.onOpen,
     required this.onDelete,
+    required this.onClear,
     required this.onNewChat,
   });
 
@@ -551,6 +765,7 @@ class _HistoryDrawer extends StatelessWidget {
   final bool isLoading;
   final Future<void> Function(ChatConversation conversation) onOpen;
   final Future<void> Function(ChatConversation conversation) onDelete;
+  final Future<void> Function() onClear;
   final Future<void> Function() onNewChat;
 
   @override
@@ -577,6 +792,11 @@ class _HistoryDrawer extends StatelessWidget {
                     onPressed: onNewChat,
                     tooltip: strings.text('newChat'),
                     icon: const Icon(Icons.add_comment_outlined),
+                  ),
+                  IconButton(
+                    onPressed: onClear,
+                    tooltip: strings.text('clearHistory'),
+                    icon: const Icon(Icons.delete_sweep_outlined),
                   ),
                 ],
               ),

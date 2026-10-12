@@ -178,7 +178,11 @@ class _AdminPageState extends State<AdminPage> {
     if (note == null) return; // cancelled
 
     try {
-      await widget.service.submitReview(entry.paper, approve: approve, note: note);
+      await widget.service.submitReview(
+        entry.paper,
+        approve: approve,
+        note: note,
+      );
       if (!mounted) return;
       setState(() => _openCategory = null);
       _say('${entry.paper} ${approve ? 'approved' : 'rejected'}.');
@@ -218,9 +222,9 @@ class _AdminPageState extends State<AdminPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(open == null
-            ? 'Paper admission'
-            : _categoryFor(open).label),
+        title: Text(
+          open == null ? 'Paper admission' : _categoryFor(open).label,
+        ),
         leading: open != null
             ? IconButton(
                 icon: const Icon(Icons.arrow_back),
@@ -228,12 +232,12 @@ class _AdminPageState extends State<AdminPage> {
                 onPressed: () => setState(() => _openCategory = null),
               )
             : widget.onClose == null
-                ? null
-                : IconButton(
-                    icon: const Icon(Icons.arrow_back),
-                    tooltip: 'Back to chat',
-                    onPressed: widget.onClose,
-                  ),
+            ? null
+            : IconButton(
+                icon: const Icon(Icons.arrow_back),
+                tooltip: 'Back to chat',
+                onPressed: widget.onClose,
+              ),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -251,8 +255,8 @@ class _AdminPageState extends State<AdminPage> {
             child: _isLoadingQueue
                 ? const Center(child: CircularProgressIndicator())
                 : open == null
-                    ? _buildCategories()
-                    : _buildCategoryDetail(open),
+                ? _buildCategories()
+                : _buildCategoryDetail(open),
           ),
         ],
       ),
@@ -308,8 +312,10 @@ class _AdminPageState extends State<AdminPage> {
                 height: 24,
                 child: CircularProgressIndicator(strokeWidth: 2),
               ),
-              title: Text(paper,
-                  style: const TextStyle(fontWeight: FontWeight.w600)),
+              title: Text(
+                paper,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
               subtitle: const Text('Scoring — this takes a few minutes'),
             ),
           ),
@@ -414,7 +420,8 @@ _Category _categoryFor(IngestDecision decision) {
     case IngestDecision.scoringFailed:
       return const _Category(
         label: "Scoring didn't run",
-        meaning: 'Not a verdict — the confidence model could not be reached. '
+        meaning:
+            'Not a verdict — the confidence model could not be reached. '
             'These papers were kept and can be scored again.',
         emptyPhrase: 'waiting to be scored again',
         icon: Icons.cloud_off,
@@ -449,8 +456,10 @@ class _CategoryCard extends StatelessWidget {
       child: ListTile(
         onTap: onTap,
         leading: Icon(category.icon, color: category.colour, size: 28),
-        title: Text(category.label,
-            style: const TextStyle(fontWeight: FontWeight.w600)),
+        title: Text(
+          category.label,
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
         subtitle: Text(category.meaning),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
@@ -507,11 +516,12 @@ class _PaperTile extends StatelessWidget {
                 Icon(category.icon, color: category.colour, size: 20),
                 const SizedBox(width: 10),
                 Expanded(
-                  child: Text(entry.paper,
-                      style: const TextStyle(fontWeight: FontWeight.w600)),
+                  child: Text(
+                    entry.paper,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
                 ),
-                if (entry.isVerdict)
-                  Text(entry.scoreLabel, style: small),
+                if (entry.isVerdict) Text(entry.scoreLabel, style: small),
               ],
             ),
             if (!entry.isVerdict)
@@ -608,7 +618,6 @@ class _Banner extends StatelessWidget {
   }
 }
 
-
 // Asks for the reason behind a manual decision.
 class _ReviewDialog extends StatefulWidget {
   const _ReviewDialog({required this.paper, required this.approve});
@@ -638,10 +647,12 @@ class _ReviewDialogState extends State<_ReviewDialog> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(widget.approve
-              ? 'It moves to Approved and is queued for extraction.'
-              : 'It moves to Rejected. The file is kept, so this can be '
-                  'revisited.'),
+          Text(
+            widget.approve
+                ? 'It moves to Approved and is queued for extraction.'
+                : 'It moves to Rejected. The file is kept, so this can be '
+                      'revisited.',
+          ),
           const SizedBox(height: 12),
           TextField(
             controller: _controller,

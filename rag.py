@@ -38,6 +38,7 @@ import requests
 from admin_ingest import (check_admin_secret, current_queue, ingest_pdf,
                           read_paper_bytes, record_manual_decision,
                           validate_upload)
+from auth_store import AuthStore
 from llm_endpoint import ollama_tunnel_headers, resolve_llm_endpoint
 
 try:
@@ -892,9 +893,13 @@ def mymemory_translate(text: str, source: str, target: str) -> str:
     email = os.getenv("MYMEMORY_EMAIL") or None
     try:
         translator = MyMemoryTranslator(source=source_code, target=target_code, email=email)
-        translated = []
+        translated: List[str] = []
         for chunk in _split_for_limit(text, _MYMEMORY_MAX_CHARS):
-            result = (translator.translate(chunk) or "").strip()
+            translation = translator.translate(chunk)
+            if isinstance(translation, list):
+                result = "".join(translation).strip()
+            else:
+                result = (translation or "").strip()
             # Out of quota is reported as a normal 200 with a warning
             # sentence in place of the translation.
             if "MYMEMORY WARNING" in result.upper():
@@ -1477,6 +1482,14 @@ def _confidence_scorer(pdf_path: str):
 
 # Creates an HTTP handler backed by the selected RAG retriever.
 def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesizer):
+    auth_store: Optional[AuthStore] = None
+
+    def get_auth_store() -> AuthStore:
+        nonlocal auth_store
+        if auth_store is None:
+            auth_store = AuthStore()
+        return auth_store
+
     class QueryHandler(BaseHTTPRequestHandler):
         # Allows Flutter web to preflight cross-origin API requests.
         def do_OPTIONS(self) -> None:
@@ -1488,6 +1501,34 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
         def do_GET(self) -> None:
             if self.path == "/health":
                 self._send_json(200, {"status": "ok"})
+                return
+            if self.path == "/feedback":
+                user = self._authenticated_user()
+                if user is None:
+                    return
+                try:
+                    self._send_json(
+                        200,
+                        {"feedback": get_auth_store().feedback_for_user(user["email"])},
+                    )
+                except Exception as error:
+                    print(f"Feedback history error: {type(error).__name__}: {error}")
+                    self._send_json(
+                        503, {"error": "Feedback history is unavailable."}
+                    )
+                return
+            if self.path == "/history":
+                user = self._authenticated_user()
+                if user is None:
+                    return
+                try:
+                    self._send_json(
+                        200,
+                        {"conversations": get_auth_store().history_for_user(user["email"])},
+                    )
+                except Exception as error:
+                    print(f"Chat history error: {type(error).__name__}: {error}")
+                    self._send_json(503, {"error": "Chat history is unavailable."})
                 return
             if self.path == "/admin/queue":
                 if not self._admin_authorised():
@@ -1501,6 +1542,18 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
 
         # Handles questions sent by the Flutter client.
         def do_POST(self) -> None:
+            if self.path == "/auth/register":
+                self._handle_auth(register=True)
+                return
+            if self.path == "/auth/login":
+                self._handle_auth(register=False)
+                return
+            if self.path == "/feedback":
+                self._handle_feedback()
+                return
+            if self.path == "/history":
+                self._handle_history_save()
+                return
             if self.path == "/admin/upload":
                 self._handle_admin_upload()
                 return
@@ -1509,6 +1562,8 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 return
             if self.path != "/query":
                 self._send_json(404, {"error": "Not found"})
+                return
+            if self._authenticated_user() is None:
                 return
 
             try:
@@ -1595,11 +1650,108 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                     {"error": f"Knowledge graph query failed ({type(error).__name__}: {error}). Check Neo4j URI and network/DNS."},
                 )
 
+        def do_DELETE(self) -> None:
+            user = self._authenticated_user()
+            if user is None:
+                return
+            if self.path == "/feedback":
+                get_auth_store().delete_feedback(user["email"])
+                self._send_json(200, {"status": "deleted"})
+                return
+            if self.path.startswith("/history/"):
+                conversation_id = self.path.removeprefix("/history/").strip()
+                if not conversation_id:
+                    self._send_json(400, {"error": "Conversation id is required."})
+                    return
+                get_auth_store().delete_history(user["email"], conversation_id)
+                self._send_json(200, {"status": "deleted"})
+                return
+            self._send_json(404, {"error": "Not found"})
+
+        def _handle_history_save(self) -> None:
+            user = self._authenticated_user()
+            if user is None:
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                conversations = payload.get("conversations")
+                if not isinstance(conversations, list):
+                    raise ValueError("conversations must be a list.")
+                get_auth_store().save_history(user["email"], conversations)
+                self._send_json(200, {"status": "saved"})
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                self._send_json(400, {"error": f"Invalid history: {error}"})
+            except Exception as error:
+                print(f"Chat history storage error: {type(error).__name__}: {error}")
+                self._send_json(503, {"error": "Chat history storage is unavailable."})
+
+        def _authenticated_user(self) -> Optional[Dict[str, str]]:
+            header = self.headers.get("Authorization", "")
+            token = header.removeprefix("Bearer ").strip()
+            user = get_auth_store().session(token) if token else None
+            if user is None:
+                self._send_json(401, {"error": "Sign in is required."})
+            return user
+
+        def _handle_auth(self, register: bool) -> None:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                email = str(payload.get("email", ""))
+                password = str(payload.get("password", ""))
+                account = (
+                    get_auth_store().register(email, password)
+                    if register
+                    else get_auth_store().login(email, password)
+                )
+                if account is None:
+                    self._send_json(401, {"error": "Invalid credentials."})
+                    return
+                self._send_json(201 if register else 200, account)
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+            except Exception as error:
+                if register and "already exists" in str(error).lower():
+                    self._send_json(409, {"error": "An account already exists."})
+                    return
+                print(f"Authentication backend error: {type(error).__name__}: {error}")
+                self._send_json(503, {"error": "Authentication service unavailable."})
+
+        def _handle_feedback(self) -> None:
+            user = self._authenticated_user()
+            if user is None:
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                if not isinstance(payload, dict):
+                    raise ValueError("Request body must be a JSON object.")
+                get_auth_store().save_feedback(
+                    user_email=user["email"],
+                    conversation_id=str(payload.get("conversation_id", "")).strip(),
+                    response_text=str(payload.get("response_text", "")).strip(),
+                    rating=str(payload.get("rating", "")).strip(),
+                    comment=str(payload.get("comment", "")).strip(),
+                )
+                self._send_json(201, {"status": "saved"})
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                self._send_json(400, {"error": f"Invalid feedback: {error}"})
+            except Exception as error:
+                print(f"Feedback storage error: {type(error).__name__}: {error}")
+                self._send_json(503, {"error": "Feedback storage is unavailable."})
+
         # Refuses unless the request carries the shared admin secret. The
         # Flutter admin role only decides which buttons render -- a role held
         # in the browser is not access control -- so this is what actually
         # protects an endpoint that spends inference time and writes files.
         def _admin_authorised(self) -> bool:
+            user = self._authenticated_user()
+            if user is None:
+                return False
+            if user.get("role") != "admin":
+                self._send_json(403, {"error": "Administrator access is required."})
+                return False
             expected = os.getenv("ADMIN_UPLOAD_SECRET")
             if check_admin_secret(self.headers.get("X-Admin-Secret"), expected=expected):
                 return True
@@ -1727,7 +1879,7 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers",
-                             "Content-Type, X-Admin-Secret, X-Filename")
+                             "Content-Type, Authorization, X-Admin-Secret, X-Filename")
 
         # Keeps routine request logs concise during local development.
         def log_message(self, format: str, *args: Any) -> None:

@@ -21,5 +21,8 @@ Future<void> openPdfInNewTab(String filename, Uint8List bytes) async {
   // The new tab needs the URL to still resolve when it loads, so this is
   // revoked on a delay rather than immediately. The browser reclaims it on
   // unload regardless.
-  Future.delayed(const Duration(minutes: 2), () => web.URL.revokeObjectURL(url));
+  Future.delayed(
+    const Duration(minutes: 2),
+    () => web.URL.revokeObjectURL(url),
+  );
 }

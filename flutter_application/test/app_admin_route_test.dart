@@ -12,8 +12,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_application/app/app.dart';
 import 'package:flutter_application/services/auth_service.dart';
 
+import 'test_auth_client.dart';
+
 Future<void> signIn(WidgetTester tester, String user, String password) async {
-  await tester.pumpWidget(const KnowledgeGraphApp());
+  await tester.pumpWidget(
+    KnowledgeGraphApp(authService: AuthService(client: TestAuthClient())),
+  );
   await tester.pumpAndSettle();
 
   final fields = find.byType(TextFormField);
@@ -29,22 +33,23 @@ void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
   testWidgets('an admin sees the paper-admission entry point', (tester) async {
-    await signIn(tester, AuthService.adminUsername, AuthService.adminPassword);
+    await signIn(tester, testAdmin, testAdminPassword);
 
     expect(find.byTooltip('Paper admission'), findsOneWidget);
   });
 
   testWidgets('an ordinary user does not', (tester) async {
-    await signIn(tester, AuthService.demoUsername, AuthService.demoPassword);
+    await signIn(tester, testUser, testUserPassword);
 
     expect(find.byTooltip('Paper admission'), findsNothing);
   });
 
-  testWidgets('tapping it asks for the admin secret without crashing',
-      (tester) async {
+  testWidgets('tapping it asks for the admin secret without crashing', (
+    tester,
+  ) async {
     // This is the one that failed in the browser: showDialog needs a context
     // below MaterialApp, and app.dart was passing one from above it.
-    await signIn(tester, AuthService.adminUsername, AuthService.adminPassword);
+    await signIn(tester, testAdmin, testAdminPassword);
 
     await tester.tap(find.byTooltip('Paper admission'));
     await tester.pumpAndSettle();
@@ -54,7 +59,7 @@ void main() {
   });
 
   testWidgets('entering the secret opens the admin screen', (tester) async {
-    await signIn(tester, AuthService.adminUsername, AuthService.adminPassword);
+    await signIn(tester, testAdmin, testAdminPassword);
     await tester.tap(find.byTooltip('Paper admission'));
     await tester.pumpAndSettle();
 
@@ -67,7 +72,7 @@ void main() {
   });
 
   testWidgets('cancelling the secret prompt stays on the chat', (tester) async {
-    await signIn(tester, AuthService.adminUsername, AuthService.adminPassword);
+    await signIn(tester, testAdmin, testAdminPassword);
     await tester.tap(find.byTooltip('Paper admission'));
     await tester.pumpAndSettle();
 

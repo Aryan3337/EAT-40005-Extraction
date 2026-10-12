@@ -1,7 +1,13 @@
 // One decision from the admin upload queue, as rag.py's /admin/queue returns
 // it. Mirrors admin_ingest.IngestOutcome.to_json plus the server's timestamp.
 
-enum IngestDecision { readyToExtract, heldForReview, rejected, scoringFailed, unknown }
+enum IngestDecision {
+  readyToExtract,
+  heldForReview,
+  rejected,
+  scoringFailed,
+  unknown,
+}
 
 class IngestEntry {
   const IngestEntry({
@@ -57,7 +63,9 @@ class IngestEntry {
       paper: json['paper']?.toString() ?? 'unknown',
       decision: decisionFrom(json['decision']?.toString()),
       score: json['score'] is num ? (json['score'] as num).toInt() : null,
-      maxScore: json['max_score'] is num ? (json['max_score'] as num).toInt() : null,
+      maxScore: json['max_score'] is num
+          ? (json['max_score'] as num).toInt()
+          : null,
       outcome: json['outcome']?.toString(),
       reasons: rawReasons is List
           ? rawReasons.map((r) => r.toString()).toList()
