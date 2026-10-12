@@ -37,7 +37,7 @@ class SpeechService {
     if (!_isAvailable) return;
     await _speech.listen(
       onResult: (result) => onResult(result.recognizedWords),
-      localeId: localeId,
+      listenOptions: SpeechListenOptions(localeId: localeId),
     );
   }
 
