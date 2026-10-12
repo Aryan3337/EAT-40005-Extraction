@@ -4,4 +4,6 @@ neo4j
 python-dotenv
 rapidfuzz
 spacy
+openpyxl
+pytest
 wordninja

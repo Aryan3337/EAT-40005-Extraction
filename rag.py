@@ -1007,17 +1007,10 @@ Do not invent facts, names, dates, or explanations that are not supported.
     unless the question asks for them.
     If the question asks what an entity is, begin with a direct definition and then add
     one or two supported details such as location, language, or community identity.
-    Translate every graph identifier (CamelCase or underscore_joined names such as
-    GaroCommunity, HAS_A_POPULATION, or source_section) into plain natural language;
-    never expose raw graph identifiers in the answer.
-    Write in a natural, conversational style rather than listing disconnected facts.
-    Vary sentence openings, use pronouns after the first clear mention, and use natural
-    connectors only where they help. Write plain prose only: no markdown, headings,
-    bullets, or numbered lists. Do not describe your answering process or use phrases
-    such as "the evidence supports" or "according to the data".
-    Write 1-2 short sentences for a simple factual question; use more only if the
-    question genuinely requires several distinct facts. Do not mention prompts, models,
-    retrieval, graph triples, JSON, or page numbers.
+    Translate graph identifiers such as GaroCommunity into natural language such as
+    "the Garo community". Write 1-2 short sentences for a simple factual question; use
+    more only if the question genuinely requires several distinct facts. Do not mention
+    prompts, models, retrieval, graph triples, or page numbers.
     Only add a sentence about incomplete evidence if the evidence truly does not answer
     the question. If it does answer the question, answer it plainly and stop -- do not
     add a closing disclaimer out of habit.
@@ -1089,9 +1082,9 @@ Answer:"""
     # Produces a readable answer when Ollama is offline or unavailable.
     def _fallback_answer(self, triples: List[Dict[str, Any]]) -> str:
         # Drop exact-duplicate facts (same subject/predicate/object) before
-        # anything else, so a relationship stored twice in the graph doesn't
-        # read back as a robotic repeated clause ("...live in Mymensingh,
-        # and live in Mymensingh.").
+        # anything else, so a relationship stored twice in the graph (e.g.
+        # cited from two passages) doesn't read back as a robotic repeated
+        # clause ("...live in Mymensingh. Also, ...live in Mymensingh.").
         deduped: List[Dict[str, Any]] = []
         seen = set()
         for triple in triples:
@@ -1104,84 +1097,36 @@ Answer:"""
                 continue
             seen.add(key)
             deduped.append(triple)
-        triples = deduped
 
-        groups: List[List[str]] = []
-        previous_subject = None
-        for triple in triples[:6]:
-            subject_key = str(triple.get("subject", "")).strip().lower()
-            if subject_key and subject_key == previous_subject and groups:
-                pronoun = self._subject_pronoun(triple.get("subject", ""))
-                clause = self._format_triple(triple, subject_override=pronoun).rstrip(".")
-                if clause.startswith(pronoun):
-                    clause = clause[len(pronoun):].lstrip()
-                groups[-1].append(clause)
-            else:
-                sentence = self._format_triple(triple).rstrip(".")
-                if sentence:
-                    groups.append([sentence])
-            previous_subject = subject_key
-
-        groups = [g for g in groups if g and g[0]]
-        if not groups:
-            return "I could not find enough connected evidence to answer that question."
-
-        sentences = []
-        for i, clauses in enumerate(groups):
-            # Join same-subject clauses like a normal English list: commas
-            # between all but the last pair, "and" only before the last one.
-            if len(clauses) == 1:
-                text = clauses[0]
-            else:
-                text = ", ".join(clauses[:-1]) + f", and {clauses[-1]}"
-            if i > 0:
-                text = f"{self._CONNECTORS[i % len(self._CONNECTORS)]}{text}"
-            sentences.append(text + ".")
-
-        opener = self._OPENERS[len(sentences) % len(self._OPENERS)]
-        return f"{opener}{' '.join(sentences)}"
+        statements = [self._format_triple(triple) for triple in deduped[:6]]
+        statements = [statement for statement in statements if statement]
+        if not statements:
+            return NO_GROUNDED_ANSWER_MESSAGE
+        return "Based on the available knowledge, " + " ".join(statements)
 
     # Converts one graph triple into a readable, grounded sentence.
-    def _format_triple(self, triple: Dict[str, Any], subject_override: Optional[str] = None) -> str:
+    def _format_triple(self, triple: Dict[str, Any]) -> str:
         raw_subject = triple.get("subject", "")
-        subject = subject_override or self._humanize_entity(raw_subject or "This entity", is_subject=True)
+        subject = self._humanize_entity(raw_subject or "This entity")
         raw_predicate = str(triple.get("predicate", ""))
         predicate_key = raw_predicate.upper().replace(" ", "_")
-        # is_subject=False: an object such as a language name ("Garo") must
-        # stay as written and never get expanded into "the Garo people" -
-        # that expansion only makes sense when Garo IS the thing being
-        # talked about, not something it's merely associated with.
-        obj = self._humanize_entity(triple.get("object", "another entity"), is_subject=False)
-        # When this is a pronoun continuation, the pronoun itself already
-        # encodes plurality ("They" vs "It") - trust that rather than
-        # re-deriving it, since the pronoun was chosen from the full raw
-        # subject before any readability trimming happened. Otherwise check
-        # both the raw identifier and the display text (see
-        # _is_plural_subject for why both matter).
-        is_plural = (
-            subject_override == "They"
-            if subject_override
-            else self._is_plural_subject(raw_subject, subject)
-        )
+        # as_subject=False: a bare "Garo" as an OBJECT usually names the
+        # language (e.g. LANGUAGE_USED's "GaroCommunity -> Garo"), not the
+        # people -- see _humanize_entity for the bug this avoids.
+        obj = self._humanize_entity(triple.get("object", "another entity"), as_subject=False)
+        # Check both the RAW identifier and the already-humanized display
+        # text, not just the latter: _humanize_entity strips a trailing
+        # "...Community" for readability (e.g. "AchikCommunity" -> "Achik"),
+        # which silently throws away the plural signal the raw identifier
+        # still carries. Checking only the display text would conjugate
+        # "Achik lives in..." as singular even though it names a community.
+        is_plural = self._is_plural_subject(raw_subject, subject)
 
-        templates = {
-            "IS_A": f"{subject} are {self._article(obj)}" if is_plural else f"{subject} is {self._article(obj)}",
-            "TYPE": f"{subject} are {self._article(obj)}" if is_plural else f"{subject} is {self._article(obj)}",
-            "LOCATED_IN": f"{subject} are located in {obj}" if is_plural else f"{subject} is located in {obj}",
-            "LIVE_IN": f"{subject} live in {obj}" if is_plural else f"{subject} lives in {obj}",
-            "SPEAK_LANGUAGE": f"{subject} speak {obj}" if is_plural else f"{subject} speaks {obj}",
-            "BELONG_TO": f"{subject} belong to {obj}" if is_plural else f"{subject} belongs to {obj}",
-            "HAS_LANGUAGE": f"{subject} use the {obj} language" if is_plural else f"{subject} uses the {obj} language",
-            "HAS_A_POPULATION": f"{subject} have an estimated population of {obj}" if is_plural else f"{subject} has an estimated population of {obj}",
-        }
-        sentence = templates.get(predicate_key)
-        if sentence:
-            return f"{sentence}."
+        sentence_builder = self._PREDICATE_TEMPLATES.get(predicate_key)
+        if sentence_builder:
+            return f"{sentence_builder(self, subject, obj, is_plural)}."
         # Pass the ORIGINAL predicate text (not the upper-cased key) so any
-        # camelCase word boundaries it still has are available to humanize,
-        # plus is_plural so an un-templated predicate (e.g. FACES) still
-        # agrees with a plural subject instead of staying stuck in the
-        # singular ("faces" vs "face").
+        # camelCase word boundaries it still has are available to humanize.
         readable_predicate = self._humanize_predicate(raw_predicate, is_plural)
         return f"{subject} {readable_predicate} {obj}."
 
@@ -1195,27 +1140,28 @@ Answer:"""
     # deliberately rather than assumed. A known, bounded list, not a claim
     # of covering every future subject -- see _PREDICATE_TEMPLATES'
     # docstring for the same tradeoff.
+    # "community"/"communities" added: the real graph's hub entity is
+    # "GaroCommunity", and _humanize_entity strips that suffix for
+    # readability (-> "Garo", or "Achik" for e.g. "AchikCommunity"), which
+    # would otherwise make the ORIGINAL identifier's plural signal
+    # unreachable from the trimmed display text - see _format_triple, which
+    # checks this against both forms for exactly that reason.
     _PLURAL_SUBJECT_SUFFIXES = (
-        "people", "authorities", "houses", "utensils", "members", "informants",
-        "children", "programs", "domains",
+        "people", "community", "communities", "authorities", "houses",
+        "utensils", "members", "informants", "children", "programs", "domains",
     )
 
     def _is_plural_subject(self, *texts: Any) -> bool:
         for value in texts:
             lowered = str(value or "").strip().lower()
-            if (
-                lowered.endswith("people")
-                or lowered.endswith("community")
-                or lowered.endswith("communities")
-                or lowered == "they"
-                or lowered == "garo"
-            ):
+            # A bare "Garo" (subject or its raw identifier) and a merged
+            # "They" continuation both refer to the people as a group even
+            # though neither ends in any of the suffixes above.
+            if lowered == "they" or lowered == "garo":
+                return True
+            if any(lowered.endswith(suffix) for suffix in self._PLURAL_SUBJECT_SUFFIXES):
                 return True
         return False
-
-    def _subject_pronoun(self, subject: Any) -> str:
-        return "They" if self._is_plural_subject(subject) else "It"
-
 
     # One sentence-building function per predicate in the current production
     # graph (data/production_graph/, 32 distinct predicates), keyed the same
@@ -1255,7 +1201,7 @@ Answer:"""
         "ARE_MORE_INVOLVED_THAN": lambda self, s, o, p: f"{s} are more involved than {o}",
         "EXTENT_OF_USE": lambda self, s, o, p: f"{s} {'have' if p else 'has'} an extent of use in {o}",
         "RELIGIOUS_DOMAIN": lambda self, s, o, p: f"{s} {'are' if p else 'is'} characterized by the religious domain of {o}",
-        "ISCHRISTIAN": lambda self, s, o, p: f"{s} {'are' if p else 'is'} Christian and attend {o}",
+        "ISCHRISTIAN": lambda self, s, o, p: f"{s} {'are' if p else 'is'} Christian and {'attend' if p else 'attends'} {o}",
         "HAS_RELIGIOUS_SCRIPT": lambda self, s, o, p: f"{s} {'have' if p else 'has'} a religious script in {o}",
         "IS_MAINTAINED_LESS": lambda self, s, o, p: f"{s} {'are' if p else 'is'} maintained less in {o}",
         "MEDIA_BROADCAST": lambda self, s, o, p: f"{s} {'are' if p else 'is'} broadcast through {o}",
@@ -1274,26 +1220,28 @@ Answer:"""
     # LANGUAGE_USED's "GaroCommunity -> Garo"); collapsing it the same way
     # produced a real, confirmed bug: "The Garo people language used The
     # Garo people" (self-referential, from the object also collapsing).
-    def _humanize_entity(self, entity: Any, is_subject: bool = True) -> str:
+    def _humanize_entity(self, entity: Any, as_subject: bool = True) -> str:
         raw_text = str(entity or "").strip()
         text = raw_text.replace("_", " ")
         text = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text)
         text = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", text)
+        # e.g. "PopulationCensus2022" -> "Population Census 2022"; the two
+        # camelCase regexes above only split letter-to-letter case changes,
+        # leaving a letter run jammed against a digit run.
         text = re.sub(r"(?<=[A-Za-z])(?=[0-9])", " ", text)
         text = re.sub(r"(?<=[0-9])(?=[A-Za-z])", " ", text)
         if re.fullmatch(r"[A-Za-z0-9_]+", raw_text):
             text = re.sub(r"\s+Community$", "", text, flags=re.IGNORECASE)
-        if is_subject and text.strip().lower() == "garo":
+        if as_subject and text.strip().lower() == "garo":
             text = "the Garo people"
         return text[:1].upper() + text[1:] if text else "another entity"
 
     def _article(self, noun: str) -> str:
-        # _humanize_entity capitalizes every word that was its own
-        # CamelCase segment (e.g. "TribalLeader" -> "Tribal Leader"), which
-        # reads fine as a label but not as the predicate of a sentence
-        # ("is a tribal Leader"). These are graph-derived category
-        # descriptors, not proper nouns, so lowercase the whole phrase
-        # rather than just its first letter.
+        # _humanize_entity capitalizes every word that was its own CamelCase
+        # segment (e.g. "TribalLeader" -> "Tribal Leader"), which reads fine
+        # as a label but not as the predicate of a sentence ("is a tribal
+        # Leader"). These are graph-derived category descriptors, not proper
+        # nouns, so lowercase the whole phrase, not just its first letter.
         readable_noun = noun[:1].lower() + noun[1:].lower() if noun else noun
         return f"an {readable_noun}" if readable_noun[:1].lower() in "aeiou" else f"a {readable_noun}"
 
@@ -1306,29 +1254,17 @@ Answer:"""
     # run-together blob.
     def _humanize_predicate(self, predicate: str, is_plural: bool = False) -> str:
         normalized = predicate.lower().replace("_", " ").strip()
-        singular_replacements = {
-            "live in": "lives in",
-            "located in": "is located in",
-            "born in": "was born in",
-            "part of": "is part of",
-            "related to": "is related to",
-            "is a": "is a",
-            "role": "has the role of",
-            "recognize": "recognizes",
-            "speak language": "speaks",
+        replacements = {
+            "live in": "live in" if is_plural else "lives in",
+            "located in": "are located in" if is_plural else "is located in",
+            "born in": "were born in" if is_plural else "was born in",
+            "part of": "are part of" if is_plural else "is part of",
+            "related to": "are related to" if is_plural else "is related to",
+            "is a": "are" if is_plural else "is a",
+            "role": "have the role of" if is_plural else "has the role of",
+            "recognize": "recognize" if is_plural else "recognizes",
+            "speak language": "speak" if is_plural else "speaks",
         }
-        plural_replacements = {
-            "live in": "live in",
-            "located in": "are located in",
-            "born in": "were born in",
-            "part of": "are part of",
-            "related to": "are related to",
-            "is a": "are a",
-            "role": "have the role of",
-            "recognize": "recognize",
-            "speak language": "speak",
-        }
-        replacements = plural_replacements if is_plural else singular_replacements
         if normalized in replacements:
             return replacements[normalized]
 
@@ -1338,15 +1274,25 @@ Answer:"""
             if token
             for word in self._split_concatenated_word(token)
         ]
+        # A predicate always renders as "<subject> <verb-phrase> <object>",
+        # so the FIRST segmented word is the verb needing agreement, however
+        # many words follow it - e.g. "HAS_LANGUAGE" -> "has language" was
+        # staying "has" even for a plural subject ("The Garo people has
+        # language..."), because the old version only fixed a predicate that
+        # segmented to exactly one word. Irregular verbs don't just drop an
+        # "s" (has -> have, not "ha"), so those are mapped explicitly first;
+        # everything else uses the regular "drop the trailing s" rule. Only
+        # the first word is ever touched, so a later plural NOUN in the same
+        # phrase (e.g. "identified domains") is untouched either way.
+        if is_plural and segmented:
+            irregular_plural_verbs = {"has": "have", "is": "are", "was": "were", "does": "do"}
+            first = segmented[0]
+            if first in irregular_plural_verbs:
+                segmented[0] = irregular_plural_verbs[first]
+            elif len(first) > 3 and first.endswith("s") and not first.endswith("ss"):
+                segmented[0] = first[:-1]
         readable = " ".join(segmented)
-        if not readable:
-            return "are related to" if is_plural else "is related to"
-        # Predicates not covered above (e.g. "FACES") are stored as the
-        # singular, third-person verb form. For a plural subject, drop the
-        # trailing "s" so it still agrees ("faces" -> "face").
-        if is_plural and readable.endswith("s") and not readable.endswith("ss"):
-            readable = readable[:-1]
-        return readable
+        return readable or ("are related to" if is_plural else "is related to")
 
     # Splits a run of letters with no remaining word boundaries (e.g.
     # "relyingon") back into likely English words. Short tokens are left
