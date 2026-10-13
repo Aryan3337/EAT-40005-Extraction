@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:flutter_application/services/pronunciation.dart';
 import 'package:flutter_application/services/speech_chunks.dart';
 import 'package:flutter_application/services/tts_service.dart';
 
@@ -145,5 +146,40 @@ void main() {
       'They speak Garo.',
       'It uses Roman letters.',
     ]);
+  });
+
+  group('pronunciation', () {
+    test('Bangla words with হ্য are respelled for the voice', () {
+      expect(
+        forSpeech('ঐতিহ্যগত ওষুধ এবং ঐতিহ্যবাহী জ্ঞান।', 'bn-BD'),
+        'ওইতিজ্ঝোগতো ওষুধ এবং ওইতিজ্ঝোবাহী জ্ঞান।',
+      );
+    });
+
+    test('other languages are left alone', () {
+      expect(forSpeech('ঐতিহ্যগত', 'en-US'), 'ঐতিহ্যগত');
+    });
+
+    test('the respelled text is what the voice receives', () async {
+      const channel = MethodChannel('flutter_tts');
+      final spoken = <String>[];
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'speak') spoken.add(call.arguments as String);
+        if (call.method == 'getVoices') {
+          return [
+            {'name': 'Bangla voice', 'locale': 'bn-BD'},
+          ];
+        }
+        return 1;
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+      await TtsService(
+        supportsVoiceSelection: true,
+      ).speak('উপসংহারে, ঐতিহ্যগত ওষুধ।', languageCode: 'bn');
+      expect(spoken, ['উপসংহারে, ওইতিজ্ঝোগতো ওষুধ।']);
+    });
   });
 }

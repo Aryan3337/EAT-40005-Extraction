@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 
+import 'pronunciation.dart';
 import 'speech_chunks.dart';
 import 'web_speech_fallback.dart';
 import 'web_speech_fallback_stub.dart'
@@ -164,9 +165,11 @@ class TtsService {
         : localeForLanguage(languageCode);
     final voiceAvailable = await setLanguage(language);
     if (requestId != _speechRequestId) return true;
+    // Respell words the voice is known to mispronounce (display unchanged).
+    final spokenText = forSpeech(trimmed, language);
     if (_useWebSpeechFallback && !voiceAvailable) {
       return _webSpeechFallback.speak(
-        trimmed,
+        spokenText,
         language,
         onDone: _completionCallback,
         onError: (error) {
@@ -177,7 +180,7 @@ class TtsService {
     }
     // Read one sentence at a time: one long utterance gets cut off or
     // garbled (skipped letters) by flutter_tts and the Web Speech API.
-    final chunks = speechChunks(trimmed);
+    final chunks = speechChunks(spokenText);
     // The plugin's result is 1 (started) or 0 (failed) on most platforms, but
     // the web version returns null when it waits for completion, so it must
     // not be typed as int (that threw after the first sentence in Edge).
