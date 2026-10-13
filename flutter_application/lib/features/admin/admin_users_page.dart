@@ -17,6 +17,7 @@ class AdminUsersPage extends StatefulWidget {
 class _AdminUsersPageState extends State<AdminUsersPage> {
   List<AdminUser> _users = const [];
   bool _loading = true;
+  String? _deletingEmail;
   String? _error;
 
   @override
@@ -86,11 +87,14 @@ class _AdminUsersPageState extends State<AdminUsersPage> {
       ),
     );
     if (confirmed != true) return;
+    setState(() => _deletingEmail = user.email);
     try {
       await widget.service.deleteUser(user.email);
       await _refresh();
     } on AdminException catch (error) {
       _showError(error.message);
+    } finally {
+      if (mounted) setState(() => _deletingEmail = null);
     }
   }
 
@@ -158,9 +162,19 @@ class _AdminUsersPageState extends State<AdminUsersPage> {
                             ),
                             if (user.role != 'admin')
                               IconButton(
-                                onPressed: () => _delete(user),
+                                onPressed: _deletingEmail == null
+                                    ? () => _delete(user)
+                                    : null,
                                 tooltip: 'Delete user',
-                                icon: const Icon(Icons.delete_outline),
+                                icon: _deletingEmail == user.email
+                                    ? const SizedBox(
+                                        width: 20,
+                                        height: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Icon(Icons.delete_outline),
                               ),
                           ],
                         ),

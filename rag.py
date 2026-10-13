@@ -1934,7 +1934,10 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
         # Adds the headers required by Flutter web and browser clients.
         def _send_cors_headers(self) -> None:
             self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header(
+                "Access-Control-Allow-Methods",
+                "GET, POST, PATCH, DELETE, OPTIONS",
+            )
             self.send_header("Access-Control-Allow-Headers",
                              "Content-Type, Authorization, X-Admin-Secret, X-Filename")
 

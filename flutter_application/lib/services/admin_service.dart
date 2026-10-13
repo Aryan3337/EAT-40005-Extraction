@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -27,6 +28,8 @@ class AdminService {
   final String secret;
   final String authToken;
 
+  static const _requestTimeout = Duration(seconds: 20);
+
   String get _baseUrl => endpoint.replaceAll(RegExp(r'/$'), '');
 
   Map<String, String> get _authHeaders => {
@@ -39,9 +42,11 @@ class AdminService {
   };
 
   Future<List<AdminUser>> fetchUsers() async {
-    final response = await _client.get(
-      Uri.parse('$_baseUrl/admin/users'),
-      headers: _userAuthHeaders,
+    final response = await _runRequest(
+      () => _client.get(
+        Uri.parse('$_baseUrl/admin/users'),
+        headers: _userAuthHeaders,
+      ),
     );
     if (response.statusCode != 200) {
       throw AdminException(_errorFor(response));
@@ -61,14 +66,16 @@ class AdminService {
     required String role,
     String password = '',
   }) async {
-    final response = await _client.patch(
-      Uri.parse('$_baseUrl/admin/users/${Uri.encodeComponent(currentEmail)}'),
-      headers: {..._userAuthHeaders, 'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'email': email,
-        'role': role,
-        if (password.isNotEmpty) 'password': password,
-      }),
+    final response = await _runRequest(
+      () => _client.patch(
+        Uri.parse('$_baseUrl/admin/users/${Uri.encodeComponent(currentEmail)}'),
+        headers: {..._userAuthHeaders, 'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'email': email,
+          'role': role,
+          if (password.isNotEmpty) 'password': password,
+        }),
+      ),
     );
     if (response.statusCode != 200) {
       throw AdminException(_errorFor(response));
@@ -76,12 +83,29 @@ class AdminService {
   }
 
   Future<void> deleteUser(String email) async {
-    final response = await _client.delete(
-      Uri.parse('$_baseUrl/admin/users/${Uri.encodeComponent(email)}'),
-      headers: _userAuthHeaders,
+    final response = await _runRequest(
+      () => _client.delete(
+        Uri.parse('$_baseUrl/admin/users/${Uri.encodeComponent(email)}'),
+        headers: _userAuthHeaders,
+      ),
     );
     if (response.statusCode != 200) {
       throw AdminException(_errorFor(response));
+    }
+  }
+
+  Future<http.Response> _runRequest(
+    Future<http.Response> Function() request,
+  ) async {
+    try {
+      return await request().timeout(_requestTimeout);
+    } on TimeoutException {
+      throw const AdminException(
+        'The server took too long to respond. Check that the API and Neo4j '
+        'are running, then try again.',
+      );
+    } on http.ClientException catch (error) {
+      throw AdminException('Cannot reach the API: ${error.message}');
     }
   }
 
