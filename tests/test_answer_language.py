@@ -779,3 +779,21 @@ def test_english_terms_in_bangla_letters_are_translated():
     fix = rag.fix_bangla_spelling
     assert fix("ক্লাইমেট চেঞ্জ এই লোকের জন্য") == "জলবায়ু পরিবর্তন এই লোকের জন্য"
     assert fix("ক্লাইমেট চেঞ্জের ইন্ডিজেনাস কমিউনিটি") == "জলবায়ু পরিবর্তনের আদিবাসী সম্প্রদায়"
+
+
+def test_amounts_with_unit_words_are_compared_as_a_whole():
+    restore = rag.restore_numbers
+    # Already right in Bangla wording: kept.
+    assert restore("About 3000000 people.", "প্রায় ৩০ লাখ মানুষ।", "bn") == "প্রায় ৩০ লাখ মানুষ।"
+    assert restore("About 3 million people.", "প্রায় ৩০ লাখ মানুষ।", "bn") == "প্রায় ৩০ লাখ মানুষ।"
+    # Wrong amount: replaced, never "৩০০০০০০ লাখ".
+    assert restore("About 3000000 people.", "প্রায় ৩০০ লাখ মানুষ।", "bn") == "প্রায় ৩০০০০০০ মানুষ।"
+    assert restore("About 3 million people.", "প্রায় ৩ লাখ মানুষ।", "bn") == "প্রায় ৩০ লাখ মানুষ।"
+    # Years and plain numbers still work as before.
+    assert restore("In 2011.", "২০১২ সালে।", "bn") == "২০১১ সালে।"
+
+
+def test_one_leftover_english_word_is_not_mostly_english():
+    source = "They practise ethnobotany in the hills."
+    assert not rag.translation_incomplete(source, "তারা পাহাড়ে ethnobotany চর্চা করে।", "bn")
+    assert rag.translation_incomplete(source, source, "bn")

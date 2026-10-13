@@ -965,9 +965,11 @@ def translation_incomplete(source: str, translated: str, target: str) -> bool:
     translated_words = len(translated.split())
     if source_words >= 6 and translated_words < 0.5 * source_words:
         return True
-    letters = [c for c in translated if c.isalpha()]
-    latin = sum(1 for c in letters if c.isascii())
-    return bool(letters) and latin / len(letters) > 0.4
+    # Count words, not letters: Bangla vowel signs are not "letters" to
+    # Python, which made one leftover English word look like half the text.
+    words = re.findall(r"\w+", translated)
+    latin = sum(1 for word in words if re.search(r"[A-Za-z]", word))
+    return bool(words) and latin / len(words) > 0.4
 
 
 def mymemory_translate(text: str, source: str, target: str) -> str:
@@ -1092,26 +1094,64 @@ def fill_leftover_english(text: str, target: str) -> str:
 
 
 _ANY_NUMBER = re.compile(r"[0-9০-৯]+(?:[.,]\s?[0-9০-৯]+)*")
+# A number with the word after it, so "3 million" and "৩০ লাখ" are compared
+# as whole amounts.
+_SOURCE_AMOUNT = re.compile(
+    r"([0-9]+(?:[.,][0-9]+)*)(?:\s*(thousand|lakh|lakhs|million|crore|crores|billion)\b)?",
+    re.IGNORECASE)
+_TRANSLATED_AMOUNT = re.compile(
+    r"([0-9০-৯]+(?:[.,]\s?[0-9০-৯]+)*)(?:\s*(হাজার|লাখ|লক্ষ|কোটি|मिलियन|हज़ार|हजार|लाख|करोड़))?")
+_UNIT_VALUES = {
+    "thousand": 10 ** 3, "lakh": 10 ** 5, "lakhs": 10 ** 5, "million": 10 ** 6,
+    "crore": 10 ** 7, "crores": 10 ** 7, "billion": 10 ** 9,
+    "হাজার": 10 ** 3, "লাখ": 10 ** 5, "লক্ষ": 10 ** 5, "কোটি": 10 ** 7,
+    "हज़ार": 10 ** 3, "हजार": 10 ** 3, "लाख": 10 ** 5, "करोड़": 10 ** 7,
+    "मिलियन": 10 ** 6,
+}
+_DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+
+
+def _amount(number: str, unit: Optional[str]) -> Optional[float]:
+    digits = number.translate(_FROM_BANGLA_DIGITS).translate(_DEVANAGARI_DIGITS)
+    digits = re.sub(r",\s?", "", digits)
+    try:
+        value = float(digits)
+    except ValueError:
+        return None
+    return value * _UNIT_VALUES.get((unit or "").lower(), 1)
 
 
 def restore_numbers(source: str, translated: str, target: str) -> str:
-    """Puts the English answer's numbers back into the translation.
+    """Puts the English answer's amounts back into the translation.
 
     Google sometimes regroups or pads numbers ("3000000" came back as
     "৩০০, ০০০, ০০০", ten times larger). When both texts contain the same
-    count of numbers, each translated number is replaced, in order, by the
-    exact source value (in Bangla digits for Bangla)."""
-    source_numbers = _ANY_NUMBER.findall(source or "")
-    translated_numbers = list(_ANY_NUMBER.finditer(translated or ""))
-    if not source_numbers or len(source_numbers) != len(translated_numbers):
+    count of numbers, each translated amount (number plus any unit word, so
+    "৩০ লাখ") is compared with the English one in order; a wrong amount is
+    replaced by the exact source value, in Bangla digits for Bangla, and in
+    লাখ/কোটি when the English used a unit word ("3 million" -> "৩০ লাখ")."""
+    sources = list(_SOURCE_AMOUNT.finditer(source or ""))
+    translated_matches = list(_TRANSLATED_AMOUNT.finditer(translated or ""))
+    if not sources or len(sources) != len(translated_matches):
         return translated
-    values = iter(source_numbers)
-
-    def replace(_match: "re.Match[str]") -> str:
-        value = next(values).replace(" ", "")
-        return value.translate(_TO_BANGLA_DIGITS) if target == "bn" else value
-
-    return _ANY_NUMBER.sub(replace, translated)
+    pieces: List[str] = []
+    last = 0
+    for src, tr in zip(sources, translated_matches):
+        wanted = _amount(src.group(1), src.group(2))
+        shown = _amount(tr.group(1), tr.group(2))
+        if wanted is None or shown == wanted:
+            replacement = tr.group(0)  # already right; keep its wording
+        elif src.group(2) and target == "bn" and float(wanted).is_integer():
+            replacement = _in_lakh_crore(int(wanted))
+        else:
+            value = src.group(1).replace(" ", "")
+            replacement = value.translate(_TO_BANGLA_DIGITS) if target == "bn" else value
+            if src.group(2) and tr.group(2) is None:
+                replacement += " " + src.group(2)
+        pieces.append(translated[last:tr.start()] + replacement)
+        last = tr.end()
+    pieces.append(translated[last:])
+    return "".join(pieces)
 
 
 _SENTENCE_END = {"bn": r"(?<=[।.!?])\s+", "hi": r"(?<=[।.!?])\s+"}
