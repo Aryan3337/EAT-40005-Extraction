@@ -127,12 +127,30 @@ class TtsService {
     voices.sort((left, right) {
       final quality = _quality(right).compareTo(_quality(left));
       if (quality != 0) return quality;
+      // Natural/neural voices (Edge's "Online (Natural)", Chrome's "Google"
+      // voices) sound far less robotic than the old built-in ones.
+      final natural = _naturalness(right).compareTo(_naturalness(left));
+      if (natural != 0) return natural;
+      final exact = _exactLocale(right, normalizedLocale).compareTo(
+        _exactLocale(left, normalizedLocale),
+      );
+      if (exact != 0) return exact;
       return (_requiresNetwork(left) ? 1 : 0).compareTo(
         _requiresNetwork(right) ? 1 : 0,
       );
     });
     return voices.first;
   }
+
+  static int _naturalness(Map<String, dynamic> voice) {
+    final name = (voice['name'] ?? '').toString().toLowerCase();
+    if (name.contains('natural') || name.contains('neural')) return 2;
+    if (name.contains('online') || name.startsWith('google')) return 1;
+    return 0;
+  }
+
+  static int _exactLocale(Map<String, dynamic> voice, String locale) =>
+      _normalizeLocale(voice['locale']?.toString() ?? '') == locale ? 1 : 0;
 
   // Speaks [text] aloud, cancelling anything already being read.
   Future<bool> speak(String text, {String? languageCode}) async {

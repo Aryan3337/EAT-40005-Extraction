@@ -48,6 +48,34 @@ void main() {
     });
   });
 
+  test('natural voices are preferred over robotic built-in ones', () {
+    final voices = [
+      {'name': 'Microsoft David - English (United States)', 'locale': 'en-US'},
+      {
+        'name': 'Microsoft Aria Online (Natural) - English (United States)',
+        'locale': 'en-US',
+      },
+      {'name': 'Google US English', 'locale': 'en-US'},
+      {
+        'name': 'Microsoft Tanishaa Online (Natural) - Bengali (India)',
+        'locale': 'bn-IN',
+      },
+      {
+        'name': 'Microsoft Nabanita Online (Natural) - Bangla (Bangladesh)',
+        'locale': 'bn-BD',
+      },
+    ];
+    expect(
+      TtsService.bestVoiceFor(voices, 'en-US')?['name'],
+      'Microsoft Aria Online (Natural) - English (United States)',
+    );
+    // Both Bangla voices are natural; the Bangladesh one matches exactly.
+    expect(
+      TtsService.bestVoiceFor(voices, 'bn-BD')?['name'],
+      'Microsoft Nabanita Online (Natural) - Bangla (Bangladesh)',
+    );
+  });
+
   test('web speech uses the normal 1.0 rate, not the old slow 0.58', () {
     if (kIsWeb) expect(TtsService.defaultSpeechRate, 1.0);
     expect(TtsService.defaultSpeechRate, isNot(0.58));
