@@ -71,6 +71,22 @@ class ChatMessage {
 
   String textFor(String languageCode) => translations[languageCode] ?? text;
 
+  // False when [languageCode] has no translation, so [textFor] falls back to
+  // the language the question was originally answered in. Messages without
+  // any translations (user questions, errors) are never flagged.
+  bool hasTextFor(String languageCode) =>
+      translations.isEmpty || translations.containsKey(languageCode);
+
+  // The language [textFor] actually returns for [languageCode]: the selected
+  // language when a translation exists, otherwise the original answer's.
+  String displayLanguageFor(String languageCode) {
+    if (hasTextFor(languageCode)) return languageCode;
+    for (final entry in translations.entries) {
+      if (entry.value == text) return entry.key;
+    }
+    return languageCode;
+  }
+
   ChatMessage copyWith({
     MessageFeedback? feedback,
     String? feedbackComment,

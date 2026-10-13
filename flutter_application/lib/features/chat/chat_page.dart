@@ -120,7 +120,7 @@ class _ChatPageState extends State<ChatPage> {
     await _speak(
       index,
       message.textFor(languageCode),
-      languageCode: languageCode,
+      languageCode: message.displayLanguageFor(languageCode),
     );
   }
 
@@ -180,7 +180,7 @@ class _ChatPageState extends State<ChatPage> {
       _speak(
         _messages.length - 1,
         answer.textFor(widget.strings.languageCode),
-        languageCode: widget.strings.languageCode,
+        languageCode: answer.displayLanguageFor(widget.strings.languageCode),
       );
     }
   }
@@ -459,7 +459,15 @@ class _ChatPageState extends State<ChatPage> {
     if (_speakingIndex == index) {
       _stopSpeaking();
     } else {
-      _speak(index, text, languageCode: widget.strings.languageCode);
+      // Use the voice for the language actually shown, which differs from the
+      // selected language when this answer has no translation for it.
+      _speak(
+        index,
+        text,
+        languageCode: _messages[index].displayLanguageFor(
+          widget.strings.languageCode,
+        ),
+      );
     }
   }
 
@@ -1157,6 +1165,13 @@ class _MessageBubble extends StatelessWidget {
               ],
             ],
           ),
+          if (!isUser && !message.hasTextFor(strings.languageCode)) ...[
+            const SizedBox(height: 10),
+            _TranslationMissingNotice(
+              strings: strings,
+              shownLanguage: message.displayLanguageFor(strings.languageCode),
+            ),
+          ],
           if (!isUser && message.sources.isNotEmpty) ...[
             const SizedBox(height: 12),
             const Divider(color: Color(0xFFE0E7E3)),
@@ -1529,6 +1544,59 @@ class _Composer extends StatelessWidget {
               onPressed: onSend,
               tooltip: strings.text('sendQuestion'),
               icon: const Icon(Icons.arrow_upward_rounded, color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// SCRUM-366: shown under an answer that has no translation for the selected
+// language, so the user knows the text above is in another language.
+class _TranslationMissingNotice extends StatelessWidget {
+  const _TranslationMissingNotice({
+    required this.strings,
+    required this.shownLanguage,
+  });
+
+  final AppLocalizations strings;
+  final String shownLanguage;
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = AppLocalizations.languageNames[strings.languageCode] ??
+        strings.languageCode;
+    final shown =
+        AppLocalizations.languageNames[shownLanguage] ?? shownLanguage;
+    return Container(
+      key: const ValueKey('translation-missing-notice'),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF6E5),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFF2D49B)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(
+            Icons.translate_rounded,
+            size: 18,
+            color: Color(0xFF9A6A12),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              strings
+                  .text('translationMissing')
+                  .replaceAll('{selected}', selected)
+                  .replaceAll('{shown}', shown),
+              style: const TextStyle(
+                fontSize: 13,
+                height: 1.35,
+                color: Color(0xFF6B4A0E),
+              ),
             ),
           ),
         ],
