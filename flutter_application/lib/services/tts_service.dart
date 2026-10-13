@@ -178,7 +178,10 @@ class TtsService {
     // Read one sentence at a time: one long utterance gets cut off or
     // garbled (skipped letters) by flutter_tts and the Web Speech API.
     final chunks = speechChunks(trimmed);
-    var result = 1;
+    // The plugin's result is 1 (started) or 0 (failed) on most platforms, but
+    // the web version returns null when it waits for completion, so it must
+    // not be typed as int (that threw after the first sentence in Edge).
+    Object? result = 1;
     _readingChunks = true;
     try {
       for (final chunk in chunks) {

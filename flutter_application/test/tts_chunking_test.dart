@@ -113,4 +113,37 @@ void main() {
     ]);
     expect(doneCount, 1);
   });
+
+  test('keeps reading when the engine returns null (web)', () async {
+    const channel = MethodChannel('flutter_tts');
+    final spoken = <String>[];
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'speak') {
+        spoken.add(call.arguments as String);
+        return null; // what flutter_tts web returns after awaiting completion
+      }
+      if (call.method == 'getVoices') {
+        return [
+          {'name': 'English voice', 'locale': 'en-US'},
+        ];
+      }
+      return 1;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    final tts = TtsService(supportsVoiceSelection: true);
+    final started = await tts.speak(
+      'They live in India and Bangladesh. They speak Garo. It uses Roman letters.',
+      languageCode: 'en',
+    );
+
+    expect(started, isTrue);
+    expect(spoken, [
+      'They live in India and Bangladesh.',
+      'They speak Garo.',
+      'It uses Roman letters.',
+    ]);
+  });
 }
