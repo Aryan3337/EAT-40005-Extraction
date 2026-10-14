@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../app/app_localizations.dart';
 import '../../models/chat_conversation.dart';
@@ -1090,8 +1091,25 @@ class _MessageBubble extends StatelessWidget {
   final bool isSpeaking;
   final VoidCallback? onToggleSpeak;
 
+  // The text shown in the bubble: assistant answers in the selected language.
+  String get _displayText => message.author == MessageAuthor.assistant
+      ? message.textFor(strings.languageCode)
+      : message.text;
+
+  // Copies the answer as shown (in the selected language) to the clipboard.
+  Future<void> _copyAnswer(BuildContext context) async {
+    await Clipboard.setData(ClipboardData(text: _displayText));
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(strings.text('answerCopied')),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
   // Builds a user or assistant message with optional sources and, for
-  // assistant replies, a button to read the message aloud.
+  // assistant replies, buttons to copy the answer and read it aloud.
   @override
   Widget build(BuildContext context) {
     final isUser = message.author == MessageAuthor.user;
@@ -1128,10 +1146,10 @@ class _MessageBubble extends StatelessWidget {
               Expanded(
                 child: AnimatedSwitcher(
                   duration: const Duration(milliseconds: 180),
-                  child: Text(
-                    message.author == MessageAuthor.assistant
-                        ? message.textFor(strings.languageCode)
-                        : message.text,
+                  // Selectable in every language so answers (Bangla and Hindi
+                  // included) can be highlighted and copied.
+                  child: SelectableText(
+                    _displayText,
                     key: ValueKey(strings.languageCode),
                     style: TextStyle(
                       color: isUser ? Colors.white : const Color(0xFF26343D),
@@ -1141,6 +1159,24 @@ class _MessageBubble extends StatelessWidget {
                   ),
                 ),
               ),
+              if (!isUser) ...[
+                const SizedBox(width: 4),
+                SizedBox(
+                  width: 32,
+                  height: 32,
+                  child: IconButton(
+                    padding: EdgeInsets.zero,
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _copyAnswer(context),
+                    tooltip: strings.text('copyAnswer'),
+                    icon: Icon(
+                      Icons.copy_rounded,
+                      size: 18,
+                      color: theme.colorScheme.primary,
+                    ),
+                  ),
+                ),
+              ],
               if (onToggleSpeak != null) ...[
                 const SizedBox(width: 4),
                 SizedBox(

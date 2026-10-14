@@ -74,6 +74,8 @@ class AppLocalizations {
     'translationMissing':
         'No {selected} translation was saved for this answer, so it is shown in {shown}. Ask the question again to get it in {selected}.',
     'stopReading': 'Stop reading',
+    'copyAnswer': 'Copy answer',
+    'answerCopied': 'Answer copied',
     'noAnswer': 'No answer was returned.',
     'ragHttpError': 'RAG request failed (HTTP {status}): {error}',
     'cannotReachRag': 'Cannot reach the RAG service at {endpoint}.',
@@ -132,6 +134,8 @@ class AppLocalizations {
     'translationMissing':
         'इस उत्तर का {selected} अनुवाद सहेजा नहीं गया था, इसलिए यह {shown} में दिखाया गया है। {selected} में पाने के लिए सवाल दोबारा पूछें।',
     'stopReading': 'पढ़ना बंद करें',
+    'copyAnswer': 'उत्तर कॉपी करें',
+    'answerCopied': 'उत्तर कॉपी हो गया',
     'noAnswer': 'कोई जवाब नहीं मिला।',
     'ragHttpError': 'RAG अनुरोध विफल (HTTP {status}): {error}',
     'cannotReachRag': 'RAG सेवा तक पहुँचा नहीं जा सका: {endpoint}।',
@@ -189,6 +193,8 @@ class AppLocalizations {
     'translationMissing':
         'এই উত্তরের {selected} অনুবাদ সংরক্ষিত নেই, তাই এটি {shown} ভাষায় দেখানো হচ্ছে। {selected} ভাষায় পেতে প্রশ্নটি আবার জিজ্ঞাসা করুন।',
     'stopReading': 'পড়া বন্ধ করুন',
+    'copyAnswer': 'উত্তর কপি করুন',
+    'answerCopied': 'উত্তর কপি করা হয়েছে',
     'noAnswer': 'কোনো উত্তর পাওয়া যায়নি।',
     'ragHttpError': 'RAG অনুরোধ ব্যর্থ হয়েছে (HTTP {status}): {error}',
     'cannotReachRag': 'RAG পরিষেবায় পৌঁছানো যাচ্ছে না: {endpoint}।',
