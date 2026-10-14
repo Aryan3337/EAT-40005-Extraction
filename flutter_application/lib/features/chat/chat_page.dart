@@ -486,6 +486,7 @@ class _ChatPageState extends State<ChatPage> {
       await _speech.stop();
       return;
     }
+    if (_isLoading) return; // wait for the current answer first
 
     final localeId = switch (widget.strings.languageCode) {
       'hi' => 'hi-IN',
@@ -623,6 +624,7 @@ class _ChatPageState extends State<ChatPage> {
                   speechAvailable: _speechAvailable,
                   isListening: _isListening,
                   onToggleListening: _toggleListening,
+                  isBusy: _isLoading,
                 ),
               ],
             ),
@@ -1457,6 +1459,7 @@ class _Composer extends StatelessWidget {
     required this.speechAvailable,
     required this.isListening,
     required this.onToggleListening,
+    this.isBusy = false,
   });
 
   final TextEditingController controller;
@@ -1465,6 +1468,10 @@ class _Composer extends StatelessWidget {
   final bool speechAvailable;
   final bool isListening;
   final VoidCallback onToggleListening;
+
+  // True while the bot is answering: sending and starting voice input are
+  // disabled (and shown as disabled) until the answer arrives.
+  final bool isBusy;
 
   // Builds the query input, optional voice-input control, and send action.
   @override
@@ -1492,7 +1499,9 @@ class _Composer extends StatelessWidget {
                 minLines: 1,
                 maxLines: 4,
                 textInputAction: TextInputAction.send,
-                onSubmitted: (_) => onSend(),
+                onSubmitted: (_) {
+                  if (!isBusy) onSend();
+                },
                 decoration: InputDecoration(
                   hintText: isListening
                       ? strings.text('listening')
@@ -1500,7 +1509,11 @@ class _Composer extends StatelessWidget {
                   prefixIcon: const Icon(Icons.search),
                   suffixIcon: speechAvailable
                       ? IconButton(
-                          onPressed: onToggleListening,
+                          // Stopping is always allowed; starting waits for
+                          // the current answer.
+                          onPressed: isBusy && !isListening
+                              ? null
+                              : onToggleListening,
                           tooltip: isListening
                               ? strings.text('stopListening')
                               : strings.text('askByVoice'),
@@ -1524,26 +1537,40 @@ class _Composer extends StatelessWidget {
             height: 48,
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                colors: [
-                  theme.colorScheme.primary,
-                  theme.colorScheme.secondary,
-                ],
+                colors: isBusy
+                    ? const [Color(0xFFB8BEC6), Color(0xFFB8BEC6)]
+                    : [theme.colorScheme.primary, theme.colorScheme.secondary],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
               shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color: theme.colorScheme.primary.withValues(alpha: 0.35),
-                  blurRadius: 10,
-                  offset: const Offset(0, 4),
-                ),
-              ],
+              boxShadow: isBusy
+                  ? const []
+                  : [
+                      BoxShadow(
+                        color: theme.colorScheme.primary.withValues(
+                          alpha: 0.35,
+                        ),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
             ),
             child: IconButton(
-              onPressed: onSend,
-              tooltip: strings.text('sendQuestion'),
-              icon: const Icon(Icons.arrow_upward_rounded, color: Colors.white),
+              onPressed: isBusy ? null : onSend,
+              tooltip: isBusy
+                  ? strings.text('waitingForAnswer')
+                  : strings.text('sendQuestion'),
+              icon: isBusy
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.arrow_upward_rounded, color: Colors.white),
             ),
           ),
         ],
