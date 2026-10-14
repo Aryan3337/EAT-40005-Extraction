@@ -359,6 +359,9 @@ def test_auto_never_lets_the_local_model_write_a_bangla_answer(monkeypatch):
     # translation shows English with a note. The question may still be
     # translated by the model, since only its English meaning is used.
     monkeypatch.setenv("TRANSLATION_PROVIDER", "auto")
+    # Not testing the relevance gate here; disable it so the fake English
+    # synthesis response (no "RELEVANT:" marker) isn't treated as a refusal.
+    monkeypatch.setenv("SYNTHESIS_RELEVANCE_GATE", "0")
     monkeypatch.setattr(rag, "google_translate", lambda *a: "")
     prompts = []
 

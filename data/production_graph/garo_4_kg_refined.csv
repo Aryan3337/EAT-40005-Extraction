@@ -1,0 +1,3 @@
+extraction_number,paper,subject,predicate,object,source_section,confidence,passage,sentence_ref,source_file,page_number
+49,garo_4,SalForests,HAS_ForestRANGE,Madhupur,Page 3,High,(SalForests)-[HAS_ForestRANGE]->(Madhupur),"<Four Forest Ranges, namely, Madhupur, Aronkhola, Dokhola and Madhupur National Park Sadar in Madhupur Sal (Shorea robusta) forests (Haque 2007).>",Garo_4.pdf,3
+55,garo_4,GaroHill,RECORDED_AS,UmorPuj,Page 4,High,// PASSAGE: (GaroHill)-[RECORDED_AS]->(UmorPuj),"""He recorded the Garo hill as ‘Umor puj’ and its inhabitants as ‘Garoini’.""",Garo_4.pdf,4
