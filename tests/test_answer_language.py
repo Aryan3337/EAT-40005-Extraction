@@ -343,17 +343,21 @@ def test_google_translate_splits_long_text(monkeypatch):
 
         def translate(self, text):
             sizes.append(len(text))
-            return "x"
+            return " ".join(["শব্দ"] * len(text.split()))
 
     monkeypatch.setattr(deep_translator, "GoogleTranslator", Recorder)
     long_text = "\n\n".join(["word " * 600] * 3)  # ~9000 chars
-    assert rag.google_translate(long_text, "en", "bn") == "x\n\nx\n\nx"
+    result = rag.google_translate(long_text, "en", "bn")
+    assert len(result.split()) == 1800  # every word came back
     assert max(sizes) <= 4500
 
 
 # ------------------------------------------------------------------ auto path
 
-def test_auto_falls_back_to_the_local_model_when_google_refuses(monkeypatch):
+def test_auto_never_lets_the_local_model_write_a_bangla_answer(monkeypatch):
+    # mistral:7b misspells Bangla, so in auto mode a failed online answer
+    # translation shows English with a note. The question may still be
+    # translated by the model, since only its English meaning is used.
     monkeypatch.setenv("TRANSLATION_PROVIDER", "auto")
     monkeypatch.setattr(rag, "google_translate", lambda *a: "")
     prompts = []
@@ -363,16 +367,30 @@ def test_auto_falls_back_to_the_local_model_when_google_refuses(monkeypatch):
         if json["prompt"].startswith("Translate this question"):
             return _Response("Where do the Garo live?")
         if json["prompt"].startswith("Translate the following text"):
-            return _Response("গারোরা ময়মনসিংহে বাস করে।")
+            pytest.fail("auto mode must not ask the local model for a Bangla answer")
         return _Response("The Garo live in Mymensingh.")
 
     monkeypatch.setattr(rag.requests, "post", fake_post)
     synth = _synth()
     english_q = synth.english_question("গারোরা কোথায় বাস করে?", "bn")
     assert english_q == "Where do the Garo live?"
-    assert synth.answer("গারোরা কোথায় বাস করে?", [_triple()], "bn", english_q) \
-        == "গারোরা ময়মনসিংহে বাস করে।"
-    assert len(prompts) == 3
+    answer = synth.answer("গারোরা কোথায় বাস করে?", [_triple()], "bn", english_q)
+    assert answer.startswith(rag._ENGLISH_ONLY_NOTES["bn"])
+    assert answer.endswith("The Garo live in Mymensingh.")
+
+
+def test_llm_mode_still_uses_the_local_model_and_fixes_names(monkeypatch):
+    monkeypatch.setenv("TRANSLATION_PROVIDER", "llm")
+
+    def fake_post(url, json, timeout, headers=None):
+        if json["prompt"].startswith("Translate the following text"):
+            return _Response("মান্ডি মানুষ ময়মনসিংহে বাস করে।")
+        return _Response("The Mandi live in Mymensingh.")
+
+    monkeypatch.setattr(rag.requests, "post", fake_post)
+    synth = _synth()
+    assert synth.answer("x", [_triple()], "bn", "Where do the Mandi live?") \
+        == "মান্দি মানুষ ময়মনসিংহে বাস করে।"
 
 
 def test_auto_uses_google_and_skips_the_model_when_google_works(monkeypatch):
@@ -491,7 +509,7 @@ def test_answer_translations_prepare_switchable_language_variants(monkeypatch):
 def test_mymemory_uses_its_language_codes_and_splits_long_text(monkeypatch):
     import deep_translator
     _FakeMyMemory.calls = []
-    _FakeMyMemory.reply = "অনুবাদ"
+    _FakeMyMemory.reply = "এটি গারো মানুষদের সম্পর্কে একটি বাক্য। " * 10
     monkeypatch.setattr(deep_translator, "MyMemoryTranslator", _FakeMyMemory)
     text = "This is one sentence about the Garo people. " * 30  # ~1300 chars
     result = _real_mymemory_translate(text, "en", "bn")
@@ -592,3 +610,190 @@ def test_hindi_fallback_note_is_in_hindi(monkeypatch):
 
 def test_mymemory_knows_hindi():
     assert rag._MYMEMORY_CODES["hi"] == "hi-IN"
+
+
+# ----------------------------------------------- skipped words and spelling
+
+def test_split_never_cuts_inside_a_word():
+    text = ("Garo households in Madhupur depend on forest land " * 20).strip()
+    pieces = rag._split_for_limit(text, 60)
+    assert all(len(p) <= 60 for p in pieces)
+    assert " ".join(pieces).split() == text.split()
+
+
+def test_incomplete_translations_are_detected():
+    source = "The Garo people mainly live in Mymensingh, Tangail and Sherpur."
+    full = "গারো জনগোষ্ঠী প্রধানত ময়মনসিংহ, টাঙ্গাইল এবং শেরপুরে বসবাস করে।"
+    assert not rag.translation_incomplete(source, full, "bn")
+    assert rag.translation_incomplete(source, "গারো জনগোষ্ঠী।", "bn")  # words dropped
+    assert rag.translation_incomplete(source, source, "bn")  # left in English
+    assert rag.translation_incomplete(source, "", "bn")
+    assert not rag.translation_incomplete("hello", "hello", "en")
+
+
+def test_google_retries_sentence_by_sentence_when_words_go_missing(monkeypatch):
+    import deep_translator
+    replies = {
+        "The Garo live in Mymensingh. They speak A·chik at home.": "গারোরা।",
+        "The Garo live in Mymensingh.": "গারোরা ময়মনসিংহে বাস করে।",
+        "They speak A·chik at home.": "তারা বাড়িতে আচিক ভাষায় কথা বলে।",
+    }
+
+    class PartialGoogle:
+        def __init__(self, **kwargs):
+            pass
+
+        def translate(self, text):
+            return replies[text]
+
+    monkeypatch.setattr(deep_translator, "GoogleTranslator", PartialGoogle)
+    result = rag.google_translate(
+        "The Garo live in Mymensingh. They speak A·chik at home.", "en", "bn")
+    assert result == "গারোরা ময়মনসিংহে বাস করে। তারা বাড়িতে আচিক ভাষায় কথা বলে।"
+
+
+def test_google_gives_up_rather_than_return_a_partial_answer(monkeypatch):
+    import deep_translator
+
+    class AlwaysPartial:
+        def __init__(self, **kwargs):
+            pass
+
+        def translate(self, text):
+            return "গারো।"
+
+    monkeypatch.setattr(deep_translator, "GoogleTranslator", AlwaysPartial)
+    text = "The Garo people mainly live in Mymensingh, Tangail and Sherpur districts."
+    assert rag.google_translate(text, "en", "bn") == ""
+
+
+def test_mymemory_partial_match_is_rejected(monkeypatch):
+    import deep_translator
+    _FakeMyMemory.calls = []
+    _FakeMyMemory.reply = "গারো।"
+    monkeypatch.setattr(deep_translator, "MyMemoryTranslator", _FakeMyMemory)
+    text = "The Garo people mainly live in Mymensingh, Tangail and Sherpur districts."
+    assert _real_mymemory_translate(text, "en", "bn") == ""
+
+
+def test_online_translation_fixes_project_name_spellings(monkeypatch):
+    seen = []
+
+    def fake_google(text, source, target):
+        seen.append(text)
+        return "মান্ডি জনগণ এ·চিক ভাষায় কথা বলে।"
+
+    monkeypatch.setattr(rag, "google_translate", fake_google)
+    result = rag.online_translate("The Mandi people speak A·chik.", "en", "bn")
+    assert result == "মান্দি জনগণ আচিক ভাষায় কথা বলে।"
+    assert "·" not in seen[0]
+
+
+def test_english_left_inside_a_bangla_answer_is_translated(monkeypatch):
+    translated = (
+        "তাদের traditionalঐতিহ্যবাহী ওষুধের অনুশীলন সম্পর্কে। "
+        "গারো জনগোষ্ঠীর traditionalঐতিহ্যবাহী medicineষধ অনুশীলন, "
+        "এবং ethnobotany গবেষণা। DNA পরীক্ষা।"
+    )
+    word_calls = []
+
+    def fake_google(text, source, target):
+        if text == "ethnobotany":
+            word_calls.append(text)
+            return "নৃ-উদ্ভিদবিজ্ঞান"
+        return translated
+
+    monkeypatch.setattr(rag, "google_translate", fake_google)
+    result = rag.online_translate("English answer.", "en", "bn")
+    assert result == (
+        "তাদের ঐতিহ্যবাহী ওষুধের অনুশীলন সম্পর্কে। "
+        "গারো জনগোষ্ঠীর ঐতিহ্যবাহী ওষুধ অনুশীলন, "
+        "এবং নৃ-উদ্ভিদবিজ্ঞান গবেষণা। DNA পরীক্ষা।"
+    )
+    assert word_calls == ["ethnobotany"]  # one lookup per unknown word
+
+
+def test_untranslatable_english_word_is_kept_not_lost(monkeypatch):
+    monkeypatch.setattr(rag, "google_translate", lambda text, s, t: "")
+    assert rag.fill_leftover_english("গারো xyzzy শব্দ", "bn") == "গারো xyzzy শব্দ"
+
+
+def test_bangla_thousands_lose_the_extra_space():
+    assert rag.fix_bangla_spelling("জনসংখ্যা ৩০০, ০০০, ০০০।") == "জনসংখ্যা ৩০০,০০০,০০০।"
+    assert rag.fix_bangla_spelling("১, ২ এবং ৩") == "১, ২ এবং ৩"
+
+
+def test_translation_keeps_the_exact_english_numbers(monkeypatch):
+    monkeypatch.setattr(rag, "google_translate",
+                        lambda text, s, t: "গারো জনসংখ্যা ৩০০, ০০০, ০০০। ২০১১ সালে।")
+    result = rag.online_translate(
+        "The Garo people population 3000000. In 2011.", "en", "bn")
+    assert result == "গারো জনসংখ্যা ৩০০০০০০। ২০১১ সালে।"
+
+
+def test_numbers_are_left_alone_when_counts_differ():
+    assert rag.restore_numbers("1 and 2", "শুধু ৩", "bn") == "শুধু ৩"
+
+
+def test_sentence_with_english_inside_is_translated_again(monkeypatch):
+    source = "They speak Mandi. They have a strong sense of identity."
+    calls = []
+
+    def fake_google(text, s, t):
+        calls.append(text)
+        if text == source:
+            return "তারা মান্দি ভাষায় কথা বলে। তাদের পরিচয়ের দৃ strong় ধারণা রয়েছে।"
+        if text == "They have a strong sense of identity.":
+            return "তাদের পরিচয়ের দৃঢ় ধারণা রয়েছে।"
+        return ""
+
+    monkeypatch.setattr(rag, "google_translate", fake_google)
+    assert rag.online_translate(source, "en", "bn") == \
+        "তারা মান্দি ভাষায় কথা বলে। তাদের পরিচয়ের দৃঢ় ধারণা রয়েছে।"
+    assert calls == [source, "They have a strong sense of identity."]
+
+
+def test_broken_word_is_repaired_when_the_retry_does_not_help(monkeypatch):
+    monkeypatch.setattr(rag, "google_translate",
+                        lambda text, s, t: "তাদের পরিচয়ের দৃ strong় ধারণা রয়েছে।")
+    assert rag.online_translate("They have a strong sense of identity.", "en", "bn") == \
+        "তাদের পরিচয়ের দৃঢ় ধারণা রয়েছে।"
+
+
+def test_normal_repeated_syllables_are_not_merged(monkeypatch):
+    monkeypatch.setattr(rag, "google_translate", lambda text, s, t: "সে সেখানে থাকে।")
+    assert rag.online_translate("She lives there.", "en", "bn") == "সে সেখানে থাকে।"
+
+
+def test_million_and_billion_become_lakh_and_crore():
+    fix = rag.fix_bangla_spelling
+    assert fix("জনসংখ্যা প্রায় ৩ মিলিয়ন এবং") == "জনসংখ্যা প্রায় ৩০ লাখ এবং"
+    assert fix("১.৫ মিলিয়ন মানুষ") == "১৫ লাখ মানুষ"
+    assert fix("12 মিলিয়ন") == "১ কোটি ২০ লাখ"
+    assert fix("২ বিলিয়ন ডলার") == "২০০ কোটি ডলার"
+    assert fix("এক মিলিয়ন মানুষ") == "১০ লাখ মানুষ"
+    assert fix("কয়েক মিলিয়ন") == "কয়েক ১০ লাখ"
+
+
+def test_english_terms_in_bangla_letters_are_translated():
+    fix = rag.fix_bangla_spelling
+    assert fix("ক্লাইমেট চেঞ্জ এই লোকের জন্য") == "জলবায়ু পরিবর্তন এই লোকের জন্য"
+    assert fix("ক্লাইমেট চেঞ্জের ইন্ডিজেনাস কমিউনিটি") == "জলবায়ু পরিবর্তনের আদিবাসী সম্প্রদায়"
+
+
+def test_amounts_with_unit_words_are_compared_as_a_whole():
+    restore = rag.restore_numbers
+    # Already right in Bangla wording: kept.
+    assert restore("About 3000000 people.", "প্রায় ৩০ লাখ মানুষ।", "bn") == "প্রায় ৩০ লাখ মানুষ।"
+    assert restore("About 3 million people.", "প্রায় ৩০ লাখ মানুষ।", "bn") == "প্রায় ৩০ লাখ মানুষ।"
+    # Wrong amount: replaced, never "৩০০০০০০ লাখ".
+    assert restore("About 3000000 people.", "প্রায় ৩০০ লাখ মানুষ।", "bn") == "প্রায় ৩০০০০০০ মানুষ।"
+    assert restore("About 3 million people.", "প্রায় ৩ লাখ মানুষ।", "bn") == "প্রায় ৩০ লাখ মানুষ।"
+    # Years and plain numbers still work as before.
+    assert restore("In 2011.", "২০১২ সালে।", "bn") == "২০১১ সালে।"
+
+
+def test_one_leftover_english_word_is_not_mostly_english():
+    source = "They practise ethnobotany in the hills."
+    assert not rag.translation_incomplete(source, "তারা পাহাড়ে ethnobotany চর্চা করে।", "bn")
+    assert rag.translation_incomplete(source, source, "bn")
