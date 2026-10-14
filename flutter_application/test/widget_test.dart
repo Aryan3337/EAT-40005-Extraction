@@ -119,6 +119,12 @@ void main() {
     expect(find.text('ব্যবহারকারীর নাম / ইমেইল'), findsOneWidget);
     final preferences = await SharedPreferences.getInstance();
     expect(preferences.getString('app.language'), 'bn');
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(const KnowledgeGraphApp());
+    await tester.pumpAndSettle();
+
+    expect(find.text('বাংলা'), findsOneWidget);
   });
 
   testWidgets('sends a question and renders the response', (
