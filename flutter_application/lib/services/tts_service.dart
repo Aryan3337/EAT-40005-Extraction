@@ -2,6 +2,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 
+import 'pronunciation.dart';
+import 'speech_chunks.dart';
 import 'web_speech_fallback.dart';
 import 'web_speech_fallback_stub.dart'
     if (dart.library.js_interop) 'web_speech_fallback_web.dart'
@@ -18,9 +20,28 @@ class TtsService {
        _useWebSpeechFallbackOverride = useWebSpeechFallback,
        _webSpeechFallback = webSpeechFallback ?? platform.createFallback() {
     _tts
-      ..setSpeechRate(0.58)
-      ..setPitch(1.0);
+      ..setSpeechRate(defaultSpeechRate)
+      ..setPitch(1.0)
+      // Each sentence is spoken only after the previous one has finished.
+      ..awaitSpeakCompletion(true);
   }
+
+  // A normal speaking pace. The scale differs per platform: the browser's
+  // Web Speech API treats 1.0 as normal, while Android and Apple voices treat
+  // 0.5 as normal. The old fixed 0.58 made web speech noticeably slow.
+  static double get defaultSpeechRate {
+    if (kIsWeb) return 1.0;
+    return switch (defaultTargetPlatform) {
+      TargetPlatform.android ||
+      TargetPlatform.iOS ||
+      TargetPlatform.macOS => 0.5,
+      _ => 1.0,
+    };
+  }
+
+  // True while an answer is being read sentence by sentence, so the engine's
+  // per-sentence completion events do not end the read-aloud early.
+  bool _readingChunks = false;
 
   final FlutterTts _tts = FlutterTts();
   final bool? _supportsVoiceSelectionOverride;
@@ -107,12 +128,30 @@ class TtsService {
     voices.sort((left, right) {
       final quality = _quality(right).compareTo(_quality(left));
       if (quality != 0) return quality;
+      // Natural/neural voices (Edge's "Online (Natural)", Chrome's "Google"
+      // voices) sound far less robotic than the old built-in ones.
+      final natural = _naturalness(right).compareTo(_naturalness(left));
+      if (natural != 0) return natural;
+      final exact = _exactLocale(right, normalizedLocale).compareTo(
+        _exactLocale(left, normalizedLocale),
+      );
+      if (exact != 0) return exact;
       return (_requiresNetwork(left) ? 1 : 0).compareTo(
         _requiresNetwork(right) ? 1 : 0,
       );
     });
     return voices.first;
   }
+
+  static int _naturalness(Map<String, dynamic> voice) {
+    final name = (voice['name'] ?? '').toString().toLowerCase();
+    if (name.contains('natural') || name.contains('neural')) return 2;
+    if (name.contains('online') || name.startsWith('google')) return 1;
+    return 0;
+  }
+
+  static int _exactLocale(Map<String, dynamic> voice, String locale) =>
+      _normalizeLocale(voice['locale']?.toString() ?? '') == locale ? 1 : 0;
 
   // Speaks [text] aloud, cancelling anything already being read.
   Future<bool> speak(String text, {String? languageCode}) async {
@@ -126,9 +165,11 @@ class TtsService {
         : localeForLanguage(languageCode);
     final voiceAvailable = await setLanguage(language);
     if (requestId != _speechRequestId) return true;
+    // Respell words the voice is known to mispronounce (display unchanged).
+    final spokenText = forSpeech(trimmed, language);
     if (_useWebSpeechFallback && !voiceAvailable) {
       return _webSpeechFallback.speak(
-        trimmed,
+        spokenText,
         language,
         onDone: _completionCallback,
         onError: (error) {
@@ -137,13 +178,31 @@ class TtsService {
         },
       );
     }
-    final result = await _tts.speak(trimmed);
+    // Read one sentence at a time: one long utterance gets cut off or
+    // garbled (skipped letters) by flutter_tts and the Web Speech API.
+    final chunks = speechChunks(spokenText);
+    // The plugin's result is 1 (started) or 0 (failed) on most platforms, but
+    // the web version returns null when it waits for completion, so it must
+    // not be typed as int (that threw after the first sentence in Edge).
+    Object? result = 1;
+    _readingChunks = true;
+    try {
+      for (final chunk in chunks) {
+        if (requestId != _speechRequestId) return true; // stopped or replaced
+        result = await _tts.speak(chunk);
+        if (result == 0) break;
+      }
+    } finally {
+      if (requestId == _speechRequestId) _readingChunks = false;
+    }
+    if (requestId == _speechRequestId) _completionCallback();
     return voiceAvailable && result != 0;
   }
 
   // Stops speech in progress, if any.
   Future<void> stop() {
     _speechRequestId++;
+    _readingChunks = false;
     if (_useWebSpeechFallback) _webSpeechFallback.stop();
     return _tts.stop();
   }
@@ -156,9 +215,17 @@ class TtsService {
   }) {
     _completionCallback = callback;
     _speechErrorCallback = onError;
-    _tts.setCompletionHandler(callback);
-    _tts.setCancelHandler(callback);
+    // While reading sentence by sentence, speak() reports the end itself once
+    // the last sentence is done; a single sentence's completion is ignored.
+    _tts.setCompletionHandler(() {
+      if (!_readingChunks) callback();
+    });
+    _tts.setCancelHandler(() {
+      _readingChunks = false;
+      callback();
+    });
     _tts.setErrorHandler((error) {
+      _readingChunks = false;
       onError?.call(error.toString());
       callback();
     });
