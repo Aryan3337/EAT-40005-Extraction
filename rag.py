@@ -1746,10 +1746,20 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 payload = json.loads(self.rfile.read(length) or b"{}")
+                if not isinstance(payload, dict):
+                    raise ValueError("Request body must be a JSON object.")
                 email = str(payload.get("email", ""))
                 password = str(payload.get("password", ""))
                 account = (
-                    get_auth_store().register(email, password)
+                    get_auth_store().register(
+                        username=str(payload.get("username", "")),
+                        email=email,
+                        phone_country_code=str(
+                            payload.get("phone_country_code", "")
+                        ),
+                        phone_number=str(payload.get("phone_number", "")),
+                        password=password,
+                    )
                     if register
                     else get_auth_store().login(email, password)
                 )
@@ -1760,8 +1770,11 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
             except ValueError as error:
                 self._send_json(400, {"error": str(error)})
             except Exception as error:
-                if register and "already exists" in str(error).lower():
-                    self._send_json(409, {"error": "An account already exists."})
+                if register and (
+                    "already exists" in str(error).lower()
+                    or "already taken" in str(error).lower()
+                ):
+                    self._send_json(409, {"error": str(error)})
                     return
                 print(f"Authentication backend error: {type(error).__name__}: {error}")
                 self._send_json(503, {"error": "Authentication service unavailable."})

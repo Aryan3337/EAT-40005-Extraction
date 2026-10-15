@@ -134,20 +134,19 @@ those fifty signals, and they are lost when the browser data is cleared.
 Needs an endpoint and a store before the feature is worth anything beyond a
 demonstration.
 
-## 8. Authentication is two hardcoded accounts, checked in the browser
+## 8. API sessions are held in server memory
 
-`auth_service.dart` compares against literal credentials in the Dart source
-and persists a session in `SharedPreferences`. There is no server-side auth,
-no password hashing and no session validation.
+The Python API checks passwords against salted PBKDF2 hashes in Neo4j and
+issues opaque session tokens. The tokens are kept in the API process's memory,
+while Flutter can persist the token in `SharedPreferences`. Restarting the API
+invalidates its active tokens; Flutter currently does not validate a restored
+token until its next authenticated API request.
 
-Anyone reading the published JavaScript can see the credentials.
-
-The admin upload endpoint is protected separately by a server-side shared
-secret (`ADMIN_UPLOAD_SECRET`), because a public endpoint that runs LLM work
-on upload is an open invitation to burn the budget. That secret is the only
-real access control in the system.
-
-Real authentication is the top security gap for whoever inherits this.
+The default development API URL uses HTTP. A hosted deployment must configure
+an HTTPS `API_BASE_URL` so credentials and session tokens are protected in
+transit. Admin uploads and paper review additionally require the server-side
+`ADMIN_UPLOAD_SECRET`; admin user management relies on the authenticated
+admin role.
 
 ## 9. The confidence framework does not gate extraction, and its verdicts are unstable
 

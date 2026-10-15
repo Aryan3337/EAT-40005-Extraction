@@ -3,11 +3,13 @@
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import uuid
 from typing import Dict, Optional
 
 from neo4j import GraphDatabase
+from neo4j.exceptions import ConstraintError
 
 from config import PASSWORD, URI, USERNAME
 
@@ -28,12 +30,30 @@ class AuthStore:
                 "CREATE CONSTRAINT user_email_unique IF NOT EXISTS "
                 "FOR (u:User) REQUIRE u.email IS UNIQUE"
             ).consume()
+            session.run(
+                "CREATE CONSTRAINT user_username_unique IF NOT EXISTS "
+                "FOR (u:User) REQUIRE u.username IS UNIQUE"
+            ).consume()
 
     def close(self) -> None:
         self._driver.close()
 
-    def register(self, email: str, password: str) -> Dict[str, str]:
+    def register(
+        self,
+        username: str,
+        email: str,
+        phone_country_code: str,
+        phone_number: str,
+        password: str,
+    ) -> Dict[str, str]:
+        username = self._normalise_username(username)
         email = self._normalise_email(email)
+        phone_country_code = self._normalise_phone_country_code(
+            phone_country_code
+        )
+        phone_number = self._normalise_phone_number(phone_number)
+        if len(phone_country_code[1:] + phone_number) > 15:
+            raise ValueError("Enter a valid phone number.")
         self._validate_password(password)
         password_hash = self._hash_password(password)
         with self._driver.session() as session:
@@ -42,14 +62,43 @@ class AuthStore:
                 email=email,
             ).single()
             if existing is not None:
-                raise ValueError("An account already exists.")
-            result = session.run(
-                "CREATE (u:User {email: $email, password_hash: $password_hash, "
-                "role: 'user', created_at: datetime()}) "
-                "RETURN u.email AS email, u.role AS role",
-                email=email,
-                password_hash=password_hash,
+                raise ValueError(
+                    "An account with this email already exists. "
+                    "Use a different email or sign in."
+                )
+            existing_username = session.run(
+                "MATCH (u:User) WHERE u.username = $username "
+                "OR u.email = $username RETURN u.email AS email LIMIT 1",
+                username=username,
             ).single()
+            if existing_username is not None:
+                raise ValueError(
+                    "That username is already taken. Pick another username."
+                )
+            try:
+                result = session.run(
+                    "CREATE (u:User {username: $username, email: $email, "
+                    "phone_country_code: $phone_country_code, "
+                    "phone_number: $phone_number, "
+                    "password_hash: $password_hash, role: 'user', "
+                    "created_at: datetime()}) "
+                    "RETURN u.email AS email, u.role AS role",
+                    username=username,
+                    email=email,
+                    phone_country_code=phone_country_code,
+                    phone_number=phone_number,
+                    password_hash=password_hash,
+                ).single()
+            except ConstraintError as error:
+                if "username" in str(error).lower():
+                    raise ValueError(
+                        "That username is already taken. "
+                        "Pick another username."
+                    ) from error
+                raise ValueError(
+                    "An account with this email already exists. "
+                    "Use a different email or sign in."
+                ) from error
         if result is None:
             raise RuntimeError("The account could not be created.")
         return self._start_session(result["email"], result["role"])
@@ -73,13 +122,14 @@ class AuthStore:
             ).consume()
 
     def login(self, email: str, password: str) -> Optional[Dict[str, str]]:
-        email = self._normalise_identifier(email)
+        identifier = self._normalise_identifier(email)
         with self._driver.session() as session:
             result = session.run(
-                "MATCH (u:User {email: $email}) "
+                "MATCH (u:User) "
+                "WHERE u.email = $identifier OR u.username = $identifier "
                 "RETURN u.email AS email, u.role AS role, "
                 "u.password_hash AS password_hash",
-                email=email,
+                identifier=identifier,
             ).single()
         if result is None or not self._verify_password(
             password, result["password_hash"]
@@ -305,9 +355,44 @@ class AuthStore:
     @staticmethod
     def _normalise_email(email: str) -> str:
         normalised = email.strip().lower()
-        if len(normalised) < 3 or len(normalised) > 254 or "@" not in normalised:
+        local_part = normalised.partition("@")[0]
+        if (
+            len(normalised) > 254
+            or len(local_part) > 64
+            or not re.fullmatch(
+                r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+"
+                r"(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*"
+                r"@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+                r"[A-Za-z]{2,}",
+                normalised,
+            )
+        ):
             raise ValueError("Enter a valid email address.")
         return normalised
+
+    @staticmethod
+    def _normalise_username(username: str) -> str:
+        normalised = username.strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{2,29}", normalised):
+            raise ValueError(
+                "Username must be 3-30 characters and use only letters, "
+                "numbers, dots, underscores, or hyphens."
+            )
+        return normalised
+
+    @staticmethod
+    def _normalise_phone_country_code(country_code: str) -> str:
+        normalised = country_code.strip()
+        if not re.fullmatch(r"\+[1-9][0-9]{0,3}", normalised):
+            raise ValueError("Choose a valid phone country code.")
+        return normalised
+
+    @staticmethod
+    def _normalise_phone_number(phone_number: str) -> str:
+        digits = re.sub(r"\D", "", phone_number)
+        if not 4 <= len(digits) <= 14:
+            raise ValueError("Enter a valid phone number.")
+        return digits
 
     @staticmethod
     def _normalise_identifier(identifier: str) -> str:

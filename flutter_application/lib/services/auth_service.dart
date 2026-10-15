@@ -36,6 +36,22 @@ class AuthSession {
   bool get isAdmin => role == UserRole.admin;
 }
 
+class RegistrationDetails {
+  const RegistrationDetails({
+    required this.username,
+    required this.email,
+    required this.phoneCountryCode,
+    required this.phoneNumber,
+    required this.password,
+  });
+
+  final String username;
+  final String email;
+  final String phoneCountryCode;
+  final String phoneNumber;
+  final String password;
+}
+
 class AuthService {
   AuthService({http.Client? client, String? endpoint})
     : _client = client ?? http.Client(),
@@ -74,15 +90,15 @@ class AuthService {
   }
 
   Future<AuthSession> register({
-    required String email,
-    required String password,
+    required RegistrationDetails details,
     required bool rememberMe,
   }) async {
     return _authenticate(
       path: 'register',
-      email: email,
-      password: password,
+      email: details.email,
+      password: details.password,
       rememberMe: rememberMe,
+      registrationDetails: details,
     );
   }
 
@@ -91,6 +107,7 @@ class AuthService {
     required String email,
     required String password,
     required bool rememberMe,
+    RegistrationDetails? registrationDetails,
   }) async {
     late final http.Response response;
     try {
@@ -98,7 +115,15 @@ class AuthService {
           .post(
             Uri.parse('${endpoint.replaceAll(RegExp(r'/$'), '')}/$path'),
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'email': email.trim(), 'password': password}),
+            body: jsonEncode({
+              'email': email.trim(),
+              'password': password,
+              if (registrationDetails != null) ...{
+                'username': registrationDetails.username.trim(),
+                'phone_country_code': registrationDetails.phoneCountryCode,
+                'phone_number': registrationDetails.phoneNumber.trim(),
+              },
+            }),
           )
           .timeout(const Duration(seconds: 15));
     } on Exception catch (error) {

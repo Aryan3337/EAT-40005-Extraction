@@ -47,6 +47,29 @@ void main() {
     );
   });
 
+  test('registration sends the account profile fields to the API', () async {
+    final client = TestAuthClient();
+    final auth = AuthService(client: client);
+    await auth.register(
+      details: const RegistrationDetails(
+        username: 'new.user',
+        email: 'new@example.com',
+        phoneCountryCode: '+61',
+        phoneNumber: '412345678',
+        password: 'strong-password-123',
+      ),
+      rememberMe: false,
+    );
+
+    expect(client.requests.single, {
+      'email': 'new@example.com',
+      'password': 'strong-password-123',
+      'username': 'new.user',
+      'phone_country_code': '+61',
+      'phone_number': '412345678',
+    });
+  });
+
   test('a remembered session restores its token and role', () async {
     await service().signIn(
       email: testAdmin,

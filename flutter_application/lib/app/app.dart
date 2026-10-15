@@ -30,7 +30,6 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
   bool _showingAdmin = false;
   bool _showingUsers = false;
   String _adminSecret = '';
-
   // showDialog needs a context BELOW MaterialApp -- one that can see the
   // Navigator and MaterialLocalizations it provides. This State builds
   // MaterialApp, so its own context sits above both and throws. The key gives
@@ -124,10 +123,12 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
     setState(() => _session = session);
   }
 
-  Future<void> _register(String email, String password, bool rememberMe) async {
+  Future<void> _register(
+    RegistrationDetails details,
+    bool rememberMe,
+  ) async {
     final session = await _authService.register(
-      email: email,
-      password: password,
+      details: details,
       rememberMe: rememberMe,
     );
     if (!mounted) return;
