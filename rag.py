@@ -43,6 +43,7 @@ from auth_store import AuthStore
 from llm_endpoint import ollama_tunnel_headers, resolve_llm_endpoint
 import local_tts
 from source_provenance import provenance_fields
+from community_time import filter_community_periods
 
 try:
     from neo4j import GraphDatabase  # type: ignore[import-not-found]
@@ -267,6 +268,7 @@ class KnowledgeGraph:
                     'source_section': row.get('source_section', 'Unknown'),
                     'confidence': row.get('confidence', 'Medium'),
                     'passage': row.get('passage', ''),
+                    'time_period': row.get('time_period', '').strip(),
                     **provenance_fields(row)
                 }
                 # Keep only complete triples (all three main parts present).
@@ -468,8 +470,9 @@ class ConceptRetriever:
 
         # Weighted by keyword_weights so a rare, on-topic keyword outranks a
         # flat match on the graph's hub entity -- see keyword_weights.
-        weights = keyword_weights(keywords, self.kg.triples)
-        scored = [(score_triple_weighted(triple, weights), triple) for triple in self.kg.triples]
+        candidates = filter_community_periods(self.kg.triples, question)
+        weights = keyword_weights(keywords, candidates)
+        scored = [(score_triple_weighted(triple, weights), triple) for triple in candidates]
         # Stable sort on the negated score keeps the CSV's row order as the
         # tie-break, so equal-scoring results do not shuffle between calls.
         scored.sort(key=lambda pair: -pair[0])
