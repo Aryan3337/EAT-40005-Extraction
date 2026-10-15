@@ -15,7 +15,7 @@ from verification.gate import apply_gates, page_number_from_source_section
 GATE_CSV_FIELDS = [
     "extraction_number", "paper", "subject", "predicate", "object",
     "source_section", "confidence", "passage", "sentence_ref",
-    "source_file", "page_number",
+    "source_file", "page_number", "paper_title", "source_type",
 ]
 
 
@@ -54,6 +54,19 @@ if not Path(pdf_path).exists():
     sys.exit(1)
 
 triples = run_kg_extraction(pdf_path, model)
+
+# Save the unreviewed model output before filters or NLP processing can fail.
+# This is a local checkpoint, never an approved graph or an upload source.
+if triples:
+    checkpoint_rows = [dict(t, source_file=Path(pdf_path).name) for t in triples]
+    checkpoint_fields = list(dict.fromkeys(
+        key for row in checkpoint_rows for key in row
+    ))
+    checkpoint_dir = Path("output")
+    checkpoint_dir.mkdir(exist_ok=True)
+    checkpoint_path = checkpoint_dir / f"{Path(pdf_path).stem}_raw_unreviewed.csv"
+    write_gate_csv(checkpoint_path, checkpoint_fields, checkpoint_rows)
+    print(f"Saved unreviewed extraction checkpoint to {checkpoint_path}")
 
 print(f"Extracted {len(triples)} triples.")
 
