@@ -14,6 +14,14 @@ class AppLocalizations {
   };
 
   static const _english = <String, String>{
+    'researchPaper': 'Research paper',
+    'communityData': 'Community data',
+    'unknownSourceType': 'Unknown source type',
+    'paperTitleUnavailable': 'Paper title unavailable',
+    'sourceFile': 'Source file: {file}',
+    'sourcePage': 'Page: {page}',
+    'pageUnavailable': 'Page unavailable',
+
     'language': 'Language',
     'appTagline': 'Ask about culture, climate & community',
     'welcomeBack': 'Welcome back',
@@ -71,8 +79,7 @@ class AppLocalizations {
     'stopListening': 'Stop listening',
     'askByVoice': 'Ask by voice',
     'readAloud': 'Read aloud',
-    'translationMissing':
-        'No {selected} translation was saved for this answer, so it is shown in {shown}. Ask the question again to get it in {selected}.',
+    'translationMissing': 'No {selected} translation was saved for this answer, so it is shown in {shown}. Ask the question again to get it in {selected}.',
     'stopReading': 'Stop reading',
     'copyAnswer': 'Copy answer',
     'answerCopied': 'Answer copied',
@@ -85,6 +92,14 @@ class AppLocalizations {
   };
 
   static const _hindi = <String, String>{
+    'researchPaper': 'शोध पत्र',
+    'communityData': 'सामुदायिक डेटा',
+    'unknownSourceType': 'स्रोत का प्रकार अज्ञात',
+    'paperTitleUnavailable': 'शोध पत्र का शीर्षक उपलब्ध नहीं',
+    'sourceFile': 'स्रोत फ़ाइल: {file}',
+    'sourcePage': 'पृष्ठ: {page}',
+    'pageUnavailable': 'पृष्ठ उपलब्ध नहीं',
+
     'language': 'भाषा',
     'appTagline': 'संस्कृति, जलवायु और समुदाय के बारे में पूछें',
     'welcomeBack': 'वापसी पर स्वागत है',
@@ -131,8 +146,7 @@ class AppLocalizations {
     'stopListening': 'सुनना बंद करें',
     'askByVoice': 'आवाज़ से पूछें',
     'readAloud': 'ज़ोर से पढ़ें',
-    'translationMissing':
-        'इस उत्तर का {selected} अनुवाद सहेजा नहीं गया था, इसलिए यह {shown} में दिखाया गया है। {selected} में पाने के लिए सवाल दोबारा पूछें।',
+    'translationMissing': 'इस उत्तर का {selected} अनुवाद सहेजा नहीं गया था, इसलिए यह {shown} में दिखाया गया है। {selected} में पाने के लिए सवाल दोबारा पूछें।',
     'stopReading': 'पढ़ना बंद करें',
     'copyAnswer': 'उत्तर कॉपी करें',
     'answerCopied': 'उत्तर कॉपी हो गया',
@@ -145,6 +159,14 @@ class AppLocalizations {
   };
 
   static const _bangla = <String, String>{
+    'researchPaper': 'গবেষণাপত্র',
+    'communityData': 'সম্প্রদায়ের তথ্য',
+    'unknownSourceType': 'সূত্রের ধরন অজানা',
+    'paperTitleUnavailable': 'গবেষণাপত্রের শিরোনাম পাওয়া যায়নি',
+    'sourceFile': 'সূত্র ফাইল: {file}',
+    'sourcePage': 'পৃষ্ঠা: {page}',
+    'pageUnavailable': 'পৃষ্ঠা পাওয়া যায়নি',
+
     'language': 'ভাষা',
     'appTagline': 'সংস্কৃতি, জলবায়ু ও সম্প্রদায় সম্পর্কে জিজ্ঞাসা করুন',
     'welcomeBack': 'আবারও স্বাগতম',
@@ -190,8 +212,7 @@ class AppLocalizations {
     'stopListening': 'শোনা বন্ধ করুন',
     'askByVoice': 'কথা বলে প্রশ্ন করুন',
     'readAloud': 'জোরে পড়ুন',
-    'translationMissing':
-        'এই উত্তরের {selected} অনুবাদ সংরক্ষিত নেই, তাই এটি {shown} ভাষায় দেখানো হচ্ছে। {selected} ভাষায় পেতে প্রশ্নটি আবার জিজ্ঞাসা করুন।',
+    'translationMissing': 'এই উত্তরের {selected} অনুবাদ সংরক্ষিত নেই, তাই এটি {shown} ভাষায় দেখানো হচ্ছে। {selected} ভাষায় পেতে প্রশ্নটি আবার জিজ্ঞাসা করুন।',
     'stopReading': 'পড়া বন্ধ করুন',
     'copyAnswer': 'উত্তর কপি করুন',
     'answerCopied': 'উত্তর কপি করা হয়েছে',

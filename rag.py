@@ -42,6 +42,7 @@ from admin_ingest import (check_admin_secret, current_queue, ingest_pdf,
 from auth_store import AuthStore
 from llm_endpoint import ollama_tunnel_headers, resolve_llm_endpoint
 import local_tts
+from source_provenance import provenance_fields
 
 try:
     from neo4j import GraphDatabase  # type: ignore[import-not-found]
@@ -264,7 +265,9 @@ class KnowledgeGraph:
                     'object': row.get('object', '').strip(),
                     'sentence_ref': row.get('sentence_ref', '').strip(),
                     'source_section': row.get('source_section', 'Unknown'),
-                    'confidence': row.get('confidence', 'Medium')
+                    'confidence': row.get('confidence', 'Medium'),
+                    'passage': row.get('passage', ''),
+                    **provenance_fields(row)
                 }
                 # Keep only complete triples (all three main parts present).
                 if triple['subject'] and triple['predicate'] and triple['object']:
@@ -735,6 +738,10 @@ class Neo4jRAGSkeleton:
                coalesce(r.sentence_ref, '') AS sentence_ref,
                coalesce(r.source_section, '') AS source_section,
                coalesce(r.passage, '') AS passage,
+               coalesce(r.paper_title, '') AS paper_title,
+               coalesce(r.source_file, '') AS source_file,
+               coalesce(r.page_number, '') AS page_number,
+               coalesce(r.source_type, '') AS source_type,
                coalesce(r.confidence, '') AS confidence
         LIMIT $fetch_limit
         """
@@ -746,6 +753,8 @@ class Neo4jRAGSkeleton:
                 fetch_limit=self.FETCH_LIMIT,
             )
             candidates = [dict(record) for record in result]
+            for candidate in candidates:
+                candidate.update(provenance_fields(candidate))
 
         # Weighted by keyword_weights so a rare, on-topic keyword outranks a
         # flat match on the graph's hub entity -- see keyword_weights.

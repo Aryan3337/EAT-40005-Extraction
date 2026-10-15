@@ -1427,13 +1427,36 @@ class _MessageBubble extends StatelessWidget {
               color: Color(0xFF2E7D5B),
             ),
           ),
-          if (source.sourceSection.isNotEmpty) ...[
-            const SizedBox(height: 6),
+          const SizedBox(height: 6),
+          Text(
+            strings.text(source.sourceTypeLabelKey),
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            source.paperTitle.isNotEmpty
+                ? source.paperTitle
+                : strings.text('paperTitleUnavailable'),
+          ),
+          if (source.sourceFile.isNotEmpty) ...[
+            const SizedBox(height: 4),
             Text(
               strings
-                  .text('section')
-                  .replaceAll('{section}', source.sourceSection),
+                  .text('sourceFile')
+                  .replaceAll('{file}', source.sourceFile),
             ),
+          ],
+          const SizedBox(height: 4),
+          Text(
+            source.recordedPage.isNotEmpty
+                ? strings
+                      .text('sourcePage')
+                      .replaceAll('{page}', source.recordedPage)
+                : strings.text('pageUnavailable'),
+          ),
+          if (source.sourceSection.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text('${strings.text('section')}: ${source.sourceSection}'),
           ],
           if (supportingText.isNotEmpty) ...[
             const SizedBox(height: 6),
@@ -1447,18 +1470,14 @@ class _MessageBubble extends StatelessWidget {
               source.object.isNotEmpty) ...[
             const SizedBox(height: 8),
             Text(
-              strings
-                  .text('knowledgeGraph')
-                  .replaceAll('{triple}', source.triple),
+              '${strings.text('knowledgeGraph')}: ${source.triple}',
               style: const TextStyle(fontSize: 13, color: Color(0xFF52616A)),
             ),
           ],
           if (source.confidence.isNotEmpty) ...[
             const SizedBox(height: 6),
             Text(
-              strings
-                  .text('confidence')
-                  .replaceAll('{confidence}', source.confidence),
+              '${strings.text('confidence')}: ${source.confidence}',
               style: const TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
@@ -1631,7 +1650,8 @@ class _TranslationMissingNotice extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final selected = AppLocalizations.languageNames[strings.languageCode] ??
+    final selected =
+        AppLocalizations.languageNames[strings.languageCode] ??
         strings.languageCode;
     final shown =
         AppLocalizations.languageNames[shownLanguage] ?? shownLanguage;

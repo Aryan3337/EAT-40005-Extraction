@@ -12,6 +12,10 @@ class SourceEvidence {
     required this.sourceSection,
     required this.passage,
     required this.confidence,
+    this.paperTitle = '',
+    this.sourceFile = '',
+    this.pageNumber = '',
+    this.sourceType = '',
   });
 
   final String subject;
@@ -21,6 +25,10 @@ class SourceEvidence {
   final String sourceSection;
   final String passage;
   final String confidence;
+  final String paperTitle;
+  final String sourceFile;
+  final String pageNumber;
+  final String sourceType;
 
   factory SourceEvidence.fromJson(Map<String, dynamic> json) {
     String read(String key) => json[key]?.toString().trim() ?? '';
@@ -33,6 +41,10 @@ class SourceEvidence {
       sourceSection: read('source_section'),
       passage: read('passage'),
       confidence: read('confidence'),
+      paperTitle: read('paper_title'),
+      sourceFile: read('source_file'),
+      pageNumber: read('page_number'),
+      sourceType: read('source_type'),
     );
   }
 
@@ -44,6 +56,25 @@ class SourceEvidence {
     'source_section': sourceSection,
     'passage': passage,
     'confidence': confidence,
+    'paper_title': paperTitle,
+    'source_file': sourceFile,
+    'page_number': pageNumber,
+    'source_type': sourceType,
+  };
+
+  String get recordedPage {
+    if (RegExp(r'^[1-9][0-9]*$').hasMatch(pageNumber)) return pageNumber;
+    return RegExp(
+          r'^Page\s+([1-9][0-9]*)$',
+          caseSensitive: false,
+        ).firstMatch(sourceSection.trim())?.group(1) ??
+        '';
+  }
+
+  String get sourceTypeLabelKey => switch (sourceType) {
+    'research_paper' => 'researchPaper',
+    'community_data' => 'communityData',
+    _ => 'unknownSourceType',
   };
 
   String get triple => '$subject — $predicate → $object';
