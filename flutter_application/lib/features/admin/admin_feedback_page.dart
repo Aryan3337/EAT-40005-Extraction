@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../models/admin_feedback.dart';
+import '../../models/ingest_entry.dart';
 import '../../services/admin_service.dart';
 
 // Admin queue for user feedback: stats at the top, then each entry with the

@@ -122,31 +122,33 @@ need a full-text index and a different query shape. `FETCH_LIMIT = 500`
 bounds the worst case so an unexpectedly large graph degrades rather than
 loading everything into memory.
 
-## 7. Feedback is collected but unreadable
+## 7. Feedback review (resolved on `JohnsBranch`)
 
-The thumbs up/down and comment box work. The data is written to the
-browser's `SharedPreferences` and goes nowhere else — there is no
-`POST /feedback` endpoint and no storage.
+Feedback is now stored per user in Neo4j (`POST/GET/DELETE /feedback`,
+`DELETE /feedback/<id>`), linked to the triple IDs shown with the answer, and
+reviewed by admins (`GET /admin/feedback`, `GET /admin/feedback/stats`,
+`POST /admin/feedback/<id>/review`). A review records who/when/why. An
+approved review may archive the triples (reversible `archived` flag, excluded
+from retrieval) or replace one with a corrected subject/predicate/object; the
+old triple is archived, not deleted. Human rejection in `review_cli.py` also
+archives instead of deleting. Still hard-deleted: automatic Tier 1 junk
+removal and Tier 2 duplicate merges in `pruner/` (each logged to
+`pruned_log.jsonl` first). CSV-sourced triples cannot be archived or corrected.
 
-If a user marks fifty answers unhelpful, nobody on the team can ever see
-those fifty signals, and they are lost when the browser data is cleared.
+## 8. Authentication is two hardcoded accounts, checked in the browser
 
-Needs an endpoint and a store before the feature is worth anything beyond a
-demonstration.
+`auth_service.dart` compares against literal credentials in the Dart source
+and persists a session in `SharedPreferences`. There is no server-side auth,
+no password hashing and no session validation.
 
-## 8. API sessions are held in server memory
+Anyone reading the published JavaScript can see the credentials.
 
-The Python API checks passwords against salted PBKDF2 hashes in Neo4j and
-issues opaque session tokens. The tokens are kept in the API process's memory,
-while Flutter can persist the token in `SharedPreferences`. Restarting the API
-invalidates its active tokens; Flutter currently does not validate a restored
-token until its next authenticated API request.
+The admin upload endpoint is protected separately by a server-side shared
+secret (`ADMIN_UPLOAD_SECRET`), because a public endpoint that runs LLM work
+on upload is an open invitation to burn the budget. That secret is the only
+real access control in the system.
 
-The default development API URL uses HTTP. A hosted deployment must configure
-an HTTPS `API_BASE_URL` so credentials and session tokens are protected in
-transit. Admin uploads and paper review additionally require the server-side
-`ADMIN_UPLOAD_SECRET`; admin user management relies on the authenticated
-admin role.
+Real authentication is the top security gap for whoever inherits this.
 
 ## 9. The confidence framework does not gate extraction, and its verdicts are unstable
 

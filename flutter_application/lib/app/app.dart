@@ -143,10 +143,9 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
     setState(() => _session = session);
   }
 
-  Future<void> _register(String email, String password, bool rememberMe) async {
+  Future<void> _register(RegistrationDetails details, bool rememberMe) async {
     final session = await _authService.register(
-      email: email,
-      password: password,
+      details: details,
       rememberMe: rememberMe,
     );
     if (!mounted) return;

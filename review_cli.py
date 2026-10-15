@@ -27,10 +27,14 @@ def main():
     approve_p = sub.add_parser("approve")
     approve_p.add_argument("element_id")
     approve_p.add_argument("--kind", choices=["node", "relationship"], default="node")
+    approve_p.add_argument("--by", default="", help="Reviewer name/email for the audit trail")
+    approve_p.add_argument("--reason", default="")
 
     reject_p = sub.add_parser("reject")
     reject_p.add_argument("element_id")
     reject_p.add_argument("--kind", choices=["node", "relationship"], default="node")
+    reject_p.add_argument("--by", default="", help="Reviewer name/email for the audit trail")
+    reject_p.add_argument("--reason", default="")
 
     args = parser.parse_args()
 
@@ -41,11 +45,11 @@ def main():
                 print(json.dumps(row, indent=2, default=str))
             print(f"\n{len(rows)} item(s) awaiting review.")
         elif args.command == "approve":
-            review.approve(conn, args.element_id, args.kind)
+            review.approve(conn, args.element_id, args.kind, args.by, args.reason)
             print(f"Approved {args.kind} {args.element_id} — flag cleared, data kept.")
         elif args.command == "reject":
-            review.reject(conn, args.element_id, args.kind)
-            print(f"Rejected {args.kind} {args.element_id} — archived and deleted.")
+            review.reject(conn, args.element_id, args.kind, args.by, args.reason)
+            print(f"Rejected {args.kind} {args.element_id} — archived (hidden from answers, not deleted).")
 
 
 if __name__ == "__main__":
