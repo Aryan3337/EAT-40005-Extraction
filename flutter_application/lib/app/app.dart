@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_localizations.dart';
+import '../features/admin/admin_feedback_page.dart';
 import '../features/admin/admin_page.dart';
 import '../features/admin/admin_users_page.dart';
 import '../features/chat/chat_page.dart';
@@ -29,6 +30,7 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
   String _languageCode = 'en';
   bool _showingAdmin = false;
   bool _showingUsers = false;
+  bool _showingFeedback = false;
   String _adminSecret = '';
 
   // showDialog needs a context BELOW MaterialApp -- one that can see the
@@ -79,6 +81,23 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
     setState(() => _showingAdmin = true);
   }
 
+  // Reviewing feedback can archive graph triples, so like paper review it
+  // needs the shared secret as well as an admin session.
+  Future<void> _openFeedbackReview() async {
+    if (_adminSecret.isEmpty) {
+      final dialogContext = _navigatorKey.currentContext;
+      if (dialogContext == null) return;
+      final entered = await showDialog<String>(
+        context: dialogContext,
+        builder: (context) => const _AdminSecretDialog(),
+      );
+      if (entered == null || entered.isEmpty) return;
+      await _setAdminSecret(entered);
+    }
+    if (!mounted) return;
+    setState(() => _showingFeedback = true);
+  }
+
   void _openUsers() {
     if (!mounted) return;
     setState(() => _showingUsers = true);
@@ -124,10 +143,9 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
     setState(() => _session = session);
   }
 
-  Future<void> _register(String email, String password, bool rememberMe) async {
+  Future<void> _register(RegistrationDetails details, bool rememberMe) async {
     final session = await _authService.register(
-      email: email,
-      password: password,
+      details: details,
       rememberMe: rememberMe,
     );
     if (!mounted) return;
@@ -141,6 +159,7 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
       _session = null;
       _showingAdmin = false;
       _showingUsers = false;
+      _showingFeedback = false;
     });
   }
 
@@ -191,6 +210,14 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
               ),
               onClose: () => setState(() => _showingUsers = false),
             )
+          : _showingFeedback && _session!.isAdmin
+          ? AdminFeedbackPage(
+              service: AdminService(
+                secret: _adminSecret,
+                authToken: _session!.token,
+              ),
+              onClose: () => setState(() => _showingFeedback = false),
+            )
           : _showingAdmin && _session!.isAdmin
           ? AdminPage(
               service: AdminService(
@@ -216,6 +243,9 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
               // role held in the browser is not access control.
               onOpenAdmin: _session!.isAdmin ? _openAdmin : null,
               onOpenUserManagement: _session!.isAdmin ? _openUsers : null,
+              onOpenFeedbackReview: _session!.isAdmin
+                  ? _openFeedbackReview
+                  : null,
             ),
     );
   }

@@ -139,17 +139,18 @@ need a full-text index and a different query shape. `FETCH_LIMIT = 500`
 bounds the worst case so an unexpectedly large graph degrades rather than
 loading everything into memory.
 
-## 7. Feedback is collected but unreadable
+## 7. Feedback review (resolved on `JohnsBranch`)
 
-The thumbs up/down and comment box work. The data is written to the
-browser's `SharedPreferences` and goes nowhere else — there is no
-`POST /feedback` endpoint and no storage.
-
-If a user marks fifty answers unhelpful, nobody on the team can ever see
-those fifty signals, and they are lost when the browser data is cleared.
-
-Needs an endpoint and a store before the feature is worth anything beyond a
-demonstration.
+Feedback is now stored per user in Neo4j (`POST/GET/DELETE /feedback`,
+`DELETE /feedback/<id>`), linked to the triple IDs shown with the answer, and
+reviewed by admins (`GET /admin/feedback`, `GET /admin/feedback/stats`,
+`POST /admin/feedback/<id>/review`). A review records who/when/why. An
+approved review may archive the triples (reversible `archived` flag, excluded
+from retrieval) or replace one with a corrected subject/predicate/object; the
+old triple is archived, not deleted. Human rejection in `review_cli.py` also
+archives instead of deleting. Still hard-deleted: automatic Tier 1 junk
+removal and Tier 2 duplicate merges in `pruner/` (each logged to
+`pruned_log.jsonl` first). CSV-sourced triples cannot be archived or corrected.
 
 ## 8. Authentication is two hardcoded accounts, checked in the browser
 

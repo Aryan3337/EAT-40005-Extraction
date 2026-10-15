@@ -78,11 +78,13 @@ NEO4J_PASSWORD=your-password-here
 ### Account login
 
 The Flutter app requires an account before the knowledge graph can be used.
-Choose **Create an account** on the login screen, enter an email address and a
-password of at least eight characters, then sign in with those credentials.
-The Python API stores a salted PBKDF2 password hash on a `User` node in Neo4j;
-the raw password is never stored. The API, not the Flutter client, connects to
-Neo4j, and chat requests use an opaque server-side session token.
+Choose **Create an account** on the login screen and enter a unique username,
+valid email address, phone country calling code and number, and a password of
+at least eight characters. You can then sign in with
+your username or email address and password. The Python API stores the profile
+and a salted PBKDF2 password hash on a `User` node in Neo4j; the raw password
+is never stored. The API, not the Flutter client, connects to Neo4j, and chat
+requests use an opaque server-side session token.
 
 Each signed-in user's response ratings and optional comments are stored in
 Neo4j as `(:User)-[:LEFT_FEEDBACK]->(:Feedback)` records. Feedback is linked

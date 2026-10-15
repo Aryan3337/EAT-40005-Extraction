@@ -8,12 +8,20 @@ import 'api_config.dart';
 
 class FeedbackRecord {
   const FeedbackRecord({
+    this.id = '',
     required this.responseText,
     required this.rating,
     required this.comment,
     required this.createdAt,
+    this.status = 'pending',
+    this.reviewAction = '',
+    this.reviewNote = '',
   });
 
+  final String id;
+  final String status;
+  final String reviewAction;
+  final String reviewNote;
   final String responseText;
   final MessageFeedback rating;
   final String comment;
@@ -21,6 +29,10 @@ class FeedbackRecord {
 
   factory FeedbackRecord.fromJson(Map<String, dynamic> json) {
     return FeedbackRecord(
+      id: json['id']?.toString() ?? '',
+      status: json['status']?.toString() ?? 'pending',
+      reviewAction: json['review_action']?.toString() ?? '',
+      reviewNote: json['review_note']?.toString() ?? '',
       responseText: json['response_text'] as String? ?? '',
       rating: json['rating'] == MessageFeedback.notHelpful.name
           ? MessageFeedback.notHelpful
@@ -111,6 +123,7 @@ class ChatService {
     required String responseText,
     required MessageFeedback feedback,
     required String comment,
+    List<String> tripleIds = const [],
   }) async {
     if (authToken == null || authToken!.isEmpty) {
       throw StateError('Sign in is required to save feedback.');
@@ -130,6 +143,7 @@ class ChatService {
         'response_text': responseText,
         'rating': feedback.name,
         'comment': comment.trim(),
+        'triple_ids': tripleIds.where((id) => id.isNotEmpty).toList(),
       }),
     );
     if (response.statusCode != 201) {
@@ -158,7 +172,24 @@ class ChatService {
     return rows
         .whereType<Map>()
         .map((row) => FeedbackRecord.fromJson(Map<String, dynamic>.from(row)))
-        .toList();
+        .toList(growable: true);
+  }
+
+  // Deletes one of the signed-in user's own feedback entries.
+  Future<void> deleteFeedbackItem(String id) async {
+    if (authToken == null || authToken!.isEmpty) {
+      throw StateError('Sign in is required to delete feedback.');
+    }
+    final response = await _client.delete(
+      Uri.parse(
+        '${endpoint.replaceFirst(RegExp(r'/query$'), '/feedback')}/'
+        '${Uri.encodeComponent(id)}',
+      ),
+      headers: {'Authorization': _bearerToken},
+    );
+    if (response.statusCode != 200) {
+      throw StateError(_readError(response.body, _currentStrings));
+    }
   }
 
   Future<void> clearFeedbackHistory() async {

@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 
 import '../../app/app_localizations.dart';
 import '../../services/auth_service.dart';
@@ -14,12 +14,11 @@ class LoginPage extends StatefulWidget {
 
   final Future<void> Function(String email, String password, bool rememberMe)
   onSignIn;
-  final Future<void> Function(String email, String password, bool rememberMe)
+  final Future<void> Function(RegistrationDetails details, bool rememberMe)
   onRegister;
 
   static Future<void> _defaultRegister(
-    String email,
-    String password,
+    RegistrationDetails details,
     bool rememberMe,
   ) async {}
   final AppLocalizations strings;
@@ -31,7 +30,10 @@ class LoginPage extends StatefulWidget {
 
 class _LoginPageState extends State<LoginPage> {
   final _formKey = GlobalKey<FormState>();
-  final _emailController = TextEditingController();
+  final _identifierController = TextEditingController();
+  final _usernameController = TextEditingController();
+  final _phoneCountryCodeController = TextEditingController(text: '+1');
+  final _phoneController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _obscurePassword = true;
   bool _rememberMe = true;
@@ -40,7 +42,10 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   void dispose() {
-    _emailController.dispose();
+    _identifierController.dispose();
+    _usernameController.dispose();
+    _phoneCountryCodeController.dispose();
+    _phoneController.dispose();
     _passwordController.dispose();
     super.dispose();
   }
@@ -49,12 +54,24 @@ class _LoginPageState extends State<LoginPage> {
     if (!_formKey.currentState!.validate() || _isSubmitting) return;
     setState(() => _isSubmitting = true);
     try {
-      final submit = _isRegistering ? widget.onRegister : widget.onSignIn;
-      await submit(
-        _emailController.text.trim(),
-        _passwordController.text,
-        _rememberMe,
-      );
+      if (_isRegistering) {
+        await widget.onRegister(
+          RegistrationDetails(
+            username: _usernameController.text.trim(),
+            email: _identifierController.text.trim(),
+            phoneCountryCode: _phoneCountryCodeController.text.trim(),
+            phoneNumber: _phoneController.text.trim(),
+            password: _passwordController.text,
+          ),
+          _rememberMe,
+        );
+      } else {
+        await widget.onSignIn(
+          _identifierController.text.trim(),
+          _passwordController.text,
+          _rememberMe,
+        );
+      }
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -88,7 +105,7 @@ class _LoginPageState extends State<LoginPage> {
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(24),
               child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 460),
+                constraints: const BoxConstraints(maxWidth: 520),
                 child: Card(
                   elevation: 12,
                   shadowColor: const Color(0x332CB67D),
@@ -147,27 +164,124 @@ class _LoginPageState extends State<LoginPage> {
                             ),
                           ),
                           const SizedBox(height: 34),
+                          if (_isRegistering) ...[
+                            TextFormField(
+                              controller: _usernameController,
+                              textInputAction: TextInputAction.next,
+                              autofillHints: const [AutofillHints.newUsername],
+                              decoration: InputDecoration(
+                                labelText: widget.strings.text('username'),
+                                hintText: 'yourname',
+                                prefixIcon: const Icon(Icons.alternate_email),
+                              ),
+                              validator: (value) {
+                                final username = value?.trim() ?? '';
+                                if (!RegExp(
+                                  r'^[a-zA-Z0-9][a-zA-Z0-9_.-]{2,29}$',
+                                ).hasMatch(username)) {
+                                  return widget.strings.text(
+                                    'usernameRequirements',
+                                  );
+                                }
+                                return null;
+                              },
+                            ),
+                            const SizedBox(height: 16),
+                          ],
                           TextFormField(
-                            controller: _emailController,
+                            controller: _identifierController,
                             keyboardType: TextInputType.emailAddress,
                             textInputAction: TextInputAction.next,
-                            autofillHints: const [AutofillHints.username],
+                            autofillHints: [
+                              if (_isRegistering)
+                                AutofillHints.email
+                              else
+                                AutofillHints.username,
+                            ],
                             decoration: InputDecoration(
-                              labelText: widget.strings.text('usernameEmail'),
+                              labelText: widget.strings.text(
+                                _isRegistering ? 'email' : 'usernameEmail',
+                              ),
                               hintText: 'name@example.com',
-                              prefixIcon: Icon(Icons.person_outline),
+                              prefixIcon: const Icon(Icons.mail_outline),
                             ),
                             validator: (value) {
-                              final email = value?.trim() ?? '';
-                              if (email.isEmpty) {
+                              final identifier = value?.trim() ?? '';
+                              if (identifier.isEmpty) {
                                 return widget.strings.text('enterUsername');
                               }
-                              if (_isRegistering && !email.contains('@')) {
+                              if (_isRegistering &&
+                                  !_isValidEmail(identifier)) {
                                 return widget.strings.text('enterEmail');
                               }
                               return null;
                             },
                           ),
+                          if (_isRegistering) ...[
+                            const SizedBox(height: 16),
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                SizedBox(
+                                  width: 132,
+                                  child: TextFormField(
+                                    controller: _phoneCountryCodeController,
+                                    keyboardType: TextInputType.phone,
+                                    textInputAction: TextInputAction.next,
+                                    decoration: InputDecoration(
+                                      labelText: widget.strings.text(
+                                        'countryCode',
+                                      ),
+                                      hintText: '+61',
+                                    ),
+                                    validator: (value) {
+                                      if (!RegExp(
+                                        r'^\+[1-9][0-9]{0,3}$',
+                                      ).hasMatch((value ?? '').trim())) {
+                                        return widget.strings.text(
+                                          'enterCountryCode',
+                                        );
+                                      }
+                                      return null;
+                                    },
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: TextFormField(
+                                    controller: _phoneController,
+                                    keyboardType: TextInputType.phone,
+                                    textInputAction: TextInputAction.next,
+                                    autofillHints: const [
+                                      AutofillHints.telephoneNumber,
+                                    ],
+                                    decoration: InputDecoration(
+                                      labelText: widget.strings.text(
+                                        'phoneNumber',
+                                      ),
+                                      hintText: '555 123 4567',
+                                      prefixIcon: const Icon(
+                                        Icons.phone_outlined,
+                                      ),
+                                    ),
+                                    validator: (value) {
+                                      final digits = (value ?? '').replaceAll(
+                                        RegExp(r'\D'),
+                                        '',
+                                      );
+                                      if (digits.length < 4 ||
+                                          digits.length > 14) {
+                                        return widget.strings.text(
+                                          'enterValidPhone',
+                                        );
+                                      }
+                                      return null;
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
                           const SizedBox(height: 16),
                           TextFormField(
                             controller: _passwordController,
@@ -276,5 +390,14 @@ class _LoginPageState extends State<LoginPage> {
         ),
       ),
     );
+  }
+
+  bool _isValidEmail(String email) {
+    final localPart = email.split('@').first;
+    return RegExp(
+      r"^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,}$",
+    ).hasMatch(email) &&
+        email.length <= 254 &&
+        localPart.length <= 64;
   }
 }

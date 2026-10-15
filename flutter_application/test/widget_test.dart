@@ -78,6 +78,58 @@ void main() {
     expect(find.byType(TextFormField), findsNWidgets(2));
   });
 
+  testWidgets('registration collects and submits the profile fields', (
+    WidgetTester tester,
+  ) async {
+    RegistrationDetails? submitted;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LoginPage(
+          onSignIn: (email, password, rememberMe) async {},
+          onRegister: (details, rememberMe) async {
+            submitted = details;
+          },
+        ),
+      ),
+    );
+    await tester.ensureVisible(find.text('Need an account? Create one'));
+    await tester.tap(find.text('Need an account? Create one'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Username'), findsOneWidget);
+    expect(find.text('Email address'), findsOneWidget);
+    expect(find.text('Country code'), findsOneWidget);
+    expect(find.text('Phone number'), findsOneWidget);
+    expect(find.byType(TextFormField), findsNWidgets(5));
+
+    final fields = tester.widgetList<TextFormField>(find.byType(TextFormField));
+    await tester.enterText(find.byWidget(fields.elementAt(0)), 'new.user');
+    await tester.enterText(
+      find.byWidget(fields.elementAt(1)),
+      'new@example.com',
+    );
+    await tester.enterText(find.byWidget(fields.elementAt(2)), '+61');
+    await tester.enterText(find.byWidget(fields.elementAt(3)), '412345678');
+    await tester.enterText(
+      find.byWidget(fields.elementAt(4)),
+      'strong-password-123',
+    );
+    final createButton = find.widgetWithText(
+      FilledButton,
+      'Create your account',
+    );
+    await tester.ensureVisible(createButton);
+    await tester.tap(createButton);
+    await tester.pumpAndSettle();
+
+    expect(submitted, isNotNull);
+    expect(submitted!.username, 'new.user');
+    expect(submitted!.email, 'new@example.com');
+    expect(submitted!.phoneCountryCode, '+61');
+    expect(submitted!.phoneNumber, '412345678');
+    expect(submitted!.password, 'strong-password-123');
+  });
+
   testWidgets('switches login UI to Hindi', (WidgetTester tester) async {
     await tester.pumpWidget(const KnowledgeGraphApp());
     await tester.pumpAndSettle();

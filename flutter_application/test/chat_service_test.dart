@@ -19,6 +19,7 @@ void main() {
           'response_text': 'Verified answer',
           'rating': 'helpful',
           'comment': 'Useful answer',
+          'triple_ids': <String>[],
         });
         return http.Response('{"status":"saved"}', 201);
       });
@@ -34,6 +35,42 @@ void main() {
         feedback: MessageFeedback.helpful,
         comment: 'Useful answer',
       );
+    });
+
+    test('sends the shown triple ids with feedback', () async {
+      final client = MockClient((request) async {
+        expect(jsonDecode(request.body)['triple_ids'], ['t1', 't2']);
+        return http.Response('{"status":"saved"}', 201);
+      });
+      final service = ChatService(
+        client: client,
+        endpoint: 'http://localhost/query',
+        authToken: 'session-token',
+      );
+
+      await service.saveFeedback(
+        conversationId: 'c',
+        responseText: 'a',
+        feedback: MessageFeedback.notHelpful,
+        comment: '',
+        tripleIds: const ['t1', '', 't2'],
+      );
+    });
+
+    test('deletes a single feedback item by id', () async {
+      final client = MockClient((request) async {
+        expect(request.method, 'DELETE');
+        expect(request.url.path, '/feedback/abc');
+        expect(request.headers['authorization'], 'Bearer session-token');
+        return http.Response('{"status":"deleted"}', 200);
+      });
+      final service = ChatService(
+        client: client,
+        endpoint: 'http://localhost/query',
+        authToken: 'session-token',
+      );
+
+      await service.deleteFeedbackItem('abc');
     });
 
     test('loads only the signed-in user feedback history', () async {

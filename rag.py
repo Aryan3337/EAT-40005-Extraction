@@ -50,7 +50,11 @@ try:
 except ImportError:  # pragma: no cover - optional dependency for Neo4j mode
     GraphDatabase = None
 
-load_dotenv()
+# Load the .env that sits next to this file, whatever directory the server was
+# started from, and let it win over a stale or empty variable already set in
+# the shell. Without this the admin endpoints could report that
+# ADMIN_UPLOAD_SECRET is unset even though .env has it.
+load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
 
 
 # ============================================================================
@@ -261,6 +265,13 @@ class KnowledgeGraph:
             reader = csv.DictReader(f)
             for row in reader:
                 triple = {
+                    # Stable enough for the CSV path's own lifetime (process-
+                    # local, not persisted) so feedback can still reference
+                    # "the triples actually used" the same way the Neo4j
+                    # path's elementId(r) does. Unlike the graph path, a CSV
+                    # triple can't currently be archived on a rejected-
+                    # feedback review -- see auth_store.review_feedback.
+                    'id': f"csv:{len(triples)}",
                     'subject': row.get('subject', '').strip(),
                     'predicate': row.get('predicate', '').strip(),
                     'object': row.get('object', '').strip(),
@@ -729,13 +740,17 @@ class Neo4jRAGSkeleton:
 
         cypher = """
         MATCH (s:Entity)-[r]->(o:Entity)
-        WHERE any(keyword IN $keywords WHERE
+        WHERE coalesce(r.archived, false) = false
+          AND coalesce(s.archived, false) = false
+          AND coalesce(o.archived, false) = false
+          AND any(keyword IN $keywords WHERE
             toLower(coalesce(s.name, '')) CONTAINS keyword OR
             toLower(coalesce(o.name, '')) CONTAINS keyword OR
             toLower(type(r)) CONTAINS keyword OR
             toLower(coalesce(r.sentence_ref, '')) CONTAINS keyword OR
             toLower(coalesce(r.passage, '')) CONTAINS keyword)
-        RETURN s.name AS subject,
+        RETURN elementId(r) AS id,
+               s.name AS subject,
                type(r) AS predicate,
                o.name AS object,
                coalesce(r.sentence_ref, '') AS sentence_ref,
@@ -2145,7 +2160,19 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 local_tts.handle_audio(self)
                 return
             if self.path == "/health":
-                self._send_json(200, {"status": "ok"})
+                # Booleans and the process id only, never the secret itself.
+                # Lets you confirm which server answered and that it loaded
+                # the admin secret.
+                self._send_json(
+                    200,
+                    {
+                        "status": "ok",
+                        "admin_secret_configured": bool(
+                            os.getenv("ADMIN_UPLOAD_SECRET")
+                        ),
+                        "pid": os.getpid(),
+                    },
+                )
                 return
             if self.path == "/feedback":
                 user = self._authenticated_user()
@@ -2183,6 +2210,31 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 except Exception as error:
                     print(f"Admin user list error: {type(error).__name__}: {error}")
                     self._send_json(503, {"error": "User accounts are unavailable."})
+                return
+            if urlparse(self.path).path == "/admin/feedback":
+                if not self._admin_role_authorised():
+                    return
+                status = parse_qs(urlparse(self.path).query).get("status", [""])[0].strip()
+                if status not in {"", "pending", "reviewed"}:
+                    self._send_json(400, {"error": "status must be pending or reviewed."})
+                    return
+                try:
+                    self._send_json(
+                        200,
+                        {"feedback": get_auth_store().all_feedback(status or None)},
+                    )
+                except Exception as error:
+                    print(f"Admin feedback list error: {type(error).__name__}: {error}")
+                    self._send_json(503, {"error": "Feedback is unavailable."})
+                return
+            if self.path == "/admin/feedback/stats":
+                if not self._admin_role_authorised():
+                    return
+                try:
+                    self._send_json(200, get_auth_store().feedback_stats())
+                except Exception as error:
+                    print(f"Admin feedback stats error: {type(error).__name__}: {error}")
+                    self._send_json(503, {"error": "Feedback statistics are unavailable."})
                 return
             if self.path == "/admin/queue":
                 if not self._admin_authorised():
@@ -2242,6 +2294,9 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 return
             if self.path == "/admin/review":
                 self._handle_manual_review()
+                return
+            if self.path.startswith("/admin/feedback/") and self.path.endswith("/review"):
+                self._handle_feedback_review()
                 return
             if self.path != "/query":
                 self._send_json(404, {"error": "Not found"})
@@ -2372,6 +2427,17 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 get_auth_store().delete_feedback(user["email"])
                 self._send_json(200, {"status": "deleted"})
                 return
+            if self.path.startswith("/feedback/"):
+                feedback_id = unquote(self.path[len("/feedback/"):]).strip()
+                try:
+                    get_auth_store().delete_feedback_item(user["email"], feedback_id)
+                    self._send_json(200, {"status": "deleted"})
+                except ValueError as error:
+                    self._send_json(404, {"error": str(error)})
+                except Exception as error:
+                    print(f"Feedback delete error: {type(error).__name__}: {error}")
+                    self._send_json(503, {"error": "Feedback could not be deleted."})
+                return
             if self.path.startswith("/history/"):
                 conversation_id = self.path.removeprefix("/history/").strip()
                 if not conversation_id:
@@ -2447,6 +2513,9 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                     response_text=str(payload.get("response_text", "")).strip(),
                     rating=str(payload.get("rating", "")).strip(),
                     comment=str(payload.get("comment", "")).strip(),
+                    triple_ids=payload.get("triple_ids")
+                    if isinstance(payload.get("triple_ids"), list)
+                    else [],
                 )
                 self._send_json(201, {"status": "saved"})
             except (TypeError, ValueError, json.JSONDecodeError) as error:
@@ -2454,6 +2523,50 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
             except Exception as error:
                 print(f"Feedback storage error: {type(error).__name__}: {error}")
                 self._send_json(503, {"error": "Feedback storage is unavailable."})
+
+        # An admin's verdict on one piece of user feedback. Uses the stricter
+        # shared-secret check (not just the admin role) because an approved
+        # review can archive triples out of the live graph, the same class of
+        # action as approving a paper in _handle_manual_review.
+        def _handle_feedback_review(self) -> None:
+            if not self._admin_authorised():
+                return
+            admin = self._authenticated_user()
+            if admin is None:
+                return
+            feedback_id = unquote(
+                self.path[len("/admin/feedback/"):-len("/review")]
+            ).strip()
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                if not isinstance(payload, dict):
+                    raise ValueError("Request body must be a JSON object.")
+                archive_ids = payload.get("archive_triple_ids")
+                if archive_ids is not None and not (
+                    isinstance(archive_ids, list)
+                    and all(isinstance(item, str) for item in archive_ids)
+                ):
+                    raise ValueError("archive_triple_ids must be a list of strings.")
+                get_auth_store().review_feedback(
+                    feedback_id,
+                    admin_email=admin["email"],
+                    action=str(payload.get("action", "")).strip(),
+                    note=str(payload.get("note", "")).strip(),
+                    archive_triples=payload.get("archive_triples") is True,
+                    archive_triple_ids=archive_ids,
+                    correction=(
+                        payload["correction"]
+                        if isinstance(payload.get("correction"), dict)
+                        else None
+                    ),
+                )
+                self._send_json(200, {"status": "reviewed"})
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                self._send_json(400, {"error": str(error)})
+            except Exception as error:
+                print(f"Feedback review error: {type(error).__name__}: {error}")
+                self._send_json(503, {"error": "The review could not be saved."})
 
         # Refuses unless the request carries the shared admin secret. The
         # Flutter admin role only decides which buttons render -- a role held
@@ -2622,6 +2735,14 @@ def serve_api(kg_path: str, host: str, port: int, approach: str, use_neo4j: bool
         create_query_handler(skeleton, AnswerSynthesizer()),
     )
     print(f"RAG API listening on http://{host}:{port}")
+    if os.getenv("ADMIN_UPLOAD_SECRET"):
+        print("Admin secret: loaded (admin review and upload endpoints enabled)")
+    else:
+        print(
+            "WARNING: ADMIN_UPLOAD_SECRET is not set. Admin review and upload "
+            f"will be refused. Add it to {Path(__file__).resolve().parent / '.env'} "
+            "and restart."
+        )
     print("POST /query with {\"query\": \"your question\"}")
     try:
         server.serve_forever()

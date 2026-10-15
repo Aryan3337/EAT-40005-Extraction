@@ -23,6 +23,7 @@ class ChatPage extends StatefulWidget {
     this.onLanguageChanged,
     this.onOpenAdmin,
     this.onOpenUserManagement,
+    this.onOpenFeedbackReview,
   });
 
   final ChatService service;
@@ -37,6 +38,7 @@ class ChatPage extends StatefulWidget {
   // the server's shared secret authorises the requests.
   final VoidCallback? onOpenAdmin;
   final VoidCallback? onOpenUserManagement;
+  final VoidCallback? onOpenFeedbackReview;
 
   // Creates the mutable conversation state.
   @override
@@ -241,6 +243,10 @@ class _ChatPageState extends State<ChatPage> {
         responseText: message.text,
         feedback: feedback,
         comment: comment,
+        tripleIds: message.sources
+            .map((source) => source.id)
+            .where((id) => id.isNotEmpty)
+            .toList(),
       );
     } catch (error) {
       if (mounted) {
@@ -269,7 +275,8 @@ class _ChatPageState extends State<ChatPage> {
         context: context,
         showDragHandle: true,
         isScrollControlled: true,
-        builder: (context) => SafeArea(
+        builder: (context) => StatefulBuilder(
+          builder: (context, setSheetState) => SafeArea(
           child: Column(
             children: [
               Padding(
@@ -338,6 +345,50 @@ class _ChatPageState extends State<ChatPage> {
                                         fontWeight: FontWeight.w700,
                                       ),
                                     ),
+                                    const Spacer(),
+                                    if (item.status == 'reviewed')
+                                      Padding(
+                                        padding:
+                                            const EdgeInsets.only(right: 4),
+                                        child: Chip(
+                                          label: Text(
+                                            item.reviewAction == 'approved'
+                                                ? widget.strings
+                                                      .text('feedbackApproved')
+                                                : widget.strings
+                                                      .text('feedbackDismissed'),
+                                          ),
+                                          visualDensity: VisualDensity.compact,
+                                        ),
+                                      ),
+                                    if (item.id.isNotEmpty)
+                                      IconButton(
+                                        tooltip: widget.strings
+                                            .text('deleteFeedbackItem'),
+                                        icon: const Icon(
+                                          Icons.delete_outline,
+                                        ),
+                                        onPressed: () async {
+                                          try {
+                                            await widget.service
+                                                .deleteFeedbackItem(item.id);
+                                            setSheetState(
+                                              () => feedback.removeAt(index),
+                                            );
+                                          } catch (error) {
+                                            if (!context.mounted) return;
+                                            ScaffoldMessenger.of(context)
+                                                .showSnackBar(
+                                              SnackBar(
+                                                content: Text(
+                                                  'Could not delete feedback: '
+                                                  '$error',
+                                                ),
+                                              ),
+                                            );
+                                          }
+                                        },
+                                      ),
                                   ],
                                 ),
                                 const SizedBox(height: 8),
@@ -367,6 +418,7 @@ class _ChatPageState extends State<ChatPage> {
               ),
             ],
           ),
+        ),
         ),
       );
     } catch (error) {
@@ -602,6 +654,7 @@ class _ChatPageState extends State<ChatPage> {
                   onLanguageChanged: widget.onLanguageChanged,
                   onOpenAdmin: widget.onOpenAdmin,
                   onOpenUserManagement: widget.onOpenUserManagement,
+                  onOpenFeedbackReview: widget.onOpenFeedbackReview,
                   onShowFeedbackHistory: _showFeedbackHistory,
                   autoSpeak: _autoSpeak,
                   onToggleAutoSpeak: _toggleAutoSpeak,
@@ -646,6 +699,7 @@ class _ChatHeader extends StatelessWidget {
     this.onLanguageChanged,
     this.onOpenAdmin,
     this.onOpenUserManagement,
+    this.onOpenFeedbackReview,
     required this.onShowFeedbackHistory,
   });
 
@@ -657,6 +711,7 @@ class _ChatHeader extends StatelessWidget {
   final ValueChanged<String>? onLanguageChanged;
   final VoidCallback? onOpenAdmin;
   final VoidCallback? onOpenUserManagement;
+  final VoidCallback? onOpenFeedbackReview;
   final Future<void> Function() onShowFeedbackHistory;
 
   // Builds the product identity and session controls.
@@ -738,6 +793,12 @@ class _ChatHeader extends StatelessWidget {
             tooltip: strings.text('feedbackHistory'),
             icon: const Icon(Icons.rate_review_outlined),
           ),
+          if (onOpenFeedbackReview != null)
+            IconButton(
+              onPressed: onOpenFeedbackReview,
+              tooltip: 'Review feedback',
+              icon: const Icon(Icons.fact_check_outlined),
+            ),
           if (onOpenUserManagement != null)
             IconButton(
               onPressed: onOpenUserManagement,
