@@ -110,8 +110,8 @@ def test_review_rejected_never_archives_even_if_asked(store):
         "fb1", admin_email="adm@x.y", action="rejected", note="fine as is",
         archive_triples=True,
     )
-    assert len(driver.calls) == 1  # only the Feedback update, no archive query
-    assert "r.archived" not in driver.calls[0][0]
+    assert len(driver.calls) == 2  # read + status write, no archive query
+    assert all("r.archived" not in query for query, _ in driver.calls)
 
 
 def test_review_approved_with_archive_flags_graph_triples_only(store, capsys):
@@ -121,7 +121,7 @@ def test_review_approved_with_archive_flags_graph_triples_only(store, capsys):
         "fb1", admin_email="adm@x.y", action="approved", note="wrong fact",
         archive_triples=True,
     )
-    archive_query, params = driver.calls[-1]
+    archive_query, params = driver.calls[-2]  # status write comes last
     assert "r.archived = true" in archive_query
     assert params["ids"] == ["4:x:1"]  # csv id filtered out
     assert params["admin_email"] == "adm@x.y"
@@ -133,14 +133,14 @@ def test_review_approved_without_archive_flag_leaves_graph_alone(store):
     instance, driver = store
     driver.results = [[{"triple_ids": ["4:x:1"]}]]
     instance.review_feedback("fb1", admin_email="a", action="approved")
-    assert len(driver.calls) == 1
+    assert len(driver.calls) == 2  # read + status write only
 
 
 def test_review_records_provenance_fields(store):
     instance, driver = store
     driver.results = [[{"triple_ids": []}]]
     instance.review_feedback("fb1", admin_email="adm@x.y", action="approved", note="n")
-    query, params = driver.calls[0]
+    query, params = driver.calls[-1]
     for field in ("reviewed_by", "reviewed_at", "review_note", "review_action"):
         assert f"f.{field}" in query
     assert params["admin_email"] == "adm@x.y"
@@ -201,7 +201,7 @@ def test_correction_replaces_triple_and_archives_old_one(store):
         correction={"triple_id": "t1", "subject": "Garo", "predicate": "LIVE_IN",
                     "object": "Meghalaya"},
     )
-    query, params = driver.calls[-1]
+    query, params = driver.calls[-2]  # status write comes last
     assert "CREATE (s)-[n:`LIVE_IN`]->(o)" in query
     assert "old.archived = true" in query
     assert "DELETE" not in query
@@ -256,3 +256,92 @@ def test_pruner_approve_records_provenance_and_reject_archives(monkeypatch):
     review.reject(c, "e1", "node", rejected_by="a@x.com", reason="noise")
     q, p = c.calls[-1]
     assert "archived = true" in q and "DELETE" not in q
+
+
+def test_archive_only_the_chosen_triples(store):
+    instance, driver = store
+    driver.results = [[{"triple_ids": ["t1", "t2", "t3"]}]]
+    instance.review_feedback(
+        "f1", admin_email="a@x.com", action="approved", note="bad",
+        archive_triple_ids=["t2"],
+    )
+    archive_query, params = driver.calls[-2]
+    assert params["ids"] == ["t2"]  # not t1 or t3
+    assert "coalesce(r.archived, false) = false" in archive_query
+
+
+def test_archive_ids_override_archive_everything_flag(store):
+    instance, driver = store
+    driver.results = [[{"triple_ids": ["t1", "t2"]}]]
+    instance.review_feedback(
+        "f1", admin_email="a", action="approved",
+        archive_triples=True, archive_triple_ids=["t1"],
+    )
+    assert driver.calls[-2][1]["ids"] == ["t1"]
+
+
+def test_empty_archive_selection_changes_nothing(store):
+    instance, driver = store
+    driver.results = [[{"triple_ids": ["t1", "t2"]}]]
+    instance.review_feedback(
+        "f1", admin_email="a", action="approved", archive_triple_ids=[],
+    )
+    assert len(driver.calls) == 2
+    assert all("r.archived" not in query for query, _ in driver.calls)
+
+
+def test_archive_rejects_triples_not_on_this_feedback_and_stays_pending(store):
+    instance, driver = store
+    driver.results = [[{"triple_ids": ["t1"]}]]
+    with pytest.raises(ValueError):
+        instance.review_feedback(
+            "f1", admin_email="a", action="approved",
+            archive_triple_ids=["t1", "someone-elses"],
+        )
+    # Only the read ran: nothing archived, feedback not marked reviewed.
+    assert len(driver.calls) == 1
+    assert "f.status" not in driver.calls[0][0]
+
+
+def test_rejected_ignores_archive_ids(store):
+    instance, driver = store
+    driver.results = [[{"triple_ids": ["t1"]}]]
+    instance.review_feedback(
+        "f1", admin_email="a", action="rejected", archive_triple_ids=["t1"],
+    )
+    assert all("r.archived" not in query for query, _ in driver.calls)
+
+
+def test_failed_correction_does_not_mark_feedback_reviewed(store):
+    instance, driver = store
+    # read finds the feedback; the correction finds no such relationship.
+    driver.results = [[{"triple_ids": ["t1"]}], [{"created": 0}]]
+    with pytest.raises(ValueError):
+        instance.review_feedback(
+            "f1", admin_email="a", action="approved",
+            correction={"triple_id": "t1", "subject": "A", "predicate": "P", "object": "B"},
+        )
+    assert not any("f.status = 'reviewed'" in query for query, _ in driver.calls)
+
+
+def test_wrong_triple_correction_does_not_mark_feedback_reviewed(store):
+    instance, driver = store
+    driver.results = [[{"triple_ids": ["t1"]}]]
+    with pytest.raises(ValueError):
+        instance.review_feedback(
+            "f1", admin_email="a", action="approved",
+            correction={"triple_id": "other", "subject": "A", "predicate": "P", "object": "B"},
+        )
+    assert not any("f.status = 'reviewed'" in query for query, _ in driver.calls)
+
+
+def test_successful_review_marks_reviewed_after_graph_change(store):
+    instance, driver = store
+    driver.results = [[{"triple_ids": ["t1"]}], [{"created": 1}]]
+    instance.review_feedback(
+        "f1", admin_email="a", action="approved",
+        correction={"triple_id": "t1", "subject": "A", "predicate": "P", "object": "B"},
+    )
+    queries = [q for q, _ in driver.calls]
+    assert "CREATE (s)" in queries[1]
+    assert "f.status = 'reviewed'" in queries[-1]

@@ -66,7 +66,9 @@ class _AdminFeedbackPageState extends State<AdminFeedbackPage> {
         item.id,
         action: result.action,
         note: result.note,
-        archiveTriples: result.archiveTriples,
+        archiveTripleIds: result.action == 'approved'
+            ? result.archiveTripleIds
+            : null,
         correction: result.correction,
       );
       await _refresh();
@@ -257,13 +259,14 @@ class _ReviewResult {
   const _ReviewResult(
     this.action,
     this.note,
-    this.archiveTriples, [
+    this.archiveTripleIds, [
     this.correction,
   ]);
 
   final String action;
   final String note;
-  final bool archiveTriples;
+  // The exact triples to archive. Empty means archive nothing.
+  final List<String> archiveTripleIds;
   final TripleCorrection? correction;
 }
 
@@ -281,7 +284,7 @@ class _FeedbackReviewDialogState extends State<_FeedbackReviewDialog> {
   final _subject = TextEditingController();
   final _predicate = TextEditingController();
   final _object = TextEditingController();
-  bool _archive = false;
+  final Set<String> _archiveIds = {};
   FeedbackTriple? _correcting;
 
   @override
@@ -319,7 +322,7 @@ class _FeedbackReviewDialogState extends State<_FeedbackReviewDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final archivable = widget.item.triples.where((t) => !t.archived).length;
+    final live = widget.item.triples.where((t) => !t.archived).toList();
     return AlertDialog(
       title: const Text('Review feedback'),
       content: SingleChildScrollView(
@@ -368,16 +371,57 @@ class _FeedbackReviewDialogState extends State<_FeedbackReviewDialog> {
                 ),
               ],
             ],
-            if (archivable > 0 && _correcting == null)
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                value: _archive,
-                onChanged: (v) => setState(() => _archive = v ?? false),
-                title: Text('Archive $archivable triple(s) when accepting'),
-                subtitle: const Text(
-                  'Archived triples stop appearing in answers. Not deleted.',
-                ),
+            if (live.isNotEmpty && _correcting == null) ...[
+              const SizedBox(height: 12),
+              Text(
+                'Archive triples (optional)',
+                style: Theme.of(context).textTheme.labelLarge,
               ),
+              const Text(
+                'Nothing is archived unless you tick it. Archived triples '
+                'stop appearing in answers. They are flagged, not deleted.',
+              ),
+              Row(
+                children: [
+                  TextButton(
+                    onPressed: () => setState(() {
+                      _archiveIds
+                        ..clear()
+                        ..addAll(
+                          live
+                              .where((t) => !t.id.startsWith('csv:'))
+                              .map((t) => t.id),
+                        );
+                    }),
+                    child: const Text('Select all'),
+                  ),
+                  TextButton(
+                    onPressed: () => setState(_archiveIds.clear),
+                    child: const Text('Clear'),
+                  ),
+                ],
+              ),
+              for (final t in live)
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  value: _archiveIds.contains(t.id),
+                  onChanged: t.id.startsWith('csv:')
+                      ? null
+                      : (v) => setState(() {
+                          if (v == true) {
+                            _archiveIds.add(t.id);
+                          } else {
+                            _archiveIds.remove(t.id);
+                          }
+                        }),
+                  title: Text(t.label),
+                  subtitle: t.id.startsWith('csv:')
+                      ? const Text('From the CSV file, so it cannot be archived.')
+                      : null,
+                ),
+            ],
           ],
         ),
       ),
@@ -388,13 +432,18 @@ class _FeedbackReviewDialogState extends State<_FeedbackReviewDialog> {
         ),
         TextButton(
           onPressed: () =>
-              Navigator.pop(context, _ReviewResult('rejected', _note.text, false)),
+              Navigator.pop(context, _ReviewResult('rejected', _note.text, const [])),
           child: const Text('Dismiss'),
         ),
         FilledButton(
           onPressed: () => Navigator.pop(
             context,
-            _ReviewResult('approved', _note.text, _archive, _correction),
+            _ReviewResult(
+              'approved',
+              _note.text,
+              _correction == null ? _archiveIds.toList() : const [],
+              _correction,
+            ),
           ),
           child: const Text('Accept'),
         ),

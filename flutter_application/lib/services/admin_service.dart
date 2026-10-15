@@ -127,12 +127,13 @@ class AdminService {
   }
 
   // action is "approved" (the feedback is valid) or "rejected" (dismissed).
-  // Only an approval with archiveTriples set touches the graph.
+  // Only an approval touches the graph, and only the triples named in
+  // archiveTripleIds are archived (null or empty archives nothing).
   Future<void> reviewFeedback(
     String id, {
     required String action,
     String note = '',
-    bool archiveTriples = false,
+    List<String>? archiveTripleIds,
     TripleCorrection? correction,
   }) async {
     final response = await _runRequest(
@@ -144,7 +145,7 @@ class AdminService {
         body: jsonEncode({
           'action': action,
           'note': note.trim(),
-          'archive_triples': archiveTriples,
+          if (archiveTripleIds != null) 'archive_triple_ids': archiveTripleIds,
           if (correction != null) 'correction': correction.toJson(),
         }),
       ),

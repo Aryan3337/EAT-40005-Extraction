@@ -46,7 +46,11 @@ try:
 except ImportError:  # pragma: no cover - optional dependency for Neo4j mode
     GraphDatabase = None
 
-load_dotenv()
+# Load the .env that sits next to this file, whatever directory the server was
+# started from, and let it win over a stale or empty variable already set in
+# the shell. Without this the admin endpoints could report that
+# ADMIN_UPLOAD_SECRET is unset even though .env has it.
+load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
 
 
 # ============================================================================
@@ -1511,7 +1515,19 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
         # Handles browser health checks and API requests.
         def do_GET(self) -> None:
             if self.path == "/health":
-                self._send_json(200, {"status": "ok"})
+                # Booleans and the process id only, never the secret itself.
+                # Lets you confirm which server answered and that it loaded
+                # the admin secret.
+                self._send_json(
+                    200,
+                    {
+                        "status": "ok",
+                        "admin_secret_configured": bool(
+                            os.getenv("ADMIN_UPLOAD_SECRET")
+                        ),
+                        "pid": os.getpid(),
+                    },
+                )
                 return
             if self.path == "/feedback":
                 user = self._authenticated_user()
@@ -1860,12 +1876,19 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 payload = json.loads(self.rfile.read(length) or b"{}")
                 if not isinstance(payload, dict):
                     raise ValueError("Request body must be a JSON object.")
+                archive_ids = payload.get("archive_triple_ids")
+                if archive_ids is not None and not (
+                    isinstance(archive_ids, list)
+                    and all(isinstance(item, str) for item in archive_ids)
+                ):
+                    raise ValueError("archive_triple_ids must be a list of strings.")
                 get_auth_store().review_feedback(
                     feedback_id,
                     admin_email=admin["email"],
                     action=str(payload.get("action", "")).strip(),
                     note=str(payload.get("note", "")).strip(),
                     archive_triples=payload.get("archive_triples") is True,
+                    archive_triple_ids=archive_ids,
                     correction=(
                         payload["correction"]
                         if isinstance(payload.get("correction"), dict)
@@ -2046,6 +2069,14 @@ def serve_api(kg_path: str, host: str, port: int, approach: str, use_neo4j: bool
         create_query_handler(skeleton, AnswerSynthesizer()),
     )
     print(f"RAG API listening on http://{host}:{port}")
+    if os.getenv("ADMIN_UPLOAD_SECRET"):
+        print("Admin secret: loaded (admin review and upload endpoints enabled)")
+    else:
+        print(
+            "WARNING: ADMIN_UPLOAD_SECRET is not set. Admin review and upload "
+            f"will be refused. Add it to {Path(__file__).resolve().parent / '.env'} "
+            "and restart."
+        )
     print("POST /query with {\"query\": \"your question\"}")
     try:
         server.serve_forever()

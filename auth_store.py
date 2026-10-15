@@ -5,7 +5,7 @@ import hmac
 import json
 import secrets
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from neo4j import GraphDatabase
 
@@ -336,17 +336,26 @@ class AuthStore:
         action: str,
         note: str = "",
         archive_triples: bool = False,
+        archive_triple_ids: Optional[List[str]] = None,
         correction: Optional[Dict[str, str]] = None,
     ) -> None:
         """Records an admin's verdict on one feedback record (FB-5's
-        provenance: who, when, why) and, only on an "approved" verdict with
-        archive_triples set, archives the triple(s) it was about (FB-6).
+        provenance: who, when, why) and, only on an "approved" verdict,
+        optionally changes the graph (FB-6).
 
-        "approved" means the admin agrees the flagged triple is actually
+        "approved" means the admin agrees the flagged evidence is actually
         wrong; "rejected" means they looked at it and disagree -- the
-        feedback is dismissed and the graph is never touched, regardless of
-        archive_triples, because there is nothing wrong with the evidence
-        to archive.
+        feedback is dismissed and the graph is never touched.
+
+        Which triples get archived is the admin's explicit choice:
+        archive_triple_ids names the exact triples (each must be one this
+        feedback was attached to). archive_triples=True with no ids is the
+        older "archive everything it was attached to" behaviour and is kept
+        for API compatibility; the app no longer sends it.
+
+        Everything is validated, and any graph change applied, BEFORE the
+        feedback is marked reviewed. If a correction or archive cannot be
+        applied the feedback stays pending and nothing is recorded as done.
         """
         if action not in {"approved", "rejected"}:
             raise ValueError("action must be 'approved' or 'rejected'.")
@@ -359,37 +368,64 @@ class AuthStore:
                 raise ValueError("A correction can only accompany an approval.")
             correction = self._clean_correction(correction)
 
+        # 1. Read only: what was this feedback attached to?
         with self._driver.session() as session:
-            result = session.run(
+            record = session.run(
+                "MATCH (:User)-[:LEFT_FEEDBACK]->(f:Feedback {id: $id}) "
+                "RETURN coalesce(f.triple_ids, []) AS triple_ids",
+                id=feedback_id,
+            ).single()
+        if record is None:
+            raise ValueError("No feedback with that id.")
+        triple_ids = record["triple_ids"] or []
+
+        # 2. Decide what to change and validate it, still without writing.
+        to_archive: List[str] = []
+        if action == "approved" and correction is None:
+            if archive_triple_ids is not None:
+                to_archive = list(dict.fromkeys(
+                    str(tid).strip() for tid in archive_triple_ids if str(tid).strip()
+                ))
+                unknown = [tid for tid in to_archive if tid not in triple_ids]
+                if unknown:
+                    raise ValueError(
+                        "Some triples to archive were not part of this feedback."
+                    )
+            elif archive_triples:
+                to_archive = list(triple_ids)
+        if correction is not None and correction["triple_id"] not in triple_ids:
+            raise ValueError(
+                "That triple was not part of this feedback, so it "
+                "cannot be corrected from it."
+            )
+
+        # 3. Apply the graph change. A failure raises here, so the feedback
+        #    below is not marked reviewed.
+        if correction is not None:
+            self._apply_correction(correction, admin_email, note)
+        elif to_archive:
+            self._archive_triples(to_archive, feedback_id, admin_email, note)
+
+        # 4. Only now record the verdict and provenance.
+        with self._driver.session() as session:
+            session.run(
                 "MATCH (:User)-[:LEFT_FEEDBACK]->(f:Feedback {id: $id}) "
                 "SET f.status = 'reviewed', f.review_action = $action, "
                 "f.reviewed_by = $admin_email, f.reviewed_at = datetime(), "
-                "f.review_note = $note "
-                "RETURN coalesce(f.triple_ids, []) AS triple_ids",
+                "f.review_note = $note",
                 id=feedback_id,
                 action=action,
                 admin_email=admin_email,
                 note=note,
-            )
-            record = result.single()
-            if record is None:
-                raise ValueError("No feedback with that id.")
-            triple_ids = record["triple_ids"] or []
+            ).consume()
 
-        if correction is not None:
-            if correction["triple_id"] not in triple_ids:
-                raise ValueError(
-                    "That triple was not part of this feedback, so it "
-                    "cannot be corrected from it."
-                )
-            self._apply_correction(correction, admin_email, note)
-            return
-
-        if action != "approved" or not archive_triples or not triple_ids:
-            return
-
-        csv_ids = [tid for tid in triple_ids if str(tid).startswith("csv:")]
-        graph_ids = [tid for tid in triple_ids if not str(tid).startswith("csv:")]
+    def _archive_triples(
+        self, ids: List[str], feedback_id: str, admin_email: str, note: str
+    ) -> None:
+        """Flags triples as archived (never deletes). Already-archived
+        triples are left alone so their original archive provenance stays."""
+        csv_ids = [tid for tid in ids if str(tid).startswith("csv:")]
+        graph_ids = [tid for tid in ids if not str(tid).startswith("csv:")]
         if csv_ids:
             # See the 'id' comment in KnowledgeGraph._load_csv: a CSV-backed
             # triple has nowhere persistent to record an archive flag.
@@ -398,16 +434,18 @@ class AuthStore:
                 "flagged for archiving were skipped -- only Neo4j-backed "
                 "triples can be archived."
             )
-        if graph_ids:
-            with self._driver.session() as session:
-                session.run(
-                    "MATCH ()-[r]->() WHERE elementId(r) IN $ids "
-                    "SET r.archived = true, r.archived_at = datetime(), "
-                    "r.archived_by = $admin_email, r.archive_reason = $note",
-                    ids=graph_ids,
-                    admin_email=admin_email,
-                    note=note,
-                ).consume()
+        if not graph_ids:
+            return
+        with self._driver.session() as session:
+            session.run(
+                "MATCH ()-[r]->() WHERE elementId(r) IN $ids "
+                "AND coalesce(r.archived, false) = false "
+                "SET r.archived = true, r.archived_at = datetime(), "
+                "r.archived_by = $admin_email, r.archive_reason = $note",
+                ids=graph_ids,
+                admin_email=admin_email,
+                note=note,
+            ).consume()
 
     @staticmethod
     def _clean_correction(correction: Dict[str, str]) -> Dict[str, str]:

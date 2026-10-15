@@ -259,4 +259,43 @@ void main() {
       expect(IngestEntry.fromJson(_entry(score: null)).scoreLabel, '—');
     });
   });
+
+  group('AdminService.reviewFeedback', () {
+    Map<String, dynamic> sentBody(_FakeClient client) =>
+        jsonDecode(utf8.decode(client.bodies.single)) as Map<String, dynamic>;
+
+    test('sends only the triples the admin chose to archive', () async {
+      final client = _FakeClient((_) => _json(200, {'status': 'reviewed'}));
+      final service = AdminService(
+        client: client,
+        endpoint: 'http://api.test',
+        secret: 's3cret',
+        authToken: 'tok',
+      );
+
+      await service.reviewFeedback(
+        'fb1',
+        action: 'approved',
+        archiveTripleIds: ['t2'],
+      );
+
+      expect(client.requests.single.url.path, '/admin/feedback/fb1/review');
+      expect(sentBody(client)['archive_triple_ids'], ['t2']);
+      expect(sentBody(client).containsKey('archive_triples'), isFalse);
+    });
+
+    test('omits the archive list when none is given', () async {
+      final client = _FakeClient((_) => _json(200, {'status': 'reviewed'}));
+      final service = AdminService(
+        client: client,
+        endpoint: 'http://api.test',
+        secret: 's3cret',
+        authToken: 'tok',
+      );
+
+      await service.reviewFeedback('fb1', action: 'rejected');
+
+      expect(sentBody(client).containsKey('archive_triple_ids'), isFalse);
+    });
+  });
 }
