@@ -5,6 +5,7 @@ enum MessageFeedback { helpful, notHelpful }
 // Stores one knowledge-graph record used to verify an assistant response.
 class SourceEvidence {
   const SourceEvidence({
+    this.id = '',
     required this.subject,
     required this.predicate,
     required this.object,
@@ -14,6 +15,8 @@ class SourceEvidence {
     required this.confidence,
   });
 
+  // Stable triple ID from the graph (elementId); empty for older saved chats.
+  final String id;
   final String subject;
   final String predicate;
   final String object;
@@ -26,6 +29,7 @@ class SourceEvidence {
     String read(String key) => json[key]?.toString().trim() ?? '';
 
     return SourceEvidence(
+      id: read('id'),
       subject: read('subject'),
       predicate: read('predicate'),
       object: read('object'),
@@ -37,6 +41,7 @@ class SourceEvidence {
   }
 
   Map<String, dynamic> toJson() => {
+    'id': id,
     'subject': subject,
     'predicate': predicate,
     'object': object,

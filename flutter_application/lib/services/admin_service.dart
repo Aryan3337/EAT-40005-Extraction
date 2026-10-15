@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 import '../models/ingest_entry.dart';
+import '../models/admin_feedback.dart';
 import '../models/admin_user.dart';
 import 'api_config.dart';
 
@@ -87,6 +88,65 @@ class AdminService {
       () => _client.delete(
         Uri.parse('$_baseUrl/admin/users/${Uri.encodeComponent(email)}'),
         headers: _userAuthHeaders,
+      ),
+    );
+    if (response.statusCode != 200) {
+      throw AdminException(_errorFor(response));
+    }
+  }
+
+  Future<List<AdminFeedback>> fetchFeedback({String? status}) async {
+    final uri = Uri.parse('$_baseUrl/admin/feedback').replace(
+      queryParameters: status == null ? null : {'status': status},
+    );
+    final response = await _runRequest(
+      () => _client.get(uri, headers: _userAuthHeaders),
+    );
+    if (response.statusCode != 200) {
+      throw AdminException(_errorFor(response));
+    }
+    final rows = _decode(response.body)['feedback'];
+    if (rows is! List) return const [];
+    return rows
+        .whereType<Map>()
+        .map((row) => AdminFeedback.fromJson(Map<String, dynamic>.from(row)))
+        .toList();
+  }
+
+  Future<FeedbackStats> fetchFeedbackStats() async {
+    final response = await _runRequest(
+      () => _client.get(
+        Uri.parse('$_baseUrl/admin/feedback/stats'),
+        headers: _userAuthHeaders,
+      ),
+    );
+    if (response.statusCode != 200) {
+      throw AdminException(_errorFor(response));
+    }
+    return FeedbackStats.fromJson(_decode(response.body));
+  }
+
+  // action is "approved" (the feedback is valid) or "rejected" (dismissed).
+  // Only an approval with archiveTriples set touches the graph.
+  Future<void> reviewFeedback(
+    String id, {
+    required String action,
+    String note = '',
+    bool archiveTriples = false,
+    TripleCorrection? correction,
+  }) async {
+    final response = await _runRequest(
+      () => _client.post(
+        Uri.parse(
+          '$_baseUrl/admin/feedback/${Uri.encodeComponent(id)}/review',
+        ),
+        headers: {..._authHeaders, 'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'action': action,
+          'note': note.trim(),
+          'archive_triples': archiveTriples,
+          if (correction != null) 'correction': correction.toJson(),
+        }),
       ),
     );
     if (response.statusCode != 200) {
