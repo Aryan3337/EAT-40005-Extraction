@@ -1000,7 +1000,7 @@ def _is_plain_english(text: str) -> bool:
 # -- see README "Languages". Google's free endpoint has no guarantee: it
 # answered a single request with 429 Too Many Requests on a team laptop on
 # 2026-10-08, which is why MyMemory backs it up.
-TRANSLATION_PROVIDERS = {"auto", "online", "google", "llm"}
+TRANSLATION_PROVIDERS = {"local", "auto", "online", "google", "llm"}
 _GOOGLE_MAX_CHARS = 4500  # Google's per-request limit is 5000.
 # After Google refuses with 429, skip it for this long instead of paying a
 # failed round trip on every question.
@@ -1014,10 +1014,10 @@ TRANSLATION_TIMEOUT_SECONDS = 240
 
 
 def translation_provider() -> str:
-    value = os.getenv("TRANSLATION_PROVIDER", "auto").strip().lower()
+    value = os.getenv("TRANSLATION_PROVIDER", "local").strip().lower()
     if value == "google":
         return "online"
-    return value if value in TRANSLATION_PROVIDERS else "auto"
+    return value if value in TRANSLATION_PROVIDERS else "local"
 
 
 # MyMemory: free, no key, but 500 characters per request and a daily
@@ -1467,6 +1467,10 @@ class AnswerSynthesizer:
         if language == "en" or _is_plain_english(question):
             return question
 
+        if translation_provider() == "local":
+            from local_translation import translate_local
+            return translate_local(question, language, "en") or question
+
         if translation_provider() != "llm":
             translated = online_translate(question, language, "en")
             if translated:
@@ -1553,7 +1557,10 @@ Translation:"""
 
         translated = ""
         provider = translation_provider()
-        if provider != "llm":
+        if provider == "local":
+            from local_translation import translate_local
+            translated = translate_local(answer, DEFAULT_LANGUAGE, language)
+        elif provider != "llm":
             translated = online_translate(answer, DEFAULT_LANGUAGE, language)
         # The local model (mistral:7b) writes Bangla and Hindi with frequent
         # spelling errors, so in auto mode a failed online translation shows
