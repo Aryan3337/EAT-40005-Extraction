@@ -21,8 +21,7 @@ def group_responses(matches, top_k):
     # Stable record order, independent of response length or repeated keywords.
     # A bounded top_k is still a sample: it must never imply consensus.
     family.sort(key=lambda r: (r.get('source_file', ''), r.get('record_id', '')))
-    selected = {id(r) for r in family}
-    return (family + [r for r in matches if id(r) not in selected])[:top_k]
+    return family[:top_k]
 
 
 def source_response_answer(records):
