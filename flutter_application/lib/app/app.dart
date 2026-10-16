@@ -81,19 +81,10 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
     setState(() => _showingAdmin = true);
   }
 
-  // Reviewing feedback can archive graph triples, so like paper review it
-  // needs the shared secret as well as an admin session.
-  Future<void> _openFeedbackReview() async {
-    if (_adminSecret.isEmpty) {
-      final dialogContext = _navigatorKey.currentContext;
-      if (dialogContext == null) return;
-      final entered = await showDialog<String>(
-        context: dialogContext,
-        builder: (context) => const _AdminSecretDialog(),
-      );
-      if (entered == null || entered.isEmpty) return;
-      await _setAdminSecret(entered);
-    }
+  // Only admins are ever offered this screen, and the server independently
+  // refuses the review requests of anyone who is not an admin, so it does not
+  // need the shared upload secret the way paper upload and review do.
+  void _openFeedbackReview() {
     if (!mounted) return;
     setState(() => _showingFeedback = true);
   }
