@@ -97,7 +97,7 @@ class _LoginPageState extends State<LoginPage> {
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [Color(0xFFE9F8F1), Color(0xFFF7FAFC)],
+            colors: [Color(0xFFEAF2FF), Color(0xFFF7F9FC)],
           ),
         ),
         child: SafeArea(
@@ -107,10 +107,10 @@ class _LoginPageState extends State<LoginPage> {
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 520),
                 child: Card(
-                  elevation: 12,
-                  shadowColor: const Color(0x332CB67D),
+                  elevation: 8,
+                  shadowColor: const Color(0x1A183B66),
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(28),
+                    borderRadius: BorderRadius.circular(22),
                   ),
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(28, 28, 28, 24),
@@ -149,7 +149,7 @@ class _LoginPageState extends State<LoginPage> {
                             ),
                             style: theme.textTheme.headlineMedium?.copyWith(
                               fontWeight: FontWeight.w700,
-                              color: const Color(0xFF17212B),
+                              color: const Color(0xFF172B4D),
                             ),
                           ),
                           const SizedBox(height: 8),

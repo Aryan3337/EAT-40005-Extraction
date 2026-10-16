@@ -21,8 +21,6 @@ class ChatPage extends StatefulWidget {
     this.strings = const AppLocalizations('en'),
     this.onLanguageChanged,
     this.onOpenAdmin,
-    this.onOpenUserManagement,
-    this.onOpenFeedbackReview,
   });
 
   final ChatService service;
@@ -33,11 +31,9 @@ class ChatPage extends StatefulWidget {
   final ValueChanged<String>? onLanguageChanged;
 
   // Non-null only for an admin session, which is what renders the entry point
-  // to the paper-admission screen. This is presentation, not access control:
+  // to the admin dashboard. This is presentation, not access control:
   // the server's shared secret authorises the requests.
   final VoidCallback? onOpenAdmin;
-  final VoidCallback? onOpenUserManagement;
-  final VoidCallback? onOpenFeedbackReview;
 
   // Creates the mutable conversation state.
   @override
@@ -643,8 +639,6 @@ class _ChatPageState extends State<ChatPage> {
                   onSignOut: widget.onSignOut,
                   onLanguageChanged: widget.onLanguageChanged,
                   onOpenAdmin: widget.onOpenAdmin,
-                  onOpenUserManagement: widget.onOpenUserManagement,
-                  onOpenFeedbackReview: widget.onOpenFeedbackReview,
                   onShowFeedbackHistory: _showFeedbackHistory,
                   autoSpeak: _autoSpeak,
                   onToggleAutoSpeak: _toggleAutoSpeak,
@@ -687,8 +681,6 @@ class _ChatHeader extends StatelessWidget {
     this.onSignOut,
     this.onLanguageChanged,
     this.onOpenAdmin,
-    this.onOpenUserManagement,
-    this.onOpenFeedbackReview,
     required this.onShowFeedbackHistory,
   });
 
@@ -699,8 +691,6 @@ class _ChatHeader extends StatelessWidget {
   final VoidCallback? onSignOut;
   final ValueChanged<String>? onLanguageChanged;
   final VoidCallback? onOpenAdmin;
-  final VoidCallback? onOpenUserManagement;
-  final VoidCallback? onOpenFeedbackReview;
   final Future<void> Function() onShowFeedbackHistory;
 
   // Builds the product identity and session controls.
@@ -774,26 +764,14 @@ class _ChatHeader extends StatelessWidget {
           if (onOpenAdmin != null)
             IconButton(
               onPressed: onOpenAdmin,
-              tooltip: 'Paper admission',
-              icon: const Icon(Icons.admin_panel_settings_outlined),
+              tooltip: 'Admin dashboard',
+              icon: const Icon(Icons.dashboard_outlined),
             ),
           IconButton(
             onPressed: onShowFeedbackHistory,
             tooltip: strings.text('feedbackHistory'),
             icon: const Icon(Icons.rate_review_outlined),
           ),
-          if (onOpenFeedbackReview != null)
-            IconButton(
-              onPressed: onOpenFeedbackReview,
-              tooltip: 'Review feedback',
-              icon: const Icon(Icons.fact_check_outlined),
-            ),
-          if (onOpenUserManagement != null)
-            IconButton(
-              onPressed: onOpenUserManagement,
-              tooltip: 'Manage users',
-              icon: const Icon(Icons.people_outline),
-            ),
           const SizedBox(width: 8),
           _RoundIconButton(
             icon: autoSpeak
@@ -1066,7 +1044,7 @@ class _EmptyState extends StatelessWidget {
             style: TextStyle(
               fontSize: 28,
               fontWeight: FontWeight.w700,
-              color: Color(0xFF17212B),
+              color: Color(0xFF172B4D),
             ),
           ),
           const SizedBox(height: 6),
@@ -1152,14 +1130,14 @@ class _MessageBubble extends StatelessWidget {
       constraints: const BoxConstraints(maxWidth: 680),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: isUser ? const Color(0xFF17212B) : Colors.white,
+        color: isUser ? const Color(0xFF172B4D) : Colors.white,
         borderRadius: BorderRadius.only(
           topLeft: const Radius.circular(18),
           topRight: const Radius.circular(18),
           bottomLeft: Radius.circular(isUser ? 18 : 4),
           bottomRight: Radius.circular(isUser ? 4 : 18),
         ),
-        border: isUser ? null : Border.all(color: const Color(0xFFE0E7E3)),
+        border: isUser ? null : Border.all(color: const Color(0xFFE2E8F0)),
         boxShadow: isUser
             ? null
             : [
@@ -1220,7 +1198,7 @@ class _MessageBubble extends StatelessWidget {
           ),
           if (!isUser && message.sources.isNotEmpty) ...[
             const SizedBox(height: 12),
-            const Divider(color: Color(0xFFE0E7E3)),
+            const Divider(color: Color(0xFFE2E8F0)),
             Theme(
               data: Theme.of(context)
                   .copyWith(dividerColor: Colors.transparent),
@@ -1250,7 +1228,7 @@ class _MessageBubble extends StatelessWidget {
           ],
           if (!isUser) ...[
             const SizedBox(height: 12),
-            const Divider(color: Color(0xFFE0E7E3)),
+            const Divider(color: Color(0xFFE2E8F0)),
             Text(
               strings.text('responseHelpful'),
               style: const TextStyle(

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_localizations.dart';
+import '../features/admin/admin_dashboard_page.dart';
 import '../features/admin/admin_feedback_page.dart';
 import '../features/admin/admin_page.dart';
 import '../features/admin/admin_users_page.dart';
@@ -28,6 +29,8 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
   AuthSession? _session;
   bool _isRestoringSession = true;
   String _languageCode = 'en';
+  // Admins land on the dashboard; the chat is one of its tiles.
+  bool _showingChat = false;
   bool _showingAdmin = false;
   bool _showingUsers = false;
   bool _showingFeedback = false;
@@ -62,6 +65,16 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
     setState(() => _adminSecret = secret);
     final preferences = await SharedPreferences.getInstance();
     await preferences.setString(_adminSecretKey, secret);
+  }
+
+  void _openChat() {
+    if (!mounted) return;
+    setState(() => _showingChat = true);
+  }
+
+  void _openDashboard() {
+    if (!mounted) return;
+    setState(() => _showingChat = false);
   }
 
   // Asks for the secret the first time, so the admin screen does not just
@@ -148,6 +161,7 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
     if (!mounted) return;
     setState(() {
       _session = null;
+      _showingChat = false;
       _showingAdmin = false;
       _showingUsers = false;
       _showingFeedback = false;
@@ -158,7 +172,9 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
   @override
   Widget build(BuildContext context) {
     const ink = Color(0xFF17212B);
-    const mint = Color(0xFF2CB67D);
+    const blue = Color(0xFF0D6EFD);
+    const teal = Color(0xFF0F766E);
+    const border = Color(0xFFE2E8F0);
     final strings = AppLocalizations(_languageCode);
 
     return MaterialApp(
@@ -167,20 +183,98 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xFFF5F7F6),
+        scaffoldBackgroundColor: const Color(0xFFF4F7FB),
         colorScheme: ColorScheme.fromSeed(
-          seedColor: mint,
+          seedColor: blue,
           brightness: Brightness.light,
-          primary: mint,
+          primary: blue,
+          onPrimary: Colors.white,
+          secondary: teal,
+          onSecondary: Colors.white,
+          surface: Colors.white,
           onSurface: ink,
+          error: const Color(0xFFB42318),
         ),
         fontFamily: 'Arial',
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.white,
+          foregroundColor: ink,
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          titleTextStyle: TextStyle(
+            color: ink,
+            fontFamily: 'Arial',
+            fontSize: 20,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        cardTheme: CardThemeData(
+          color: Colors.white,
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+          margin: const EdgeInsets.symmetric(vertical: 6),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+            side: const BorderSide(color: border),
+          ),
+        ),
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
           fillColor: Colors.white,
           border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(16),
-            borderSide: BorderSide.none,
+            borderRadius: BorderRadius.circular(10),
+            borderSide: const BorderSide(color: border),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: const BorderSide(color: border),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: const BorderSide(color: blue, width: 1.5),
+          ),
+          errorBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: const BorderSide(color: Color(0xFFB42318)),
+          ),
+          focusedErrorBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: const BorderSide(color: Color(0xFFB42318), width: 1.5),
+          ),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 14,
+          ),
+        ),
+        filledButtonTheme: FilledButtonThemeData(
+          style: FilledButton.styleFrom(
+            backgroundColor: blue,
+            foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+          ),
+        ),
+        outlinedButtonTheme: OutlinedButtonThemeData(
+          style: OutlinedButton.styleFrom(
+            foregroundColor: const Color(0xFF344054),
+            side: const BorderSide(color: border),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+          ),
+        ),
+        dividerTheme: const DividerThemeData(
+          color: border,
+          thickness: 1,
+          space: 1,
+        ),
+        snackBarTheme: SnackBarThemeData(
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
           ),
         ),
       ),
@@ -219,6 +313,19 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
               viewPdf: openPdfInNewTab,
               onClose: () => setState(() => _showingAdmin = false),
             )
+          : _session!.isAdmin && !_showingChat
+          ? AdminDashboardPage(
+              service: AdminService(
+                secret: _adminSecret,
+                authToken: _session!.token,
+              ),
+              adminEmail: _session!.email,
+              onOpenPapers: _openAdmin,
+              onOpenFeedback: _openFeedbackReview,
+              onOpenUsers: _openUsers,
+              onOpenChat: _openChat,
+              onSignOut: _signOut,
+            )
           : ChatPage(
               service: ChatService(
                 strings: () => strings,
@@ -232,11 +339,7 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
               // Only an admin session renders the entry point. The server's
               // shared secret is what actually authorises the requests -- a
               // role held in the browser is not access control.
-              onOpenAdmin: _session!.isAdmin ? _openAdmin : null,
-              onOpenUserManagement: _session!.isAdmin ? _openUsers : null,
-              onOpenFeedbackReview: _session!.isAdmin
-                  ? _openFeedbackReview
-                  : null,
+              onOpenAdmin: _session!.isAdmin ? _openDashboard : null,
             ),
     );
   }
