@@ -2358,10 +2358,7 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                         "error": (
                             f"Could not translate the answer into "
                             f"{AnswerSynthesizer.SUPPORTED_LANGUAGES[error.language]}. "
-                            "Check the rag.py server log for the provider error. "
-                            "If MyMemory reports a daily quota limit, configure "
-                            "MYMEMORY_EMAIL on the API server or retry after its "
-                            "quota resets."
+                            "Please try again later or select English."
                         ),
                         "language": error.language,
                     },
