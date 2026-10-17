@@ -11,6 +11,32 @@ _ENGINE = None
 _LANGUAGES = {"en": "eng_Latn", "bn": "ben_Beng", "hi": "hin_Deva"}
 
 
+
+# Explicit community-name forms only; do not replace substrings inside words.
+_BANGLA_NAMES = {
+    "গারোরা": "Garo জনগণ", "গারোদের": "Garo জনগণের", "গারো": "Garo",
+    "মান্দিরা": "Mandi জনগণ", "মান্দিদের": "Mandi জনগণের", "মান্দি": "Mandi",
+}
+_NAME_PATTERN = re.compile(r"(?<!\w)(" + "|".join(_BANGLA_NAMES) + r")(?!\w)")
+
+
+def _prepare_names(text, source, target):
+    if source == "bn" and target == "en":
+        return _NAME_PATTERN.sub(lambda match: _BANGLA_NAMES[match[0]], text)
+    return text
+
+
+def _names_preserved(source_text, result, target):
+    if target != "en":
+        return True
+    for name in ("Garo", "Mandi"):
+        pattern = r"\b" + name + r"\b"
+        expected = len(re.findall(pattern, source_text, re.IGNORECASE))
+        if len(re.findall(pattern, result, re.IGNORECASE)) < expected:
+            return False
+    return True
+
+
 def _load_engine():
     global _ENGINE
     if _ENGINE is None:
@@ -64,7 +90,8 @@ def translate_local(text, source, target):
             tokenizer.src_lang = _LANGUAGES[source]
             target_id = tokenizer.convert_tokens_to_ids(_LANGUAGES[target])
             paragraphs, current = [], []
-            for chunk in _chunks(text, tokenizer):
+            prepared = _prepare_names(text, source, target)
+            for chunk in _chunks(prepared, tokenizer):
                 if chunk is None:
                     if current:
                         paragraphs.append(" ".join(current))
@@ -82,7 +109,7 @@ def translate_local(text, source, target):
                 if not tokens or tokens[-1] != model.config.eos_token_id:
                     return ""
                 result = tokenizer.decode(output[0], skip_special_tokens=True).strip()
-                if not result:
+                if not result or not _names_preserved(chunk, result, target):
                     return ""
                 current.append(result)
             if current:
