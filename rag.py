@@ -1704,15 +1704,8 @@ Translation:"""
     # Builds a small evidence-only prompt for the local language model.
     def _build_prompt(self, question: str, triples: List[Dict[str, Any]], language: str = DEFAULT_LANGUAGE) -> str:
         language = normalize_language(language)
-        evidence = []
-        for triple in triples:
-            evidence.append({
-                "subject": triple.get("subject", ""),
-                "relationship": triple.get("predicate", ""),
-                "object": triple.get("object", ""),
-                "source_context": triple.get("sentence_ref", ""),
-                "source_section": triple.get("source_section", ""),
-            })
+        from prompt_evidence import build_prompt_evidence
+        evidence = build_prompt_evidence(triples)
 
         # Asking for a bounded first-line verdict, then enforcing the
         # consequence in code, is the part that differs from the two
@@ -1732,6 +1725,8 @@ supports it.
 
         return f"""You are a careful knowledge-graph research assistant.
 Answer the user's question using only the evidence below.
+Some evidence entries group several facts under one shared source quotation.
+Consider every relevant fact in each group; do not repeat its quotation for each fact.
 Write the entire answer in {ANSWER_LANGUAGES.get(language, ANSWER_LANGUAGES[DEFAULT_LANGUAGE])}, regardless of the language used in the question.
 Keep entity names and graph identifiers clear, but explain them in {ANSWER_LANGUAGES.get(language, ANSWER_LANGUAGES[DEFAULT_LANGUAGE])}.
 The Mandi people are the same community as the Garo people (they call themselves
