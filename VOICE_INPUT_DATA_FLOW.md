@@ -20,10 +20,30 @@ Voice input is separate from backend read-aloud and translation.
 Local TTS or translation does not establish local voice recognition.
 
 ## Remaining follow-up
-- Verify native macOS and Windows recognition behaviour.
 - Confirm the permitted voice-input data flow with the team.
 - If local-only recognition is required, enforce it with a supported
   recognizer or disable voice input where it cannot be guaranteed.
 - Document the user-facing behaviour and test with nonconfidential phrases.
 
 This is a code investigation, not a network-capture verification.
+
+## Android finding
+The app does not set onDevice. The plugin defaults it to false.
+
+The inspected Android implementation selects an on-device recognizer
+when requested, on a sufficiently recent Android version, and when
+on-device recognition is available. It can otherwise create a standard
+recognizer. The intentLookup path also uses a standard recognizer.
+
+Therefore this app does not enforce local-only Android recognition.
+External processing is possible, depending on the installed recognition
+service and configuration. No network capture was performed; actual
+endpoints and retention policies remain unverified.
+
+## Scope and recommendation
+The Jira investigation covers web/Chrome and Android. Native macOS and
+Windows behaviour was not verified and is not claimed as local.
+
+Treat microphone input as potentially externally processed. The team
+should decide whether to retain it with appropriate disclosure or
+require a recognizer that enforces local-only processing.
