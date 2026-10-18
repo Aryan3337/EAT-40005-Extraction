@@ -1,0 +1,4 @@
+# Optional local research prototype; model licence is CC-BY-NC-4.0.
+torch>=2.6,<3
+transformers>=4.51,<5
+sentencepiece>=0.2,<0.3
