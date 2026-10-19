@@ -7,15 +7,27 @@ import '../models/chat_conversation.dart';
 import 'api_config.dart';
 
 class ChatHistoryService {
-  ChatHistoryService({http.Client? client, String? endpoint, this.authToken})
-    : _client = client ?? http.Client(),
-      endpoint = endpoint ?? '$apiBaseUrl/history';
+  ChatHistoryService({
+    http.Client? client,
+    String? endpoint,
+    this.authToken,
+    bool? persistHistory,
+  }) : _persistHistory =
+           persistHistory ??
+           const bool.fromEnvironment(
+             'PERSIST_CHAT_HISTORY',
+             defaultValue: true,
+           ),
+       _client = client ?? http.Client(),
+       endpoint = endpoint ?? '$apiBaseUrl/history';
 
+  final bool _persistHistory;
   final http.Client _client;
   final String endpoint;
   final String? authToken;
 
   Future<List<ChatConversation>> load(String email) async {
+    if (!_persistHistory) return [];
     if (_usesRemoteStorage) {
       final response = await _client.get(
         Uri.parse(endpoint),
@@ -54,6 +66,7 @@ class ChatHistoryService {
   }
 
   Future<void> save(String email, List<ChatConversation> conversations) async {
+    if (!_persistHistory) return;
     if (_usesRemoteStorage) {
       final response = await _client.post(
         Uri.parse(endpoint),
@@ -79,6 +92,7 @@ class ChatHistoryService {
   }
 
   Future<void> delete(String email, String conversationId) async {
+    if (!_persistHistory) return;
     if (_usesRemoteStorage) {
       final response = await _client.delete(
         Uri.parse('$endpoint/${Uri.encodeComponent(conversationId)}'),
@@ -97,6 +111,7 @@ class ChatHistoryService {
   }
 
   Future<void> clear(String email) async {
+    if (!_persistHistory) return;
     if (_usesRemoteStorage) {
       final response = await _client.delete(
         Uri.parse(endpoint),

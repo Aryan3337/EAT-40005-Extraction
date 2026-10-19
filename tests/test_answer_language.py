@@ -171,11 +171,27 @@ class _FakeSynth:
         return f"answer in {language}"
 
 
+
+class _LanguageTestAuthStore:
+    def session(self, token):
+        if token == "language-test-token":
+            return {"email": "language-test@example.invalid", "role": "member"}
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _language_test_auth(monkeypatch):
+    monkeypatch.setattr(rag, "AuthStore", _LanguageTestAuthStore)
+
+
 def _post(handler_cls, body):
     raw = json.dumps(body).encode("utf-8")
     handler = handler_cls.__new__(handler_cls)
     handler.path = "/query"
-    handler.headers = {"Content-Length": str(len(raw))}
+    handler.headers = {
+        "Content-Length": str(len(raw)),
+        "Authorization": "Bearer language-test-token",
+    }
     handler.rfile = io.BytesIO(raw)
     sent = {}
     handler._send_json = lambda status, payload: sent.update(status=status, payload=payload)
@@ -245,7 +261,7 @@ def test_query_endpoint_does_not_return_english_as_a_failed_translation(
     assert response["status"] == 503
     assert response["payload"]["language"] == "bn"
     assert "Could not translate the answer into Bangla" in response["payload"]["error"]
-    assert "MYMEMORY_EMAIL" in response["payload"]["error"]
+    assert "Please try again later or select English." in response["payload"]["error"]
 
 
 def test_query_endpoint_defaults_to_english_without_a_language():
@@ -257,11 +273,11 @@ def test_query_endpoint_defaults_to_english_without_a_language():
 
 # ---------------------------------------------------------------- Google path
 
-def test_auto_is_the_default_provider(monkeypatch):
+def test_local_is_the_default_provider(monkeypatch):
     monkeypatch.delenv("TRANSLATION_PROVIDER", raising=False)
-    assert rag.translation_provider() == "auto"
+    assert rag.translation_provider() == "local"
     monkeypatch.setenv("TRANSLATION_PROVIDER", "nonsense")
-    assert rag.translation_provider() == "auto"
+    assert rag.translation_provider() == "local"
     monkeypatch.setenv("TRANSLATION_PROVIDER", "google")
     assert rag.translation_provider() == "online"
 
@@ -800,3 +816,59 @@ def test_one_leftover_english_word_is_not_mostly_english():
     source = "They practise ethnobotany in the hills."
     assert not rag.translation_incomplete(source, "তারা পাহাড়ে ethnobotany চর্চা করে।", "bn")
     assert rag.translation_incomplete(source, source, "bn")
+
+
+@pytest.mark.parametrize("success", [True, False])
+def test_default_local_provider_never_uses_online_or_ollama(monkeypatch, success):
+    import local_translation
+    monkeypatch.delenv("TRANSLATION_PROVIDER", raising=False)
+    calls = []
+
+    def local(text, source, target):
+        calls.append((source, target))
+        return "translated test" if success else ""
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Local translation must not call an online or Ollama translator")
+
+    monkeypatch.setattr(local_translation, "translate_local", local)
+    monkeypatch.setattr(rag, "online_translate", forbidden)
+    synth = _synth()
+    monkeypatch.setattr(synth, "_llm_translate", forbidden)
+    question = "পরীক্ষার প্রশ্ন"
+    assert synth.translate_question(question, "bn") == ("translated test" if success else question)
+    assert synth.translate_answer("Fictional answer.", "hi") == ("translated test" if success else "")
+    assert calls == [("bn", "en"), ("en", "hi")]
+
+
+@pytest.mark.parametrize("language", ["bn", "hi"])
+def test_local_translation_failure_returns_503_without_online_fallback(
+    monkeypatch, language
+):
+    import local_translation
+
+    monkeypatch.setenv("TRANSLATION_PROVIDER", "local")
+    monkeypatch.setattr(
+        local_translation, "translate_local", lambda *args: ""
+    )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Local failure must not call an online translator")
+
+    monkeypatch.setattr(rag, "online_translate", forbidden)
+    synthesizer = _synth()
+    monkeypatch.setattr(
+        synthesizer, "answer",
+        lambda *args, **kwargs: "Fictional English answer."
+    )
+
+    response = _post(
+        create_query_handler(_FakeSkeleton(), synthesizer),
+        {"query": "Fictional test question?", "language": language},
+    )
+
+    assert response["status"] == 503
+    assert response["payload"]["language"] == language
+    assert "Please try again later or select English." in response["payload"]["error"]
+    assert "MYMEMORY_EMAIL" not in response["payload"]["error"]
+    assert "answer" not in response["payload"]

@@ -44,6 +44,7 @@ from llm_endpoint import ollama_tunnel_headers, resolve_llm_endpoint
 import local_tts
 from source_provenance import provenance_fields
 from community_time import filter_community_periods
+from community_attribution import group_responses, source_response_answer
 
 try:
     from neo4j import GraphDatabase  # type: ignore[import-not-found]
@@ -280,6 +281,9 @@ class KnowledgeGraph:
                     'confidence': row.get('confidence', 'Medium'),
                     'passage': row.get('passage', ''),
                     'time_period': row.get('time_period', '').strip(),
+                    'question': row.get('question', '').strip(),
+                    'evidence_kind': row.get('evidence_kind', '').strip(),
+                    'record_id': row.get('record_id', '').strip(),
                     **provenance_fields(row)
                 }
                 # Keep only complete triples (all three main parts present).
@@ -488,7 +492,7 @@ class ConceptRetriever:
         # tie-break, so equal-scoring results do not shuffle between calls.
         scored.sort(key=lambda pair: -pair[0])
         matches = [triple for score, triple in scored if score > 0]
-        return dedupe_triples(matches)[:top_k]
+        return group_responses(dedupe_triples(matches), top_k)
 
 
 # ============================================================================
@@ -1011,7 +1015,7 @@ def _is_plain_english(text: str) -> bool:
 # -- see README "Languages". Google's free endpoint has no guarantee: it
 # answered a single request with 429 Too Many Requests on a team laptop on
 # 2026-10-08, which is why MyMemory backs it up.
-TRANSLATION_PROVIDERS = {"auto", "online", "google", "llm"}
+TRANSLATION_PROVIDERS = {"local", "auto", "online", "google", "llm"}
 _GOOGLE_MAX_CHARS = 4500  # Google's per-request limit is 5000.
 # After Google refuses with 429, skip it for this long instead of paying a
 # failed round trip on every question.
@@ -1025,10 +1029,10 @@ TRANSLATION_TIMEOUT_SECONDS = 240
 
 
 def translation_provider() -> str:
-    value = os.getenv("TRANSLATION_PROVIDER", "auto").strip().lower()
+    value = os.getenv("TRANSLATION_PROVIDER", "local").strip().lower()
     if value == "google":
         return "online"
-    return value if value in TRANSLATION_PROVIDERS else "auto"
+    return value if value in TRANSLATION_PROVIDERS else "local"
 
 
 # MyMemory: free, no key, but 500 characters per request and a daily
@@ -1478,6 +1482,10 @@ class AnswerSynthesizer:
         if language == "en" or _is_plain_english(question):
             return question
 
+        if translation_provider() == "local":
+            from local_translation import translate_local
+            return translate_local(question, language, "en") or question
+
         if translation_provider() != "llm":
             translated = online_translate(question, language, "en")
             if translated:
@@ -1564,7 +1572,10 @@ Translation:"""
 
         translated = ""
         provider = translation_provider()
-        if provider != "llm":
+        if provider == "local":
+            from local_translation import translate_local
+            translated = translate_local(answer, DEFAULT_LANGUAGE, language)
+        elif provider != "llm":
             translated = online_translate(answer, DEFAULT_LANGUAGE, language)
         # The local model (mistral:7b) writes Bangla and Hindi with frequent
         # spelling errors, so in auto mode a failed online translation shows
@@ -1650,6 +1661,11 @@ Translation:"""
         if not triples:
             return self._no_evidence_message(DEFAULT_LANGUAGE)
 
+        # Keep differing survey responses intact before cache or LLM rewriting.
+        source_answer = source_response_answer(triples[:SYNTHESIS_EVIDENCE_LIMIT])
+        if source_answer is not None:
+            return source_answer
+
         cached = self.answer_cache.get(normalize_cache_key(english_question))
         if cached:
             return cached
@@ -1704,15 +1720,8 @@ Translation:"""
     # Builds a small evidence-only prompt for the local language model.
     def _build_prompt(self, question: str, triples: List[Dict[str, Any]], language: str = DEFAULT_LANGUAGE) -> str:
         language = normalize_language(language)
-        evidence = []
-        for triple in triples:
-            evidence.append({
-                "subject": triple.get("subject", ""),
-                "relationship": triple.get("predicate", ""),
-                "object": triple.get("object", ""),
-                "source_context": triple.get("sentence_ref", ""),
-                "source_section": triple.get("source_section", ""),
-            })
+        from prompt_evidence import build_prompt_evidence
+        evidence = build_prompt_evidence(triples)
 
         # Asking for a bounded first-line verdict, then enforcing the
         # consequence in code, is the part that differs from the two
@@ -1732,6 +1741,16 @@ supports it.
 
         return f"""You are a careful knowledge-graph research assistant.
 Answer the user's question using only the evidence below.
+For community_data evidence, attribute each finding to its source_title (for
+example, Community record 01). These are participant reports, not independently
+verified facts or statements about the whole Mandi/Garo community.
+Preserve negative answers such as No or None in the context of their question.
+If records differ, describe the differing reports with source titles. Do not
+invent a consensus or treat missing records as agreement. State that findings
+refer to the retrieved records, not every group. Do not add causal explanations
+unless the supplied response explicitly states them.
+Some evidence entries group several facts under one shared source quotation.
+Consider every relevant fact in each group; do not repeat its quotation for each fact.
 Write the entire answer in {ANSWER_LANGUAGES.get(language, ANSWER_LANGUAGES[DEFAULT_LANGUAGE])}, regardless of the language used in the question.
 Keep entity names and graph identifiers clear, but explain them in {ANSWER_LANGUAGES.get(language, ANSWER_LANGUAGES[DEFAULT_LANGUAGE])}.
 The Mandi people are the same community as the Garo people (they call themselves
@@ -2387,10 +2406,7 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                         "error": (
                             f"Could not translate the answer into "
                             f"{AnswerSynthesizer.SUPPORTED_LANGUAGES[error.language]}. "
-                            "Check the rag.py server log for the provider error. "
-                            "If MyMemory reports a daily quota limit, configure "
-                            "MYMEMORY_EMAIL on the API server or retry after its "
-                            "quota resets."
+                            "Please try again later or select English."
                         ),
                         "language": error.language,
                     },
