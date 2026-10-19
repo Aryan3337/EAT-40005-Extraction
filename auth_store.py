@@ -28,26 +28,45 @@ class AuthStore:
                 "CREATE CONSTRAINT user_email_unique IF NOT EXISTS "
                 "FOR (u:User) REQUIRE u.email IS UNIQUE"
             ).consume()
+            session.run(
+                "CREATE CONSTRAINT user_username_unique IF NOT EXISTS "
+                "FOR (u:User) REQUIRE u.username IS UNIQUE"
+            ).consume()
 
     def close(self) -> None:
         self._driver.close()
 
-    def register(self, email: str, password: str) -> Dict[str, str]:
+    def register(
+        self,
+        email: str,
+        password: str,
+        username: Optional[str] = None,
+    ) -> Dict[str, str]:
         email = self._normalise_email(email)
+        username = (
+            self._normalise_username(username) if username is not None else None
+        )
         self._validate_password(password)
         password_hash = self._hash_password(password)
         with self._driver.session() as session:
             existing = session.run(
-                "MATCH (u:User {email: $email}) RETURN u.email AS email",
+                "MATCH (u:User) "
+                "WHERE u.email = $email OR u.username = $email "
+                "OR ($username IS NOT NULL AND "
+                "(u.username = $username OR u.email = $username)) "
+                "RETURN u.email AS email",
                 email=email,
+                username=username,
             ).single()
             if existing is not None:
                 raise ValueError("An account already exists.")
             result = session.run(
                 "CREATE (u:User {email: $email, password_hash: $password_hash, "
                 "role: 'user', created_at: datetime()}) "
+                "SET u.username = $username "
                 "RETURN u.email AS email, u.role AS role",
                 email=email,
+                username=username,
                 password_hash=password_hash,
             ).single()
         if result is None:
@@ -73,13 +92,15 @@ class AuthStore:
             ).consume()
 
     def login(self, email: str, password: str) -> Optional[Dict[str, str]]:
-        email = self._normalise_identifier(email)
+        identifier = self._normalise_identifier(email)
         with self._driver.session() as session:
             result = session.run(
-                "MATCH (u:User {email: $email}) "
+                "MATCH (u:User) "
+                "WHERE toLower(u.email) = $identifier "
+                "OR toLower(coalesce(u.username, '')) = $identifier "
                 "RETURN u.email AS email, u.role AS role, "
                 "u.password_hash AS password_hash",
-                email=email,
+                identifier=identifier,
             ).single()
         if result is None or not self._verify_password(
             password, result["password_hash"]
@@ -605,6 +626,26 @@ class AuthStore:
         normalised = email.strip().lower()
         if len(normalised) < 3 or len(normalised) > 254 or "@" not in normalised:
             raise ValueError("Enter a valid email address.")
+        return normalised
+
+    @staticmethod
+    def _normalise_username(username: str) -> str:
+        normalised = username.strip().lower()
+        if (
+            len(normalised) < 3
+            or len(normalised) > 30
+            or not normalised[0].isascii()
+            or not normalised[0].isalnum()
+            or any(
+                not character.isascii()
+                or not (character.isalnum() or character in "_.-")
+                for character in normalised
+            )
+        ):
+            raise ValueError(
+                "Username must be 3-30 characters and use only letters, "
+                "numbers, dots, underscores, or hyphens."
+            )
         return normalised
 
     @staticmethod
