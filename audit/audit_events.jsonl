@@ -1,0 +1,4 @@
+{"at": "2026-10-19T02:50:03.548985+00:00", "type": "auth.login", "actor": "mandiadmin", "outcome": "failure", "ip": "127.0.0.1", "reason": "invalid_credentials"}
+{"at": "2026-10-19T02:50:09.273095+00:00", "type": "auth.login", "actor": "mandiadmin", "outcome": "success", "ip": "127.0.0.1", "role": "admin"}
+{"at": "2026-10-19T02:53:04.686544+00:00", "type": "admin.paper_upload", "actor": "mandiadmin", "outcome": "success", "ip": "127.0.0.1", "paper": "The_Garo_Ethnic_Community.pdf"}
+{"at": "2026-10-19T02:54:16.412389+00:00", "type": "admin.paper_decision", "actor": "confidence_framework", "outcome": "success", "paper": "The_Garo_Ethnic_Community.pdf", "submitted_by": "mandiadmin", "decision": "ready_to_extract", "score": 83}

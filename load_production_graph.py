@@ -94,6 +94,8 @@ def main() -> None:
                         help=f"Paper stems to load (default: {' '.join(DEFAULT_PAPERS)})")
     parser.add_argument("--dry-run", action="store_true",
                         help="Report exactly what would be loaded and send nothing.")
+    parser.add_argument("--operator", default=None,
+                        help="Who is running this load (defaults to $OPERATOR or the OS user).")
     parser.add_argument("--run-id",
                         help="Override the generated run id with a meaningful one.")
     args = parser.parse_args()
@@ -149,8 +151,16 @@ def main() -> None:
     inserted, skipped, run_id = add_triples(triples, run_id=args.run_id)
 
     LOAD_LOG.parent.mkdir(exist_ok=True)
+    import os
+    from audit_log import current_operator, log_event
+    if args.operator:
+        os.environ["OPERATOR"] = args.operator
+    operator = current_operator()
     entry = (f"{datetime.now(timezone.utc).isoformat()}\t{run_id}\t"
+             f"operator={operator}\t"
              f"papers={','.join(papers)}\tinserted={inserted}\tskipped={skipped}\n")
+    log_event("graph.load", actor=operator, run_id=run_id,
+              papers=list(papers), inserted=inserted, skipped=skipped)
     with open(LOAD_LOG, "a", encoding="utf-8") as f:
         f.write(entry)
 

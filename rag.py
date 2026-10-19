@@ -35,6 +35,7 @@ from collections import defaultdict
 from dotenv import load_dotenv
 import requests
 
+import audit_log
 from admin_ingest import (check_admin_secret, current_queue, ingest_pdf,
                           read_paper_bytes, record_manual_decision,
                           validate_upload)
@@ -593,6 +594,31 @@ class Neo4jRAGSkeleton:
     # so it never truncates in practice -- it exists so an unexpectedly
     # large graph degrades instead of pulling everything into memory.
     FETCH_LIMIT = 500
+
+    def graph_overview(self) -> Dict[str, Any]:
+        """Size and provenance of the live graph, for the admin dashboard."""
+        with self.driver.session() as session:
+            totals = session.run(
+                "MATCH (n:Entity) WITH count(n) AS nodes "
+                "OPTIONAL MATCH ()-[r]->() "
+                "RETURN nodes, count(r) AS relationships, "
+                "sum(CASE WHEN coalesce(r.archived, false) THEN 1 ELSE 0 END) "
+                "AS archived"
+            ).single()
+            sources = session.run(
+                "MATCH ()-[r]->() WHERE coalesce(r.archived, false) = false "
+                "RETURN coalesce(r.source_file, 'unknown') AS source, "
+                "count(r) AS triples ORDER BY triples DESC LIMIT 20"
+            )
+            return {
+                "nodes": totals["nodes"] if totals else 0,
+                "relationships": totals["relationships"] if totals else 0,
+                "archived": (totals["archived"] or 0) if totals else 0,
+                "sources": [
+                    {"source": row["source"], "triples": row["triples"]}
+                    for row in sources
+                ],
+            }
 
     # Opens a Neo4j driver using the project's environment configuration.
     def __init__(self):
@@ -1591,6 +1617,25 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                     print(f"Admin feedback stats error: {type(error).__name__}: {error}")
                     self._send_json(503, {"error": "Feedback statistics are unavailable."})
                 return
+            if urlparse(self.path).path == "/admin/audit":
+                if not self._admin_role_authorised():
+                    return
+                params = parse_qs(urlparse(self.path).query)
+                try:
+                    limit = int((params.get("limit") or ["200"])[0])
+                except ValueError:
+                    self._send_json(400, {"error": "limit must be a number."})
+                    return
+                self._send_json(200, {"events": audit_log.read_events(
+                    limit=limit,
+                    event_type=(params.get("type") or [None])[0],
+                    outcome=(params.get("outcome") or [None])[0])})
+                return
+            if self.path == "/admin/overview":
+                if not self._admin_role_authorised():
+                    return
+                self._send_json(200, self._overview())
+                return
             if self.path == "/admin/queue":
                 if not self._admin_authorised():
                     return
@@ -1620,6 +1665,11 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                     role=str(payload.get("role", "")).strip(),
                     password=str(payload.get("password", "")),
                 )
+                audit_log.log_event(
+                    "admin.user_update", actor=self._session_email(),
+                    ip=self.client_address[0], target=current_email,
+                    new_role=str(payload.get("role", "")),
+                    password_changed=bool(payload.get("password")))
                 self._send_json(200, {"status": "updated"})
             except (TypeError, ValueError, json.JSONDecodeError) as error:
                 self._send_json(400, {"error": str(error)})
@@ -1747,6 +1797,9 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 email = unquote(self.path[len("/admin/users/"):]).strip()
                 try:
                     get_auth_store().delete_user(email)
+                    audit_log.log_event(
+                        "admin.user_delete", actor=self._session_email(),
+                        ip=self.client_address[0], target=email)
                     self._send_json(200, {"status": "deleted"})
                 except (TypeError, ValueError) as error:
                     self._send_json(400, {"error": str(error)})
@@ -1808,27 +1861,71 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 self._send_json(401, {"error": "Sign in is required."})
             return user
 
+        # The signed-in user's email, or "" -- unlike _authenticated_user it
+        # never writes a response, so it is safe for attribution/logging.
+        def _session_email(self) -> str:
+            token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            try:
+                user = get_auth_store().session(token) if token else None
+            except Exception:
+                return ""
+            return str(user["email"]) if user else ""
+
         def _handle_auth(self, register: bool) -> None:
+            payload: Any = {}
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 payload = json.loads(self.rfile.read(length) or b"{}")
+                if not isinstance(payload, dict):
+                    raise ValueError("Request body must be a JSON object.")
                 email = str(payload.get("email", ""))
                 password = str(payload.get("password", ""))
                 account = (
-                    get_auth_store().register(email, password)
+                    get_auth_store().register(
+                        username=str(payload.get("username", "")),
+                        email=email,
+                        phone_country_code=str(
+                            payload.get("phone_country_code", "")
+                        ),
+                        phone_number=str(payload.get("phone_number", "")),
+                        password=password,
+                    )
                     if register
                     else get_auth_store().login(email, password)
                 )
+                kind = "auth.register" if register else "auth.login"
                 if account is None:
+                    audit_log.log_event(
+                        kind, actor=email.strip().lower(), outcome="failure",
+                        ip=self.client_address[0], reason="invalid_credentials")
                     self._send_json(401, {"error": "Invalid credentials."})
                     return
+                audit_log.log_event(
+                    kind, actor=str(account.get("email", email)).lower(),
+                    ip=self.client_address[0], role=account.get("role", ""))
                 self._send_json(201 if register else 200, account)
             except ValueError as error:
+                audit_log.log_event(
+                    "auth.register" if register else "auth.login",
+                    actor=str(payload.get("email", "")).strip().lower()
+                    if isinstance(payload, dict) else "",
+                    outcome="failure", ip=self.client_address[0],
+                    reason=str(error)[:200])
                 self._send_json(400, {"error": str(error)})
             except Exception as error:
-                if register and "already exists" in str(error).lower():
-                    self._send_json(409, {"error": "An account already exists."})
+                if register and (
+                    "already exists" in str(error).lower()
+                    or "already taken" in str(error).lower()
+                ):
+                    audit_log.log_event(
+                        "auth.register", actor=str(locals().get("email", "")).strip().lower(),
+                        outcome="failure", ip=self.client_address[0],
+                        reason="already_exists")
+                    self._send_json(409, {"error": str(error)})
                     return
+                audit_log.log_event(
+                    "system.error", outcome="error", ip=self.client_address[0],
+                    where="auth", error=f"{type(error).__name__}: {error}"[:300])
                 print(f"Authentication backend error: {type(error).__name__}: {error}")
                 self._send_json(503, {"error": "Authentication service unavailable."})
 
@@ -1859,9 +1956,41 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 self._send_json(503, {"error": "Feedback storage is unavailable."})
 
         # An admin's verdict on one piece of user feedback. Uses the stricter
+<<<<<<< Updated upstream
         # shared-secret check (not just the admin role) because an approved
         # review can archive triples out of the live graph, the same class of
         # action as approving a paper in _handle_manual_review.
+=======
+        # admin-role check, enforced here from the session token. The app
+        # hiding the button from non-admins is only cosmetic; this is what
+        # actually refuses everyone else (403). Unlike paper upload/review it
+        # does not also need the shared ADMIN_UPLOAD_SECRET.
+        # Dashboard numbers (ADM-1): graph size/sources, paper queue and
+        # recent errors. Each section degrades on its own -- a graph that
+        # cannot be reached still leaves the queue and error views usable.
+        def _overview(self) -> Dict[str, Any]:
+            overview: Dict[str, Any] = {
+                "graph": None,
+                "papers": {},
+                "recent_errors": audit_log.recent_errors(10),
+            }
+            graph_overview = getattr(skeleton, "graph_overview", None)
+            if callable(graph_overview):
+                try:
+                    overview["graph"] = graph_overview()
+                except Exception as error:
+                    overview["graph_error"] = f"{type(error).__name__}"
+            counts: Dict[str, int] = {}
+            try:
+                for row in current_queue(UPLOADS_DIR):
+                    key = str(row.get("outcome") or row.get("decision") or "unknown")
+                    counts[key] = counts.get(key, 0) + 1
+            except Exception:
+                pass
+            overview["papers"] = counts
+            return overview
+
+>>>>>>> Stashed changes
         def _handle_feedback_review(self) -> None:
             if not self._admin_authorised():
                 return
@@ -1895,10 +2024,20 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                         else None
                     ),
                 )
+                audit_log.log_event(
+                    "admin.feedback_review", actor=admin["email"],
+                    ip=self.client_address[0], feedback_id=feedback_id,
+                    action=str(payload.get("action", "")),
+                    archived_triples=payload.get("archive_triples") is True,
+                    corrected=isinstance(payload.get("correction"), dict))
                 self._send_json(200, {"status": "reviewed"})
             except (TypeError, ValueError, json.JSONDecodeError) as error:
                 self._send_json(400, {"error": str(error)})
             except Exception as error:
+                audit_log.log_event(
+                    "system.error", actor=admin["email"], outcome="error",
+                    where="feedback_review",
+                    error=f"{type(error).__name__}: {error}"[:300])
                 print(f"Feedback review error: {type(error).__name__}: {error}")
                 self._send_json(503, {"error": "The review could not be saved."})
 
@@ -1965,11 +2104,26 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
             # Scoring is an LLM job -- minutes per paper on local Ollama, with
             # a 300s timeout per call -- so it cannot run inside the request.
             # The admin polls /admin/queue for the verdict.
+            uploader = (self._session_email() or "unknown")
+            audit_log.log_event(
+                "admin.paper_upload", actor=uploader,
+                ip=self.client_address[0], paper=name)
+
             def score_in_background():
                 try:
-                    ingest_pdf(data, name, scorer=_confidence_scorer,
-                               uploads_dir=UPLOADS_DIR)
+                    result = ingest_pdf(data, name, scorer=_confidence_scorer,
+                                        uploads_dir=UPLOADS_DIR)
+                    audit_log.log_event(
+                        "admin.paper_decision", actor="confidence_framework",
+                        paper=name, submitted_by=uploader,
+                        decision=getattr(getattr(result, "decision", None),
+                                         "value", ""),
+                        score=getattr(result, "score", None))
                 except Exception as error:
+                    audit_log.log_event(
+                        "system.error", actor=uploader, outcome="error",
+                        where="paper_scoring", paper=name,
+                        error=f"{type(error).__name__}: {error}"[:300])
                     print(f"Admin upload scoring failed for {name}: {error}")
 
             threading.Thread(target=score_in_background, daemon=True).start()
@@ -2022,9 +2176,15 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 self._send_json(400, {"error": f"Invalid request: {error}"})
                 return
 
+            reviewer = self._session_email() or "unknown"
             try:
                 outcome = record_manual_decision(
-                    paper, approve=approve, note=note, uploads_dir=UPLOADS_DIR)
+                    paper, approve=approve, note=note, uploads_dir=UPLOADS_DIR,
+                    reviewer=reviewer)
+                audit_log.log_event(
+                    "admin.paper_review", actor=reviewer,
+                    ip=self.client_address[0], paper=outcome.paper,
+                    approved=approve)
             except FileNotFoundError as error:
                 self._send_json(404, {"error": str(error)})
                 return

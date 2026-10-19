@@ -2,6 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_localizations.dart';
+<<<<<<< Updated upstream
+=======
+import '../features/admin/admin_dashboard_page.dart';
+import '../features/admin/admin_audit_page.dart';
+>>>>>>> Stashed changes
 import '../features/admin/admin_feedback_page.dart';
 import '../features/admin/admin_page.dart';
 import '../features/admin/admin_users_page.dart';
@@ -31,6 +36,7 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
   bool _showingAdmin = false;
   bool _showingUsers = false;
   bool _showingFeedback = false;
+  bool _showingAudit = false;
   String _adminSecret = '';
 
   // showDialog needs a context BELOW MaterialApp -- one that can see the
@@ -160,6 +166,7 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
       _showingAdmin = false;
       _showingUsers = false;
       _showingFeedback = false;
+      _showingAudit = false;
     });
   }
 
@@ -210,6 +217,14 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
               ),
               onClose: () => setState(() => _showingUsers = false),
             )
+          : _showingAudit && _session!.isAdmin
+          ? AdminAuditPage(
+              service: AdminService(
+                secret: _adminSecret,
+                authToken: _session!.token,
+              ),
+              onClose: () => setState(() => _showingAudit = false),
+            )
           : _showingFeedback && _session!.isAdmin
           ? AdminFeedbackPage(
               service: AdminService(
@@ -228,6 +243,23 @@ class _KnowledgeGraphAppState extends State<KnowledgeGraphApp> {
               viewPdf: openPdfInNewTab,
               onClose: () => setState(() => _showingAdmin = false),
             )
+<<<<<<< Updated upstream
+=======
+          : _session!.isAdmin && !_showingChat
+          ? AdminDashboardPage(
+              service: AdminService(
+                secret: _adminSecret,
+                authToken: _session!.token,
+              ),
+              adminEmail: _session!.email,
+              onOpenPapers: _openAdmin,
+              onOpenFeedback: _openFeedbackReview,
+              onOpenUsers: _openUsers,
+              onOpenAudit: () => setState(() => _showingAudit = true),
+              onOpenChat: _openChat,
+              onSignOut: _signOut,
+            )
+>>>>>>> Stashed changes
           : ChatPage(
               service: ChatService(
                 strings: () => strings,

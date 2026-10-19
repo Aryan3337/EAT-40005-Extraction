@@ -13,6 +13,14 @@ needed more than a rename.
 
 import os
 
+# Read the project's .env so the pruner and review CLI reach the same Neo4j as
+# the rest of the app, instead of silently falling back to localhost.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # --- Connection -------------------------------------------------------
 NEO4J_URI = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
 # The main pipeline's .env calls this NEO4J_USERNAME, not NEO4J_USER --

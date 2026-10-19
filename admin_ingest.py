@@ -273,7 +273,8 @@ def read_paper_bytes(paper: str, *, uploads_dir) -> bytes:
     return path.read_bytes()
 
 
-def record_manual_decision(paper: str, *, approve: bool, note, uploads_dir) -> IngestOutcome:
+def record_manual_decision(paper: str, *, approve: bool, note, uploads_dir,
+                           reviewer: str = "") -> IngestOutcome:
     """Record a person's decision on a paper that was held for review.
 
     Appended, never substituted: the queue is an audit trail and the original
@@ -306,12 +307,14 @@ def record_manual_decision(paper: str, *, approve: bool, note, uploads_dir) -> I
         reasons=reasons,
         stored_path=str(path),
     )
-    _append_to_queue(Path(uploads_dir), outcome, by="manual_review")
+    _append_to_queue(Path(uploads_dir), outcome, by="manual_review",
+                     reviewer=reviewer)
     return outcome
 
 
 def _append_to_queue(uploads_dir: Path, outcome: IngestOutcome,
-                     by: str = "confidence_framework") -> Path:
+                     by: str = "confidence_framework",
+                     reviewer: str = "") -> Path:
     """Append-only log of every decision, including rejections.
 
     A rejected file is discarded but its decision is not: an admin has to be
@@ -322,6 +325,10 @@ def _append_to_queue(uploads_dir: Path, outcome: IngestOutcome,
     entry = outcome.to_json()
     entry["at"] = datetime.now(timezone.utc).isoformat()
     entry["by"] = by
+    if reviewer:
+        # Which person made a manual decision (ADM-3/ADM-4); `by` only says
+        # that a person did, not who.
+        entry["reviewer"] = reviewer
     with open(queue_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
     return queue_path

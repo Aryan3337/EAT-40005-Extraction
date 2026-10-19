@@ -35,6 +35,13 @@ def log_removal(record: dict, log_path: str = DEFAULT_LOG_PATH):
         }
     """
     entry = dict(record)
+    # Who ran the job (ADM-4). setdefault so a record that already names a
+    # person (human review) keeps that name.
+    try:
+        from audit_log import current_operator
+        entry.setdefault("operator", current_operator())
+    except Exception:
+        entry.setdefault("operator", "unknown")
     entry["logged_at"] = datetime.now(timezone.utc).isoformat()
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, default=str) + "\n")

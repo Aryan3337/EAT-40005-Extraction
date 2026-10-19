@@ -35,6 +35,8 @@ def main():
     parser.add_argument("--full-scan", action="store_true", help="Ignore --batch-id and scan the whole graph.")
     parser.add_argument("--dry-run", action="store_true", help="Report what would happen without changing the graph.")
     parser.add_argument("--no-llm-judge", action="store_true", help="Skip Tier 3 (useful if no LLM backend is configured yet).")
+    parser.add_argument("--operator", default=None,
+                        help="Who is running this (defaults to $OPERATOR or the OS user); recorded in the audit logs.")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -45,7 +47,15 @@ def main():
     if not args.full_scan and not args.batch_id:
         parser.error("Pass --batch-id <id>, or --full-scan to sweep the whole graph.")
 
+    import os
+    from audit_log import current_operator, log_event
+    if args.operator:
+        os.environ["OPERATOR"] = args.operator
+    operator = current_operator()
+
     summary = prune_batch(batch_id=batch_id, dry_run=args.dry_run, run_llm_judge=not args.no_llm_judge)
+    log_event("graph.prune", actor=operator, batch_id=batch_id or "full-scan",
+              dry_run=args.dry_run, summary=summary)
     print(json.dumps(summary, indent=2, default=str))
 
 

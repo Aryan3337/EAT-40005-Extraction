@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 import '../models/ingest_entry.dart';
+import '../models/admin_audit.dart';
 import '../models/admin_feedback.dart';
 import '../models/admin_user.dart';
 import 'api_config.dart';
@@ -110,6 +111,47 @@ class AdminService {
     return rows
         .whereType<Map>()
         .map((row) => AdminFeedback.fromJson(Map<String, dynamic>.from(row)))
+        .toList();
+  }
+
+  Future<AdminOverview> fetchOverview() async {
+    final response = await _runRequest(
+      () => _client.get(
+        Uri.parse('$_baseUrl/admin/overview'),
+        headers: _userAuthHeaders,
+      ),
+    );
+    if (response.statusCode != 200) {
+      throw AdminException(_errorFor(response));
+    }
+    return AdminOverview.fromJson(_decode(response.body));
+  }
+
+  // Newest first. [type] is a prefix such as "auth" or "admin.paper";
+  // [outcome] is "success", "failure" or "error".
+  Future<List<AuditEvent>> fetchAudit({
+    String? type,
+    String? outcome,
+    int limit = 200,
+  }) async {
+    final uri = Uri.parse('$_baseUrl/admin/audit').replace(
+      queryParameters: {
+        'limit': '$limit',
+        if (type != null && type.isNotEmpty) 'type': type,
+        if (outcome != null && outcome.isNotEmpty) 'outcome': outcome,
+      },
+    );
+    final response = await _runRequest(
+      () => _client.get(uri, headers: _userAuthHeaders),
+    );
+    if (response.statusCode != 200) {
+      throw AdminException(_errorFor(response));
+    }
+    final rows = _decode(response.body)['events'];
+    if (rows is! List) return const [];
+    return rows
+        .whereType<Map>()
+        .map((row) => AuditEvent.fromJson(Map<String, dynamic>.from(row)))
         .toList();
   }
 
