@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../app/app_localizations.dart';
 import '../../models/chat_conversation.dart';
@@ -118,7 +119,7 @@ class _ChatPageState extends State<ChatPage> {
     await _speak(
       index,
       message.textFor(languageCode),
-      languageCode: languageCode,
+      languageCode: message.displayLanguageFor(languageCode),
     );
   }
 
@@ -178,7 +179,7 @@ class _ChatPageState extends State<ChatPage> {
       _speak(
         _messages.length - 1,
         answer.textFor(widget.strings.languageCode),
-        languageCode: widget.strings.languageCode,
+        languageCode: answer.displayLanguageFor(widget.strings.languageCode),
       );
     }
   }
@@ -507,7 +508,15 @@ class _ChatPageState extends State<ChatPage> {
     if (_speakingIndex == index) {
       _stopSpeaking();
     } else {
-      _speak(index, text, languageCode: widget.strings.languageCode);
+      // Use the voice for the language actually shown, which differs from the
+      // selected language when this answer has no translation for it.
+      _speak(
+        index,
+        text,
+        languageCode: _messages[index].displayLanguageFor(
+          widget.strings.languageCode,
+        ),
+      );
     }
   }
 
@@ -526,6 +535,7 @@ class _ChatPageState extends State<ChatPage> {
       await _speech.stop();
       return;
     }
+    if (_isLoading) return; // wait for the current answer first
 
     final localeId = switch (widget.strings.languageCode) {
       'hi' => 'hi-IN',
@@ -662,6 +672,7 @@ class _ChatPageState extends State<ChatPage> {
                   speechAvailable: _speechAvailable,
                   isListening: _isListening,
                   onToggleListening: _toggleListening,
+                  isBusy: _isLoading,
                 ),
               ],
             ),
@@ -1119,8 +1130,25 @@ class _MessageBubble extends StatelessWidget {
   final bool isSpeaking;
   final VoidCallback? onToggleSpeak;
 
+  // The text shown in the bubble: assistant answers in the selected language.
+  String get _displayText => message.author == MessageAuthor.assistant
+      ? message.textFor(strings.languageCode)
+      : message.text;
+
+  // Copies the answer as shown (in the selected language) to the clipboard.
+  Future<void> _copyAnswer(BuildContext context) async {
+    await Clipboard.setData(ClipboardData(text: _displayText));
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(strings.text('answerCopied')),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
   // Builds a user or assistant message with optional sources and, for
-  // assistant replies, a button to read the message aloud.
+  // assistant replies, buttons to copy the answer and read it aloud.
   @override
   Widget build(BuildContext context) {
     final isUser = message.author == MessageAuthor.user;
@@ -1157,10 +1185,10 @@ class _MessageBubble extends StatelessWidget {
               Expanded(
                 child: AnimatedSwitcher(
                   duration: const Duration(milliseconds: 180),
-                  child: Text(
-                    message.author == MessageAuthor.assistant
-                        ? message.textFor(strings.languageCode)
-                        : message.text,
+                  // Selectable in every language so answers (Bangla and Hindi
+                  // included) can be highlighted and copied.
+                  child: SelectableText(
+                    _displayText,
                     key: ValueKey(strings.languageCode),
                     style: TextStyle(
                       color: isUser ? Colors.white : const Color(0xFF26343D),
@@ -1170,6 +1198,24 @@ class _MessageBubble extends StatelessWidget {
                   ),
                 ),
               ),
+              if (!isUser) ...[
+                const SizedBox(width: 4),
+                SizedBox(
+                  width: 32,
+                  height: 32,
+                  child: IconButton(
+                    padding: EdgeInsets.zero,
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _copyAnswer(context),
+                    tooltip: strings.text('copyAnswer'),
+                    icon: Icon(
+                      Icons.copy_rounded,
+                      size: 18,
+                      color: theme.colorScheme.primary,
+                    ),
+                  ),
+                ),
+              ],
               if (onToggleSpeak != null) ...[
                 const SizedBox(width: 4),
                 SizedBox(
@@ -1196,33 +1242,43 @@ class _MessageBubble extends StatelessWidget {
               ],
             ],
           ),
+          if (!isUser && !message.hasTextFor(strings.languageCode)) ...[
+            const SizedBox(height: 10),
+            _TranslationMissingNotice(
+              strings: strings,
+              shownLanguage: message.displayLanguageFor(strings.languageCode),
+            ),
+          ],
           if (!isUser && message.sources.isNotEmpty) ...[
             const SizedBox(height: 12),
             const Divider(color: Color(0xFFE2E8F0)),
             Theme(
               data: Theme.of(context)
                   .copyWith(dividerColor: Colors.transparent),
-              child: ExpansionTile(
-                tilePadding: EdgeInsets.zero,
-                childrenPadding: EdgeInsets.zero,
-                leading: const Icon(
-                  Icons.verified_outlined,
-                  color: Color(0xFF2E7D5B),
-                ),
-                title: Text(
-                  strings
-                      .text('verifiedSources')
-                      .replaceAll('{count}', '${message.sources.length}'),
-                  style: const TextStyle(
+              child: Material(
+                type: MaterialType.transparency,
+                child: ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: EdgeInsets.zero,
+                  leading: const Icon(
+                    Icons.verified_outlined,
                     color: Color(0xFF2E7D5B),
-                    fontWeight: FontWeight.w600,
-                    fontSize: 14,
                   ),
+                  title: Text(
+                    strings
+                        .text('verifiedSources')
+                        .replaceAll('{count}', '${message.sources.length}'),
+                    style: const TextStyle(
+                      color: Color(0xFF2E7D5B),
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                    ),
+                  ),
+                  children: [
+                    for (var index = 0; index < message.sources.length; index++)
+                      _buildSourceCard(message.sources[index], index + 1),
+                  ],
                 ),
-                children: [
-                  for (var index = 0; index < message.sources.length; index++)
-                    _buildSourceCard(message.sources[index], index + 1),
-                ],
               ),
             ),
           ],
@@ -1410,13 +1466,36 @@ class _MessageBubble extends StatelessWidget {
               color: Color(0xFF2E7D5B),
             ),
           ),
-          if (source.sourceSection.isNotEmpty) ...[
-            const SizedBox(height: 6),
+          const SizedBox(height: 6),
+          Text(
+            strings.text(source.sourceTypeLabelKey),
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            source.paperTitle.isNotEmpty
+                ? source.paperTitle
+                : strings.text('paperTitleUnavailable'),
+          ),
+          if (source.sourceFile.isNotEmpty) ...[
+            const SizedBox(height: 4),
             Text(
               strings
-                  .text('section')
-                  .replaceAll('{section}', source.sourceSection),
+                  .text('sourceFile')
+                  .replaceAll('{file}', source.sourceFile),
             ),
+          ],
+          const SizedBox(height: 4),
+          Text(
+            source.recordedPage.isNotEmpty
+                ? strings
+                      .text('sourcePage')
+                      .replaceAll('{page}', source.recordedPage)
+                : strings.text('pageUnavailable'),
+          ),
+          if (source.sourceSection.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text('${strings.text('section')}: ${source.sourceSection}'),
           ],
           if (supportingText.isNotEmpty) ...[
             const SizedBox(height: 6),
@@ -1430,18 +1509,14 @@ class _MessageBubble extends StatelessWidget {
               source.object.isNotEmpty) ...[
             const SizedBox(height: 8),
             Text(
-              strings
-                  .text('knowledgeGraph')
-                  .replaceAll('{triple}', source.triple),
+              '${strings.text('knowledgeGraph')}: ${source.triple}',
               style: const TextStyle(fontSize: 13, color: Color(0xFF52616A)),
             ),
           ],
           if (source.confidence.isNotEmpty) ...[
             const SizedBox(height: 6),
             Text(
-              strings
-                  .text('confidence')
-                  .replaceAll('{confidence}', source.confidence),
+              '${strings.text('confidence')}: ${source.confidence}',
               style: const TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
@@ -1481,6 +1556,7 @@ class _Composer extends StatelessWidget {
     required this.speechAvailable,
     required this.isListening,
     required this.onToggleListening,
+    this.isBusy = false,
   });
 
   final TextEditingController controller;
@@ -1489,6 +1565,10 @@ class _Composer extends StatelessWidget {
   final bool speechAvailable;
   final bool isListening;
   final VoidCallback onToggleListening;
+
+  // True while the bot is answering: sending and starting voice input are
+  // disabled (and shown as disabled) until the answer arrives.
+  final bool isBusy;
 
   // Builds the query input, optional voice-input control, and send action.
   @override
@@ -1516,7 +1596,9 @@ class _Composer extends StatelessWidget {
                 minLines: 1,
                 maxLines: 4,
                 textInputAction: TextInputAction.send,
-                onSubmitted: (_) => onSend(),
+                onSubmitted: (_) {
+                  if (!isBusy) onSend();
+                },
                 decoration: InputDecoration(
                   hintText: isListening
                       ? strings.text('listening')
@@ -1524,7 +1606,11 @@ class _Composer extends StatelessWidget {
                   prefixIcon: const Icon(Icons.search),
                   suffixIcon: speechAvailable
                       ? IconButton(
-                          onPressed: onToggleListening,
+                          // Stopping is always allowed; starting waits for
+                          // the current answer.
+                          onPressed: isBusy && !isListening
+                              ? null
+                              : onToggleListening,
                           tooltip: isListening
                               ? strings.text('stopListening')
                               : strings.text('askByVoice'),
@@ -1548,26 +1634,94 @@ class _Composer extends StatelessWidget {
             height: 48,
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                colors: [
-                  theme.colorScheme.primary,
-                  theme.colorScheme.secondary,
-                ],
+                colors: isBusy
+                    ? const [Color(0xFFB8BEC6), Color(0xFFB8BEC6)]
+                    : [theme.colorScheme.primary, theme.colorScheme.secondary],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
               shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color: theme.colorScheme.primary.withValues(alpha: 0.35),
-                  blurRadius: 10,
-                  offset: const Offset(0, 4),
-                ),
-              ],
+              boxShadow: isBusy
+                  ? const []
+                  : [
+                      BoxShadow(
+                        color: theme.colorScheme.primary.withValues(
+                          alpha: 0.35,
+                        ),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
             ),
             child: IconButton(
-              onPressed: onSend,
-              tooltip: strings.text('sendQuestion'),
-              icon: const Icon(Icons.arrow_upward_rounded, color: Colors.white),
+              onPressed: isBusy ? null : onSend,
+              tooltip: isBusy
+                  ? strings.text('waitingForAnswer')
+                  : strings.text('sendQuestion'),
+              icon: isBusy
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.arrow_upward_rounded, color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// SCRUM-366: shown under an answer that has no translation for the selected
+// language, so the user knows the text above is in another language.
+class _TranslationMissingNotice extends StatelessWidget {
+  const _TranslationMissingNotice({
+    required this.strings,
+    required this.shownLanguage,
+  });
+
+  final AppLocalizations strings;
+  final String shownLanguage;
+
+  @override
+  Widget build(BuildContext context) {
+    final selected =
+        AppLocalizations.languageNames[strings.languageCode] ??
+        strings.languageCode;
+    final shown =
+        AppLocalizations.languageNames[shownLanguage] ?? shownLanguage;
+    return Container(
+      key: const ValueKey('translation-missing-notice'),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF6E5),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFF2D49B)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(
+            Icons.translate_rounded,
+            size: 18,
+            color: Color(0xFF9A6A12),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              strings
+                  .text('translationMissing')
+                  .replaceAll('{selected}', selected)
+                  .replaceAll('{shown}', shown),
+              style: const TextStyle(
+                fontSize: 13,
+                height: 1.35,
+                color: Color(0xFF6B4A0E),
+              ),
             ),
           ),
         ],

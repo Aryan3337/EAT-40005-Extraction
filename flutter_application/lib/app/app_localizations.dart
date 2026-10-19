@@ -14,6 +14,14 @@ class AppLocalizations {
   };
 
   static const _english = <String, String>{
+    'researchPaper': 'Research paper',
+    'communityData': 'Community data',
+    'unknownSourceType': 'Unknown source type',
+    'paperTitleUnavailable': 'Paper title unavailable',
+    'sourceFile': 'Source file: {file}',
+    'sourcePage': 'Page: {page}',
+    'pageUnavailable': 'Page unavailable',
+
     'language': 'Language',
     'appTagline': 'Ask about culture, climate & community',
     'welcomeBack': 'Welcome back',
@@ -50,6 +58,7 @@ class AppLocalizations {
     'askAnything': 'Ask me anything',
     'thinking': 'Thinking ...',
     'sendQuestion': 'Send question',
+    'waitingForAnswer': 'Waiting for the answer…',
     'tryThese': 'Try these questions',
     'verifiedSources': 'Verified sources',
     'responseHelpful': 'Was this response helpful?',
@@ -81,7 +90,10 @@ class AppLocalizations {
     'stopListening': 'Stop listening',
     'askByVoice': 'Ask by voice',
     'readAloud': 'Read aloud',
+    'translationMissing': 'No {selected} translation was saved for this answer, so it is shown in {shown}. Ask the question again to get it in {selected}.',
     'stopReading': 'Stop reading',
+    'copyAnswer': 'Copy answer',
+    'answerCopied': 'Answer copied',
     'noAnswer': 'No answer was returned.',
     'ragHttpError': 'RAG request failed (HTTP {status}): {error}',
     'cannotReachRag': 'Cannot reach the RAG service at {endpoint}.',
@@ -91,6 +103,14 @@ class AppLocalizations {
   };
 
   static const _hindi = <String, String>{
+    'researchPaper': 'शोध पत्र',
+    'communityData': 'सामुदायिक डेटा',
+    'unknownSourceType': 'स्रोत का प्रकार अज्ञात',
+    'paperTitleUnavailable': 'शोध पत्र का शीर्षक उपलब्ध नहीं',
+    'sourceFile': 'स्रोत फ़ाइल: {file}',
+    'sourcePage': 'पृष्ठ: {page}',
+    'pageUnavailable': 'पृष्ठ उपलब्ध नहीं',
+
     'language': 'भाषा',
     'appTagline': 'संस्कृति, जलवायु और समुदाय के बारे में पूछें',
     'welcomeBack': 'वापसी पर स्वागत है',
@@ -114,6 +134,7 @@ class AppLocalizations {
     'askAnything': 'मुझसे कुछ भी पूछें',
     'thinking': 'सोच रहा है...',
     'sendQuestion': 'सवाल भेजें',
+    'waitingForAnswer': 'उत्तर की प्रतीक्षा हो रही है…',
     'tryThese': 'इन सवालों को पूछें',
     'verifiedSources': 'सत्यापित स्रोत',
     'responseHelpful': 'क्या यह जवाब उपयोगी था?',
@@ -136,7 +157,10 @@ class AppLocalizations {
     'stopListening': 'सुनना बंद करें',
     'askByVoice': 'आवाज़ से पूछें',
     'readAloud': 'ज़ोर से पढ़ें',
+    'translationMissing': 'इस उत्तर का {selected} अनुवाद सहेजा नहीं गया था, इसलिए यह {shown} में दिखाया गया है। {selected} में पाने के लिए सवाल दोबारा पूछें।',
     'stopReading': 'पढ़ना बंद करें',
+    'copyAnswer': 'उत्तर कॉपी करें',
+    'answerCopied': 'उत्तर कॉपी हो गया',
     'noAnswer': 'कोई जवाब नहीं मिला।',
     'ragHttpError': 'RAG अनुरोध विफल (HTTP {status}): {error}',
     'cannotReachRag': 'RAG सेवा तक पहुँचा नहीं जा सका: {endpoint}।',
@@ -146,6 +170,14 @@ class AppLocalizations {
   };
 
   static const _bangla = <String, String>{
+    'researchPaper': 'গবেষণাপত্র',
+    'communityData': 'সম্প্রদায়ের তথ্য',
+    'unknownSourceType': 'সূত্রের ধরন অজানা',
+    'paperTitleUnavailable': 'গবেষণাপত্রের শিরোনাম পাওয়া যায়নি',
+    'sourceFile': 'সূত্র ফাইল: {file}',
+    'sourcePage': 'পৃষ্ঠা: {page}',
+    'pageUnavailable': 'পৃষ্ঠা পাওয়া যায়নি',
+
     'language': 'ভাষা',
     'appTagline': 'সংস্কৃতি, জলবায়ু ও সম্প্রদায় সম্পর্কে জিজ্ঞাসা করুন',
     'welcomeBack': 'আবারও স্বাগতম',
@@ -168,6 +200,7 @@ class AppLocalizations {
     'askAnything': 'যেকোনো প্রশ্ন করুন',
     'thinking': 'ভাবছে...',
     'sendQuestion': 'প্রশ্ন পাঠান',
+    'waitingForAnswer': 'উত্তরের জন্য অপেক্ষা করা হচ্ছে…',
     'tryThese': 'এই প্রশ্নগুলো করতে পারেন',
     'verifiedSources': 'যাচাইকৃত সূত্র',
     'responseHelpful': 'এই উত্তরটি কি সহায়ক ছিল?',
@@ -190,7 +223,10 @@ class AppLocalizations {
     'stopListening': 'শোনা বন্ধ করুন',
     'askByVoice': 'কথা বলে প্রশ্ন করুন',
     'readAloud': 'জোরে পড়ুন',
+    'translationMissing': 'এই উত্তরের {selected} অনুবাদ সংরক্ষিত নেই, তাই এটি {shown} ভাষায় দেখানো হচ্ছে। {selected} ভাষায় পেতে প্রশ্নটি আবার জিজ্ঞাসা করুন।',
     'stopReading': 'পড়া বন্ধ করুন',
+    'copyAnswer': 'উত্তর কপি করুন',
+    'answerCopied': 'উত্তর কপি করা হয়েছে',
     'noAnswer': 'কোনো উত্তর পাওয়া যায়নি।',
     'ragHttpError': 'RAG অনুরোধ ব্যর্থ হয়েছে (HTTP {status}): {error}',
     'cannotReachRag': 'RAG পরিষেবায় পৌঁছানো যাচ্ছে না: {endpoint}।',

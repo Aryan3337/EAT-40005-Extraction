@@ -15,7 +15,15 @@ error and no slowdown, which is why it never showed up as a complaint. At 20
 more papers it becomes an arbitrary 10 of roughly 200.
 """
 
-from rag import DEFAULT_TOP_K, dedupe_triples, question_keywords, resolve_port, score_triple
+from rag import (
+    DEFAULT_TOP_K,
+    dedupe_triples,
+    keyword_weights,
+    question_keywords,
+    resolve_port,
+    score_triple,
+    score_triple_weighted,
+)
 
 
 def _triple(**overrides):
@@ -110,6 +118,128 @@ def test_predicates_the_old_hardcoded_list_could_never_match_now_score():
     ]
     for predicate, keyword in cases:
         assert score_triple(_triple(predicate=predicate), [keyword]) > 0, predicate
+
+
+# -- keyword_weights / score_triple_weighted ----------------------------------
+#
+# WHY: measured 2026-10-07 on the real 45-triple production graph, "garo"
+# appears in 22 of 45 triples and "community" in 17 -- a flat match on either
+# outscores a genuinely rare, on-topic word like "religious" (3 of 45) or
+# "traditional" (2 of 45), because the hub entity GaroCommunity is named in
+# so many triples. Asking "What are the traditional religious beliefs of the
+# Garo?" buried the few triples actually about religion under generic
+# Garo/community-mentioning noise, verified live: the model received no real
+# religion evidence and invented a speculative connection between an
+# unrelated fact (a bamboo floor) and religious practice to compensate --
+# the model was honest given what it was handed, it just wasn't handed the
+# right evidence. keyword_weights discounts a keyword by how common it is in
+# the pool being ranked, so rare/specific words outweigh common/generic ones.
+
+
+def test_a_keyword_in_every_triple_contributes_almost_nothing():
+    pool = [_triple(subject="GaroPeople"), _triple(subject="GaroLand"), _triple(subject="GaroWater")]
+    weights = keyword_weights(["garo"], pool)
+    # Present in all 3 of 3 -- smoothed IDF approaches but never reaches its
+    # floor of 1 (a weight of exactly 0 would let a universal word veto
+    # anything, which is as wrong as counting it fully).
+    assert 1.0 <= weights["garo"] < 1.5
+
+
+def _garo_noise_pool():
+    # 4 triples that mention "garo" (in the subject only, so each scores the
+    # same under flat scoring) but nothing about religion -- mirrors the real
+    # graph's hub entity, where most triples mention GaroCommunity.
+    return [
+        _triple(subject="GaroCommunity", predicate="FACES", object="Unemployment", sentence_ref="x"),
+        _triple(subject="GaroCommunity", predicate="LIVING_IN", object="Mymensingh", sentence_ref="x"),
+        _triple(subject="GaroCommunity", predicate="RESIDENTS", object="Meghalaya", sentence_ref="x"),
+        _triple(subject="GaroCommunity", predicate="HAS_HEALTH_STATUS", object="Good", sentence_ref="x"),
+    ]
+
+
+def test_a_rare_keyword_scores_much_higher_than_a_common_one():
+    specific = _triple(subject="Judgment", predicate="HAS_TRADITIONAL_RELIGION", sentence_ref="x")
+    pool = _garo_noise_pool() + [specific]
+    weights = keyword_weights(["garo", "religion"], pool)
+    assert weights["religion"] > weights["garo"] * 1.5
+
+
+def test_weighted_scoring_can_reorder_what_flat_scoring_ranked_first():
+    # The exact failure mode caught live 2026-10-07: a triple that only
+    # matches via the common hub keyword ("garo") should no longer beat one
+    # that matches via the rare, on-topic keyword ("religion") once there are
+    # enough generic matches around it to show the difference in frequency.
+    specific = _triple(subject="Judgment", predicate="HAS_TRADITIONAL_RELIGION",
+                        object="JudgmentAtMissalCharms", sentence_ref="a judgment on religion")
+    pool = _garo_noise_pool() + [specific]
+    generic = pool[0]
+    keywords = ["religion", "garo"]
+
+    flat_order = sorted(pool, key=lambda t: -score_triple(t, keywords))
+    weights = keyword_weights(keywords, pool)
+    weighted_order = sorted(pool, key=lambda t: -score_triple_weighted(t, weights))
+
+    assert flat_order[0] is generic  # today's behaviour: the bug
+    assert weighted_order[0] is specific  # the fix
+
+
+def test_live_matches_living_despite_not_being_a_literal_substring():
+    # Confirmed live 2026-10-07: "live" is not a literal substring of
+    # "living" (silent-e), so "Where do the Garo live?" scored the one
+    # directly relevant triple (...LIVING_IN...) BELOW several generic
+    # Garo-mentioning ones. A shared-prefix heuristic was tried and
+    # rejected (see _KEYWORD_EQUIVALENTS' docstring) in favour of this
+    # curated equivalence.
+    pool = [
+        _triple(subject="GaroCommunity", predicate="LIVING_IN", object="Mymensingh", sentence_ref="x"),
+        _triple(subject="GaroCommunity", predicate="FACES", object="Unemployment", sentence_ref="x"),
+    ]
+    living, unrelated = pool
+    weights = keyword_weights(["live", "garo"], pool)
+    assert score_triple_weighted(living, weights) > score_triple_weighted(unrelated, weights)
+
+
+def test_live_does_not_false_match_livelihood():
+    # Confirmed live 2026-10-08: "live" IS a literal substring of
+    # "livelihood", so every LivelihoodPatterns/MAINLYREFERS triple from the
+    # overnight batch false-matched "Where do the Garo live?" at the same
+    # score as the real LIVING_IN triple -- 8 near-identical rows from one
+    # sentence, which (via dedupe_triples) crowded the genuinely relevant
+    # RESIDENTS triple out of the top 10.
+    pool = [
+        _triple(subject="GaroCommunity", predicate="LIVING_IN", object="Mymensingh", sentence_ref="x"),
+        _triple(subject="LivelihoodPatterns", predicate="MAINLYREFERS", object="WayOfLifeStyle",
+                sentence_ref="livelihood patterns mainly refer to the way of life style"),
+    ]
+    living, livelihood = pool
+    weights = keyword_weights(["live", "garo"], pool)
+    assert score_triple_weighted(livelihood, weights) == 0
+    assert score_triple_weighted(living, weights) > 0
+
+
+def test_religious_matches_religion_despite_not_being_a_literal_substring():
+    religious_triple = _triple(subject="Judgment", predicate="HAS_TRADITIONAL_RELIGION",
+                                object="JudgmentAtMissalCharms", sentence_ref="x")
+    pool = _garo_noise_pool() + [religious_triple]
+    generic = pool[0]
+    weights = keyword_weights(["religious", "garo"], pool)
+    assert score_triple_weighted(religious_triple, weights) > score_triple_weighted(generic, weights)
+
+
+def test_a_curated_equivalent_does_not_match_an_unrelated_word():
+    # "live" matching "living" should not somehow make it match everything.
+    triple = _triple(subject="Unrelated", predicate="NAMED", object="Something", sentence_ref="x")
+    assert score_triple_weighted(triple, keyword_weights(["live"], [triple])) == 0
+
+
+def test_a_keyword_absent_from_the_pool_still_has_a_finite_weight():
+    # Should not divide by zero or blow up when nothing in the pool matches.
+    weights = keyword_weights(["nonexistent"], [_triple()])
+    assert weights["nonexistent"] > 0
+
+
+def test_weighted_score_of_a_non_matching_triple_is_zero():
+    assert score_triple_weighted(_triple(), {"marriage": 5.0}) == 0
 
 
 # -- the top_k default --------------------------------------------------------

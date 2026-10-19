@@ -74,6 +74,16 @@ def test_duplicate_facts_from_different_passages_are_collapsed():
     assert retriever.retrieve("bilingual") == [first]
 
 
+def test_an_explicit_top_k_caps_the_number_of_results():
+    # The /query handler relies on this: it now calls skeleton.query(...,
+    # top_k=SYNTHESIS_EVIDENCE_LIMIT) so the "View verified sources" count
+    # matches what synthesis actually saw (10) instead of the full
+    # DEFAULT_TOP_K=25 retrieval -- see rag.py's do_POST for why.
+    triples = [_triple(subject=f"GaroThing{i}") for i in range(20)]
+    retriever = ConceptRetriever(_FakeKnowledgeGraph(triples))
+    assert len(retriever.retrieve("garo", top_k=5)) == 5
+
+
 def test_the_default_top_k_matches_the_graph_paths_default():
     retriever = ConceptRetriever(_FakeKnowledgeGraph([]))
     import inspect

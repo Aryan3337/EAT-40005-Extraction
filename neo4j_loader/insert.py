@@ -1,4 +1,5 @@
 import uuid
+from source_provenance import provenance_fields
 from datetime import datetime, timezone
 
 from neo4j_loader.connection import get_driver
@@ -42,6 +43,9 @@ def insert_triple(tx, triple, run_id, ingested_at):
     ON CREATE SET r.first_ingested_at = $ingested_at
     SET r.source_file = $source_file,
         r.source_section = $source_section,
+        r.paper_title = $paper_title,
+        r.page_number = $page_number,
+        r.source_type = $source_type,
         r.confidence = $confidence,
         r.passage = $passage,
         r.sentence_ref = $sentence_ref,
@@ -53,7 +57,7 @@ def insert_triple(tx, triple, run_id, ingested_at):
         query,
         subject=subject,
         object=obj,
-        source_file=triple.get("source_file", ""),
+        **provenance_fields(triple),
         source_section=triple.get("source_section", ""),
         confidence=triple.get("confidence", ""),
         passage=triple.get("passage", ""),

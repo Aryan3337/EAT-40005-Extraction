@@ -13,6 +13,10 @@ class SourceEvidence {
     required this.sourceSection,
     required this.passage,
     required this.confidence,
+    this.paperTitle = '',
+    this.sourceFile = '',
+    this.pageNumber = '',
+    this.sourceType = '',
   });
 
   // Stable triple ID from the graph (elementId); empty for older saved chats.
@@ -24,6 +28,10 @@ class SourceEvidence {
   final String sourceSection;
   final String passage;
   final String confidence;
+  final String paperTitle;
+  final String sourceFile;
+  final String pageNumber;
+  final String sourceType;
 
   factory SourceEvidence.fromJson(Map<String, dynamic> json) {
     String read(String key) => json[key]?.toString().trim() ?? '';
@@ -37,6 +45,10 @@ class SourceEvidence {
       sourceSection: read('source_section'),
       passage: read('passage'),
       confidence: read('confidence'),
+      paperTitle: read('paper_title'),
+      sourceFile: read('source_file'),
+      pageNumber: read('page_number'),
+      sourceType: read('source_type'),
     );
   }
 
@@ -49,6 +61,25 @@ class SourceEvidence {
     'source_section': sourceSection,
     'passage': passage,
     'confidence': confidence,
+    'paper_title': paperTitle,
+    'source_file': sourceFile,
+    'page_number': pageNumber,
+    'source_type': sourceType,
+  };
+
+  String get recordedPage {
+    if (RegExp(r'^[1-9][0-9]*$').hasMatch(pageNumber)) return pageNumber;
+    return RegExp(
+          r'^Page\s+([1-9][0-9]*)$',
+          caseSensitive: false,
+        ).firstMatch(sourceSection.trim())?.group(1) ??
+        '';
+  }
+
+  String get sourceTypeLabelKey => switch (sourceType) {
+    'research_paper' => 'researchPaper',
+    'community_data' => 'communityData',
+    _ => 'unknownSourceType',
   };
 
   String get triple => '$subject — $predicate → $object';
@@ -75,6 +106,22 @@ class ChatMessage {
   final String feedbackComment;
 
   String textFor(String languageCode) => translations[languageCode] ?? text;
+
+  // False when [languageCode] has no translation, so [textFor] falls back to
+  // the language the question was originally answered in. Messages without
+  // any translations (user questions, errors) are never flagged.
+  bool hasTextFor(String languageCode) =>
+      translations.isEmpty || translations.containsKey(languageCode);
+
+  // The language [textFor] actually returns for [languageCode]: the selected
+  // language when a translation exists, otherwise the original answer's.
+  String displayLanguageFor(String languageCode) {
+    if (hasTextFor(languageCode)) return languageCode;
+    for (final entry in translations.entries) {
+      if (entry.value == text) return entry.key;
+    }
+    return languageCode;
+  }
 
   ChatMessage copyWith({
     MessageFeedback? feedback,
