@@ -88,3 +88,25 @@ said "primarily Garo" although the quotation supports both Bengali and Garo.
 Unrelated housing source cards also appeared. These remain answer/retrieval
 quality issues. The integration community-CSV and history-reload manual checks
 have not yet been confirmed.
+
+## Search multiple CSVs in one session
+
+Repeat --kg to load research and approved local community CSVs into one index:
+
+    python run_local_demo.py --kg data/production_graph/garo_1_kg_refined.csv --kg /path/to/local/community.csv
+
+One --kg still loads one dataset. Without --kg, the launcher uses the Tangail
+demo CSV. Repeated references to the same resolved file are loaded once.
+Loaded records retain their metadata and receive unique process-local IDs.
+
+CSV concept retrieval now filters identity-only matches when topic-matching
+records exist. This corpus-specific heuristic applies to both source types;
+it does not establish semantic relevance or change Neo4j retrieval.
+
+Validation: 90 tests and 9 subtests passed. A local 625-record run answered the
+research language question and preserved the six forest-management responses,
+including record 01's "No", without switching datasets.
+
+This does not automatically load the team's full research corpus. Supply its
+approved CSV paths explicitly. Confidential CSVs remain local and must not
+be committed. The existing model setup and research-prototype limitations apply.

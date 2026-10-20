@@ -254,7 +254,20 @@ class KnowledgeGraph:
 
     def __init__(self, csv_path: str):
         # Load all triples and build the in‑memory index.
-        self.triples = self._load_csv(csv_path)
+        paths = [csv_path] if isinstance(csv_path, (str, os.PathLike)) else list(csv_path)
+        if not paths:
+            raise ValueError("At least one CSV path is required.")
+        self.triples = []
+        seen_paths = set()
+        for path in paths:
+            resolved = Path(path).expanduser().resolve()
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            records = self._load_csv(str(resolved))
+            for record in records:
+                record["id"] = f"csv:{len(self.triples)}"
+                self.triples.append(record)
         self._build_index()
         print(f"Loaded {len(self.triples)} triples")
         print(f"Entities indexed: {len(self.entity_index)} unique names")
@@ -492,6 +505,29 @@ class ConceptRetriever:
         # tie-break, so equal-scoring results do not shuffle between calls.
         scored.sort(key=lambda pair: -pair[0])
         matches = [triple for score, triple in scored if score > 0]
+        # In this corpus, community identity alone does not establish topic relevance.
+        identity_terms = {"garo", "mandi", "mande", "people", "community"}
+        topics = [word for word in keywords if word not in identity_terms]
+        topic_forms = {
+            "languages": ("language",),
+            "speak": ("speaks", "speaking", "spoken", "bilingual", "language"),
+        }
+
+        def matches_topic(triple):
+            fields = ("subject", "predicate", "object", "question", "sentence_ref")
+            for word in topics:
+                forms = (word,) + topic_forms.get(word, ())
+                if any(
+                    _keyword_matches(form, str(triple.get(field) or "").lower())
+                    for form in forms
+                    for field in fields
+                ):
+                    return True
+            return False
+
+        focused = [triple for triple in matches if matches_topic(triple)]
+        if focused:
+            matches = focused
         return group_responses(dedupe_triples(matches), top_k)
 
 
@@ -2782,7 +2818,7 @@ def main() -> None:
         - (no flags)       : start an interactive session.
     """
     parser = argparse.ArgumentParser(description="RAG Retrieval Comparison")
-    parser.add_argument("--kg", help="Path to KG CSV file")
+    parser.add_argument("--kg", action="append", help="Path to KG CSV; repeat to load multiple files")
     parser.add_argument("--test-questions", action="store_true",
                         help="Run comparison with built-in test questions")
     parser.add_argument("--query", help="Single question to test")
@@ -2811,9 +2847,9 @@ def main() -> None:
     if not args.kg and not args.neo4j:
         parser.error("--kg is required unless --neo4j --serve is used")
 
-    if args.kg and not Path(args.kg).exists():
-        print(f"File not found: {args.kg}")
-        sys.exit(1)
+    for path in args.kg or []:
+        if not Path(path).expanduser().is_file():
+            parser.error(f"CSV file not found: {path}")
 
     if args.serve:
         serve_api(args.kg, args.host, args.port, args.approach, args.neo4j)
