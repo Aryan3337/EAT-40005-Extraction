@@ -11,7 +11,7 @@ os.chdir(ROOT)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--check", action="store_true")
-parser.add_argument("--kg", default="data/production_graph/garo_1_kg_refined.csv")
+parser.add_argument("--kg", action="append", help="CSV path; repeat to search multiple files")
 args = parser.parse_args()
 
 def fail(message):
@@ -60,16 +60,20 @@ except Exception:
         "This launcher will not download it."
     )
 
-kg = Path(args.kg).expanduser().resolve()
-if not kg.is_file():
-    fail("KG CSV not found. Supply an existing file with --kg.")
+kg_paths = [
+    Path(path).expanduser().resolve()
+    for path in (args.kg or ["data/production_graph/garo_1_kg_refined.csv"])
+]
+for path in kg_paths:
+    if not path.is_file():
+        fail(f"KG CSV not found: {path}")
 
 print("Model-file and dependency checks passed; inference is checked at runtime.")
 if args.check:
     raise SystemExit(0)
 
-sys.argv = [
-    str(ROOT / "rag.py"), "--kg", str(kg),
-    "--serve", "--host", "127.0.0.1", "--port", "8000",
-]
+sys.argv = [str(ROOT / "rag.py")]
+for path in kg_paths:
+    sys.argv.extend(["--kg", str(path)])
+sys.argv.extend(["--serve", "--host", "127.0.0.1", "--port", "8000"])
 runpy.run_path(str(ROOT / "rag.py"), run_name="__main__")
