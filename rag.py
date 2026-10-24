@@ -20,6 +20,7 @@ as the primary retrieval strategy for the current KG.
 
 import os
 import json
+
 import csv
 import math
 import re
@@ -38,6 +39,7 @@ from admin_ingest import (check_admin_secret, current_queue, ingest_pdf,
                           read_paper_bytes, record_manual_decision,
                           validate_upload)
 from llm_endpoint import ollama_tunnel_headers, resolve_llm_endpoint
+from embeddings import TripleEmbeddingIndex
 
 try:
     from neo4j import GraphDatabase  # type: ignore[import-not-found]
@@ -69,6 +71,26 @@ _STOPWORDS = {
     "tell", "give", "show", "say", "said", "know", "please", "thing", "things",
 }
 
+# Question phrasings that ask for a quantity the graph stores under a
+# different word. WHY: "What is the population of the Garo community?" and
+# "How many Garo people are there?" ask the same thing, but only the first
+# contains the word "population" that matches the POPULATION predicate.
+# In the second, "many" and "there" are stopwords, so the keyword ranker
+# sees only "garo" and "people" -- which match dozens of other triples --
+# and the POPULATION evidence gets buried outside the top 6 sent to the
+# model. Semantic search helps but is not enough on its own at this graph
+# size. This is the same fix that made quantity questions work in the
+# earlier Aidan fork; ported back here.
+_INTENT_EXPANSIONS: List[Tuple["re.Pattern[str]", Tuple[str, ...]]] = [
+    (
+        re.compile(
+            r"\bhow\s+many\b|\bhow\s+much\b|\bnumber\s+of\b|\bheadcount\b"
+            r"|\binhabitants?\b|\bpopulat\w*|\bpopulous\b|\bsize\s+of\b",
+            re.IGNORECASE,
+        ),
+        ("population",),
+    ),
+]
 
 def question_keywords(question: str) -> List[str]:
     """Content words from the question, lowercased, duplicates collapsed.
@@ -83,6 +105,15 @@ def question_keywords(question: str) -> List[str]:
         if lowered in _STOPWORDS or lowered in keywords:
             continue
         keywords.append(lowered)
+    # Intent expansions run against the RAW question, before stopword
+    # removal, because the trigger phrase "how many" is exactly what the
+    # stopword list throws away.
+    for pattern, extra_words in _INTENT_EXPANSIONS:
+        if pattern.search(question or ""):
+            for extra in extra_words:
+                if extra not in keywords:
+                    keywords.append(extra)
+
     return keywords
 
 
@@ -228,6 +259,48 @@ def dedupe_triples(triples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         unique.append(triple)
     return unique
 
+
+def reciprocal_rank_fusion(
+    rankings: List[List[int]],
+    k: int = 60,
+) -> Dict[int, float]:
+    """Fuse several ranked index lists into one score per index.
+
+        RRF_score(d) = sum over rankers of 1 / (k + rank(d))
+
+    WHY RRF rather than a weighted score sum: the keyword scorer produces
+    IDF-weighted integers and the semantic scorer produces cosine
+    similarities in [-1, 1]. Those scales are not comparable, so any
+    weighted sum would need per-corpus normalization constants that drift
+    as the graph grows. RRF only uses rank, so it is scale-free and
+    robust to either ranker's scores shifting.
+
+    k=60 is the value from the original Cormack et al. paper and is the
+    common default in hybrid search. Lower k sharpens the weight of each
+    ranker's top entries; higher k flattens it. Not worth tuning until
+    there is a labelled evaluation set.
+    """
+    scores: Dict[int, float] = {}
+    for ranking in rankings:
+        for rank, idx in enumerate(ranking):
+            scores[idx] = scores.get(idx, 0.0) + 1.0 / (k + rank + 1)
+    return scores
+
+
+def _build_embedding_index_or_none(triples: List[Dict[str, Any]]) -> Optional[TripleEmbeddingIndex]:
+    """Build the semantic index, or return None if Ollama is unreachable.
+
+    A None index means ConceptRetriever falls back to keyword-only ranking,
+    which is exactly the pre-semantic behaviour -- the feature is additive,
+    never a new single point of failure.
+    """
+    try:
+        index = TripleEmbeddingIndex()
+        index.build_or_load(triples)
+        return index
+    except Exception as error:
+        print(f"Semantic index unavailable, falling back to keyword-only: {error}")
+        return None
 
 # ============================================================================
 # 1. Knowledge Graph Loader and Index
@@ -414,24 +487,28 @@ Return only the query, no explanation."""
 
 class ConceptRetriever:
     """
-    Retrieves triples by scoring every triple against the question's content
-    words -- the same question_keywords/score_triple ranking
-    Neo4jRAGSkeleton.query uses on the graph path.
+    Retrieves triples by fusing two independent rankings of the same graph:
+        1. Keyword scoring -- question_keywords/score_triple_weighted, the
+           same ranking Neo4jRAGSkeleton.query uses on the graph path.
+        2. Semantic scoring -- cosine similarity against per-triple
+           embeddings of the structured triple plus its source sentence.
 
-    This approach is fast, deterministic, and does not require an LLM.
-    It is the recommended primary retrieval strategy.
+    Fused via Reciprocal Rank Fusion (see reciprocal_rank_fusion). This is
+    additive: if the embedding index is None, the semantic ranking is empty
+    and RRF returns the keyword ranking order unchanged, so this degrades
+    to exactly the previous behaviour.
     """
 
-    def __init__(self, kg: KnowledgeGraph):
+    def __init__(self, kg: KnowledgeGraph,
+                 embedding_index: Optional[TripleEmbeddingIndex] = None):
         self.kg = kg
+        self.embedding_index = embedding_index
 
     def _extract_entities(self, question: str) -> Set[str]:
         """
         Find known entities from the KG that appear in the question as whole words.
         This avoids partial matches (e.g., 'Garo' should not match 'GaroWomen').
-        Used by RetrieverComparator for its diagnostic entity count; retrieve()
-        no longer needs it, since score_triple already rewards a subject/object
-        match over one that merely appears in a source sentence.
+        Used by RetrieverComparator for its diagnostic entity count.
         """
         question_lower = question.lower()
         entities = set()
@@ -440,36 +517,40 @@ class ConceptRetriever:
                 entities.add(entity)
         return entities
 
-    def retrieve(self, question: str, top_k: int = DEFAULT_TOP_K) -> List[Dict]:
-        """Scores every triple against the question's content words and
-        returns the highest-ranked, deduped matches.
-
-        Previously this had its own three-stage fallback (known-entity
-        match, then predicate keyword match, then sentence_ref search) with
-        its own scoring: 2 points per entity match, 1 per predicate keyword,
-        plus a bonus for the LENGTH of sentence_ref ("longer = more
-        context"). That rewarded verbose citations -- precisely the
-        pathology MAX_SENTENCE_REF_CHARS exists to stop on the extraction
-        side -- and ranked this CSV fallback differently from the graph
-        path it is meant to stand in for. Scoring now goes through the same
-        score_triple() the graph path uses, so a question gets the same
-        answer whether or not AuraDB happens to be reachable.
-        """
+    def _keyword_ranking(self, question: str) -> List[int]:
+        """Triple indices ordered best-first by the existing keyword scorer.
+        Only triples with a nonzero score are included, so a question that
+        shares no content words with the graph produces an empty ranking."""
         keywords = question_keywords(question)
         if not keywords:
             return []
 
-        # Weighted by keyword_weights so a rare, on-topic keyword outranks a
-        # flat match on the graph's hub entity -- see keyword_weights.
         weights = keyword_weights(keywords, self.kg.triples)
-        scored = [(score_triple_weighted(triple, weights), triple) for triple in self.kg.triples]
+        scored = [
+            (score_triple_weighted(triple, weights), i)
+            for i, triple in enumerate(self.kg.triples)
+        ]
         # Stable sort on the negated score keeps the CSV's row order as the
         # tie-break, so equal-scoring results do not shuffle between calls.
         scored.sort(key=lambda pair: -pair[0])
-        matches = [triple for score, triple in scored if score > 0]
+        return [i for score, i in scored if score > 0]
+
+    def retrieve(self, question: str, top_k: int = DEFAULT_TOP_K) -> List[Dict]:
+        """Question in, highest-ranked deduped triples out, from the fused
+        keyword and semantic rankings."""
+        keyword_ranking = self._keyword_ranking(question)
+        semantic_ranking = (
+            self.embedding_index.semantic_ranking(question)
+            if self.embedding_index is not None else []
+        )
+
+        if not keyword_ranking and not semantic_ranking:
+            return []
+
+        fused = reciprocal_rank_fusion([keyword_ranking, semantic_ranking])
+        ordered = sorted(fused.keys(), key=lambda i: -fused[i])
+        matches = [self.kg.triples[i] for i in ordered]
         return dedupe_triples(matches)[:top_k]
-
-
 # ============================================================================
 # 4. Evaluation and Comparison (with Data‑Driven Rationale)
 # ============================================================================
@@ -624,7 +705,14 @@ class RAGSkeleton:
         self.kg = KnowledgeGraph(kg_path)
         self.approach = approach
         if approach == "concept":
-            self.retriever = ConceptRetriever(self.kg)
+            # Built once, at startup. Falls back to None (keyword-only
+            # retrieval) if Ollama is unreachable -- see
+            # _build_embedding_index_or_none. This is deliberately not
+            # fatal: the system must keep answering questions even when
+            # the embedding model is down, which is exactly the pre-
+            # semantic behaviour.
+            embedding_index = _build_embedding_index_or_none(self.kg.triples)
+            self.retriever = ConceptRetriever(self.kg, embedding_index=embedding_index)
         elif approach == "cypher":
             self.retriever = CypherRetriever(self.kg)
         else:
@@ -640,7 +728,12 @@ class RAGSkeleton:
         return question
 
     def query(self, question: str, top_k: int = DEFAULT_TOP_K) -> List[Dict]:
-        """Main entry: question in → triples out."""
+        """Main entry: question in → triples out.
+
+        Delegates to the retriever (ConceptRetriever by default), which
+        ranks every triple with a fused keyword + semantic score -- see
+        ConceptRetriever.retrieve and reciprocal_rank_fusion.
+        """
         normalized = self.normalize_question(question)
         return self.retriever.retrieve(normalized, top_k)
 
@@ -670,13 +763,19 @@ class RAGSkeleton:
 
 # Queries Entity nodes and their relationships directly from Neo4j.
 class Neo4jRAGSkeleton:
-    # Upper bound on rows pulled back for ranking. Well above the current
+    # Upper bound on rows pulled back at startup. Well above the current
     # graph (45 triples) and above the ~350 expected after 20 more papers,
     # so it never truncates in practice -- it exists so an unexpectedly
     # large graph degrades instead of pulling everything into memory.
+    #
+    # This now caps a ONCE-per-startup fetch rather than a per-query one,
+    # because the semantic ranker needs to see the whole graph (not just
+    # the triples the keyword list touched) to rank meaningfully -- see
+    # __init__ and query.
     FETCH_LIMIT = 500
 
-    # Opens a Neo4j driver using the project's environment configuration.
+    # Opens a Neo4j driver using the project's environment configuration
+    # and builds the semantic index over the full graph.
     def __init__(self):
         from config import PASSWORD, URI, USERNAME
 
@@ -692,39 +791,22 @@ class Neo4jRAGSkeleton:
 
         self.driver = GraphDatabase.driver(uri, auth=(username, password))
 
-    # Finds graph relationships whose entities or source text match the question.
-    def query(self, question: str, top_k: int = DEFAULT_TOP_K) -> List[Dict]:
-        """Fetch every triple the question's words touch, then rank in Python.
+        # Fetch every triple once, here, so the graph path runs the exact
+        # same keyword + semantic ranking as the CSV path -- see query().
+        # A per-query Cypher WHERE (the previous design) only returned
+        # candidates the keyword list touched, which would make every
+        # triple that no keyword matched invisible to the semantic ranker
+        # -- defeating the point of adding semantic search.
+        self._all_triples = self._fetch_all_triples()
 
-        Ranking moved out of Cypher deliberately. The old query scored with
-        `reduce` over a hardcoded relationship_terms list -- speak/language/
-        dialect, population, live/locat/resid, is_a/type -- matched against
-        the predicate NAME. The graph's predicates are LANGUAGE_USED,
-        EXTENT_OF_USE, HAS_LANGUAGE_Maintenance, HAS_TRADITIONAL_RELIGION and
-        so on; only POPULATION ever matched one, so 10 of 11 predicate types
-        scored 0, ORDER BY relevance was a tie across nearly everything, and
-        Neo4j's scan order chose the answer.
+        # Built once, at startup. None means keyword-only fallback; see
+        # _build_embedding_index_or_none for why this is not fatal.
+        self._embedding_index = _build_embedding_index_or_none(self._all_triples)
 
-        Scoring here instead makes the ranking unit-testable without a live
-        database, and lets a match on the subject or object outrank one that
-        merely mentions the word in a source sentence.
-
-        This is a full relationship scan with no index -- free at the current
-        45 triples and fine into the low thousands, but it is the documented
-        ceiling on this read path. FETCH_LIMIT bounds the worst case.
-        """
-        keywords = question_keywords(question)
-        if not keywords:
-            return []
-
+    # Pulls every relationship in the graph, with its source metadata.
+    def _fetch_all_triples(self) -> List[Dict[str, Any]]:
         cypher = """
         MATCH (s:Entity)-[r]->(o:Entity)
-        WHERE any(keyword IN $keywords WHERE
-            toLower(coalesce(s.name, '')) CONTAINS keyword OR
-            toLower(coalesce(o.name, '')) CONTAINS keyword OR
-            toLower(type(r)) CONTAINS keyword OR
-            toLower(coalesce(r.sentence_ref, '')) CONTAINS keyword OR
-            toLower(coalesce(r.passage, '')) CONTAINS keyword)
         RETURN s.name AS subject,
                type(r) AS predicate,
                o.name AS object,
@@ -736,26 +818,68 @@ class Neo4jRAGSkeleton:
                coalesce(r.ingested_at, '') AS ingested_at
         LIMIT $fetch_limit
         """
-
         with self.driver.session() as session:
-            result = session.run(
-                cypher,
-                keywords=keywords,
-                fetch_limit=self.FETCH_LIMIT,
-            )
-            candidates = [dict(record) for record in result]
+            result = session.run(cypher, fetch_limit=self.FETCH_LIMIT)
+            return [dict(record) for record in result]
 
-        # Weighted by keyword_weights so a rare, on-topic keyword outranks a
-        # flat match on the graph's hub entity -- see keyword_weights.
-        # Stable sort on the negated score keeps Cypher's order as the
-        # tie-break, so equal-scoring results do not shuffle between calls.
-        weights = keyword_weights(keywords, candidates)
-        candidates.sort(key=lambda triple: -score_triple_weighted(triple, weights))
+    # Finds graph relationships whose entities or source text match the
+    # question, by fusing the keyword ranking with the semantic ranking.
+    def query(self, question: str, top_k: int = DEFAULT_TOP_K) -> List[Dict]:
+        """Rank the graph's triples for a question by fusing two signals:
+
+            1. Keyword ranking -- score_triple_weighted, the same scorer
+               ConceptRetriever uses on the CSV path. Rewards a subject or
+               object match over a match that only appears in a source
+               sentence, and discounts hub entities like GaroCommunity via
+               keyword_weights' IDF.
+            2. Semantic ranking -- cosine similarity against per-triple
+               embeddings of the structured triple plus its sentence_ref.
+               Recovers paraphrases the keyword list cannot enumerate
+               ("how many people" for POPULATION, "reside" for LIVING_IN).
+
+        Fused with Reciprocal Rank Fusion (see reciprocal_rank_fusion),
+        which only uses rank, so the two scores' different scales never
+        need normalizing. This is identical to ConceptRetriever.retrieve's
+        logic, deliberately: a question gets the same answer whether or
+        not AuraDB happens to be reachable.
+
+        Ranking runs in Python rather than Cypher so it is unit-testable
+        without a live database, and so a match on subject or object can
+        outrank one that merely mentions the word in a source sentence.
+        """
+        # --- Keyword ranking ---
+        keyword_ranking: List[int] = []
+        keywords = question_keywords(question)
+        if keywords:
+            weights = keyword_weights(keywords, self._all_triples)
+            scored = [
+                (score_triple_weighted(triple, weights), i)
+                for i, triple in enumerate(self._all_triples)
+            ]
+            # Stable sort on the negated score keeps Cypher's row order as
+            # the tie-break, so equal-scoring results do not shuffle
+            # between calls.
+            scored.sort(key=lambda pair: -pair[0])
+            keyword_ranking = [i for score, i in scored if score > 0]
+
+        # --- Semantic ranking ---
+        semantic_ranking = (
+            self._embedding_index.semantic_ranking(question)
+            if self._embedding_index is not None else []
+        )
+
+        if not keyword_ranking and not semantic_ranking:
+            return []
+
+        # --- Fuse, order, dedupe, truncate ---
+        fused = reciprocal_rank_fusion([keyword_ranking, semantic_ranking])
+        ordered = sorted(fused.keys(), key=lambda i: -fused[i])
+        matches = [self._all_triples[i] for i in ordered]
 
         # Dedupe before truncating, so a duplicate doesn't cost a real
         # candidate its place in top_k. Sorting first means the
         # highest-scoring instance of each fact is the one kept.
-        return dedupe_triples(candidates)[:top_k]
+        return dedupe_triples(matches)[:top_k]
 
     # Formats Neo4j triples for the Flutter assistant response.
     def format_output(self, triples: List[Dict]) -> str:
@@ -776,9 +900,9 @@ class Neo4jRAGSkeleton:
 
     # Closes the Neo4j network resources when the API stops.
     def close(self) -> None:
-        self.driver.close()
+        self.driver.close()    
 
-    # Converts retrieved graph evidence into a concise, grounded answer.
+# Converts retrieved graph evidence into a concise, grounded answer.
 # Benchmarked on this machine's CPU Ollama: deepseek-r1:7b took 40.8s and
 # mistral:7b took 40.3s for a real synthesis call. The old timeout=30 was
 # below both, so every real answer timed out and silently fell back to the
@@ -808,7 +932,7 @@ ANSWER_SYNTHESIS_TIMEOUT_SECONDS = 130
 # tokens/sec), which is most of the timeout budget before decoding even
 # starts. Triples already arrive score-sorted, so keeping the top N keeps the
 # most relevant evidence.
-SYNTHESIS_EVIDENCE_LIMIT = 10
+SYNTHESIS_EVIDENCE_LIMIT = 6
 
 # How long to wait for Ollama to even ACCEPT a connection, separate from how
 # long to wait for it to finish generating (above). This matters once the
@@ -925,7 +1049,17 @@ class AnswerSynthesizer:
             "model": self.model,
             "prompt": prompt,
             "stream": False,
-            "options": {"temperature": 0.2, "num_predict": 400},
+            "options": {
+                "temperature": 0.2,
+                "num_predict": 400,
+                # 4096, not Ollama's default 2048: the evidence prompt alone is
+                # ~2500 tokens, and num_ctx covers prompt + generation. At 2048
+                # Ollama silently truncated the prompt from the left, dropping
+                # the system instructions and part of the question -- which is
+                # why the same question sometimes produced different answers.
+                # 4096 fits the full prompt with room to generate an answer.
+                "num_ctx": 4096,
+            },
         }
         # Retries only a bare connection failure (see ANSWER_SYNTHESIS_CONNECTION_RETRIES
         # for why), never a slow-but-connected generation that ran out of time.
@@ -944,26 +1078,28 @@ class AnswerSynthesizer:
                 print(f"Answer synthesis unavailable: {error}")
                 break
             else:
-                if response.status_code == 200:
-                    text = response.json().get("response", "").strip()
-                    if text:
-                        if not relevance_gate_enabled():
-                            return self._clean_response(text)
-                        verdict, gated = self._parse_gated_verdict(text)
-                        # OLLAMA_MODEL is env-overridable; swap in a model
-                        # that does not honour the RELEVANT: format and every
-                        # answer silently becomes a refusal. Print which
-                        # branch fired so an explicit "no" is distinguishable
-                        # from format collapse mid-demo.
-                        if verdict == self._GATE_NO:
-                            print("Answer synthesis gate refused: the model judged the evidence irrelevant (RELEVANT: no).")
-                        elif verdict == self._GATE_UNREADABLE:
-                            print("Answer synthesis gate refused: the RELEVANT marker was missing or unreadable in the model's response.")
-                        # A refusal is the intended output, not a failure:
-                        # deliberately NOT _fallback_answer, whose templated
-                        # triple soup is the off-topic padding being removed.
-                        return gated if gated is not None else NO_GROUNDED_ANSWER_MESSAGE
-                break
+                # Non-200 from Ollama (404 missing model, 500 server error,
+                # 400 bad request) used to fall through silently to the
+                # fallback template, making a broken synthesis path look
+                # identical to a working one. Log it.
+                if response.status_code != 200:
+                    print(f"Answer synthesis returned HTTP {response.status_code}: {response.text[:300]}")
+                    break
+
+                text = response.json().get("response", "").strip()
+                if not text:
+                    print("Answer synthesis returned an empty response body.")
+                    break
+
+                if not relevance_gate_enabled():
+                    return self._clean_response(text)
+
+                verdict, gated = self._parse_gated_verdict(text)
+                if verdict == self._GATE_NO:
+                    print("Answer synthesis gate refused: the model judged the evidence irrelevant (RELEVANT: no).")
+                elif verdict == self._GATE_UNREADABLE:
+                    print("Answer synthesis gate refused: the RELEVANT marker was missing or unreadable in the model's response.")
+                return gated if gated is not None else NO_GROUNDED_ANSWER_MESSAGE
 
         return self._fallback_answer(triples)
 
@@ -1049,25 +1185,68 @@ Answer:"""
     # strips a leading "Answer:" prefix, so "Answer: RELEVANT: yes" still
     # leaves the marker on line one.
     def _parse_gated_verdict(self, text: str) -> Tuple[str, Optional[str]]:
+        """Read the RELEVANT: yes/no marker the gate instruction asks for.
+
+        Returns (verdict, answer); answer is non-None only on _GATE_YES.
+
+        Two concessions to real model output, both seen live with mistral:7b:
+
+        1. Markdown wrappers. Models habitually write "**RELEVANT: yes**"
+           or "`RELEVANT: yes`" or wrap the line in a code fence, none of
+           which the original regex matched. Stripping those characters
+           before matching changes nothing about the semantics -- it is
+           still the marker, just decorated.
+
+        2. A short preamble. Models sometimes write a sentence of throat-
+           clearing before the marker ("Sure! Let me check the evidence.\\
+           RELEVANT: yes"). The original looked only at lines[0], so any
+           preamble meant refusal. Now scans the first three non-empty
+           lines -- still narrow, still anchored to the marker's exact
+           shape, but tolerant of the model not putting it literally first.
+
+        Fail-closed is unchanged: no marker anywhere in those lines still
+        returns _GATE_UNREADABLE. The gate exists to prevent confidently
+        wrong answers, and a refusal is the correct response when the
+        marker cannot be found.
+        """
         cleaned = self._clean_response(text)
+        # Strip markdown emphasis and code-fence characters -- they are
+        # presentation, not content, and the marker is the same either way.
+        cleaned = re.sub(r"[*`_#]+", "", cleaned)
         lines = [line for line in cleaned.splitlines() if line.strip()]
         if not lines:
             return self._GATE_UNREADABLE, None
 
-        # [.:,;-]? consumes a single trailing punctuation mark after yes/no
-        # (a model writing "RELEVANT: yes," must not leak a stray leading
-        # comma -- and the meta-commentary after it -- into the answer).
-        match = re.match(r"\s*RELEVANT\s*:\s*(yes|no)\b[.:,;-]?\s*", lines[0], flags=re.IGNORECASE)
-        if not match:
+        marker_re = re.compile(
+            r"\bRELEVANT\s*:\s*(yes|no)\b[.:,;-]?\s*",
+            flags=re.IGNORECASE,
+        )
+
+        verdict_line_index = None
+        match = None
+        for i, line in enumerate(lines[:3]):
+            candidate = marker_re.search(line)
+            if candidate:
+                verdict_line_index = i
+                match = candidate
+                break
+
+        if not match or verdict_line_index is None:
             return self._GATE_UNREADABLE, None
+
         if match.group(1).lower() == "no":
             return self._GATE_NO, None
 
-        # Keep anything trailing the marker on its own line: a model that
-        # writes "RELEVANT: yes The Garo..." has still answered, and dropping
-        # it would be a false refusal.
-        head = lines[0][match.end():].strip()
-        tail = "\n".join(lines[1:]).strip()
+        # Everything after the marker, wherever it appeared:
+        #   - the tail of the marker's own line (in case the answer starts
+        #     immediately after "RELEVANT: yes The Garo...")
+        #   - every line after the marker line
+        #   - any preamble lines BEFORE the marker are discarded, because
+        #     they are by definition not the answer to the question.
+        marker_line = lines[verdict_line_index]
+        head = marker_line[match.end():].strip()
+        tail_lines = lines[verdict_line_index + 1:]
+        tail = "\n".join(tail_lines).strip()
         remainder = "\n".join(part for part in (head, tail) if part).strip()
         if not remainder:
             return self._GATE_UNREADABLE, None
@@ -1089,14 +1268,10 @@ Answer:"""
 
     # Converts one graph triple into a readable, grounded sentence.
     def _format_triple(self, triple: Dict[str, Any]) -> str:
-        subject = self._humanize_entity(triple.get("subject", "This entity"))
-        raw_predicate = str(triple.get("predicate", ""))
-        predicate_key = raw_predicate.upper().replace(" ", "_")
-        # as_subject=False: a bare "Garo" as an OBJECT usually names the
-        # language (e.g. LANGUAGE_USED's "GaroCommunity -> Garo"), not the
-        # people -- see _humanize_entity for the bug this avoids.
+        raw_subject = triple.get("subject", "")
+        subject = self._humanize_entity(raw_subject or "This entity")
         obj = self._humanize_entity(triple.get("object", "another entity"), as_subject=False)
-        is_plural = self._is_plural_subject(subject)
+        is_plural = self._is_plural_subject(raw_subject, subject)
 
         sentence_builder = self._PREDICATE_TEMPLATES.get(predicate_key)
         if sentence_builder:
@@ -1117,8 +1292,8 @@ Answer:"""
     # of covering every future subject -- see _PREDICATE_TEMPLATES'
     # docstring for the same tradeoff.
     _PLURAL_SUBJECT_SUFFIXES = (
-        "people", "authorities", "houses", "utensils", "members", "informants",
-        "children", "programs", "domains",
+        "people", "community", "communities", "authorities", "houses",
+        "utensils", "members", "informants", "children", "programs", "domains",
     )
 
     def _is_plural_subject(self, humanized_subject: str) -> bool:
