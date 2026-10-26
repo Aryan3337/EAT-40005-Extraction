@@ -1711,7 +1711,20 @@ Translation:"""
             "model": self.model,
             "prompt": prompt,
             "stream": False,
-            "options": {"temperature": 0.2, "num_predict": 400},
+            "options": {
+                "temperature": 0.2,
+                "num_predict": 400,
+                # 4096, not Ollama's default 2048. num_ctx covers prompt AND
+                # generation: measured on the 16-triple demo CSV the evidence
+                # prompt alone is ~1888 tokens, and num_predict reserves 400
+                # more -- 2288 against a 2048 window. Ollama does not error on
+                # that, it silently truncates the prompt from the LEFT, which
+                # drops the system instructions and part of the question. That
+                # is why the same question could return different answers.
+                # The production graph, with more triples and longer
+                # sentence_ref values, overruns further.
+                "num_ctx": 4096,
+            },
         }
         # Retries only a bare connection failure (see ANSWER_SYNTHESIS_CONNECTION_RETRIES
         # for why), never a slow-but-connected generation that ran out of time.
@@ -1730,8 +1743,19 @@ Translation:"""
                 print(f"Answer synthesis unavailable: {error}")
                 break
             else:
+                # A non-200 (404 missing model, 500 server error, 400 bad
+                # request) used to fall through to the templated fallback in
+                # silence, making a broken synthesis path look exactly like a
+                # working one from the outside. Say what happened.
+                if response.status_code != 200:
+                    print(
+                        f"Answer synthesis returned HTTP {response.status_code}: "
+                        f"{response.text[:300]}"
+                    )
                 if response.status_code == 200:
                     text = response.json().get("response", "").strip()
+                    if not text:
+                        print("Answer synthesis returned an empty response body.")
                     if text:
                         if not relevance_gate_enabled():
                             return self._clean_response(text)
@@ -1858,10 +1882,22 @@ Answer:"""
         if not lines:
             return self._GATE_UNREADABLE, None
 
+        # Models habitually decorate the marker -- "**RELEVANT: yes**", a
+        # backticked marker, a marker inside a code fence -- and the bare
+        # regex matched none of them. That is a FALSE refusal: the marker is
+        # present, just dressed up, and refusing it costs recall for no
+        # precision. Stripped from the MARKER LINE ONLY, so markdown inside
+        # the answer body (lines 2+) survives untouched.
+        #
+        # Deliberately still lines[0] and not a scan of the first few lines:
+        # tolerating a preamble before the marker widens what passes the
+        # gate, which is a different tradeoff and not one taken here.
+        marker_line = re.sub(r"[*`_#]+", "", lines[0])
+
         # [.:,;-]? consumes a single trailing punctuation mark after yes/no
         # (a model writing "RELEVANT: yes," must not leak a stray leading
         # comma -- and the meta-commentary after it -- into the answer).
-        match = re.match(r"\s*RELEVANT\s*:\s*(yes|no)\b[.:,;-]?\s*", lines[0], flags=re.IGNORECASE)
+        match = re.match(r"\s*RELEVANT\s*:\s*(yes|no)\b[.:,;-]?\s*", marker_line, flags=re.IGNORECASE)
         if not match:
             return self._GATE_UNREADABLE, None
         if match.group(1).lower() == "no":
@@ -1870,7 +1906,7 @@ Answer:"""
         # Keep anything trailing the marker on its own line: a model that
         # writes "RELEVANT: yes The Garo..." has still answered, and dropping
         # it would be a false refusal.
-        head = lines[0][match.end():].strip()
+        head = marker_line[match.end():].strip()
         tail = "\n".join(lines[1:]).strip()
         remainder = "\n".join(part for part in (head, tail) if part).strip()
         if not remainder:
