@@ -10,6 +10,14 @@
 # Secrets (NEO4J_*, OLLAMA_URL, TRUSTED_LLM_HOST, ADMIN_UPLOAD_SECRET) are
 # never baked into the image -- set them as environment variables in the
 # hosting platform's dashboard, the same as --env-file does locally.
+#
+# torch and transformers are deliberately absent. local_tts.py and
+# local_translation.py import them lazily inside functions, so the image
+# starts and English retrieval works without them. The cost is that backend
+# TTS (needs TTS_ENABLED=1) and TRANSLATION_PROVIDER=local are unavailable
+# here; both also want multi-GB model files that local_files_only=True
+# refuses to download at runtime anyway. Set TRANSLATION_PROVIDER to llm so
+# the default "local" path is never taken.
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -17,7 +25,19 @@ WORKDIR /app
 COPY requirements-serve.txt .
 RUN pip install --no-cache-dir -r requirements-serve.txt
 
+# Every local module rag.py imports, directly or transitively. This list was
+# five files until 2026-10-26 and the image had been broken since 13 Oct:
+# auth_store, local_tts, source_provenance, community_time,
+# community_attribution, local_translation and prompt_evidence all landed
+# after the last edit here, and rag.py imports them unguarded at module
+# level, so the container died at `import auth_store` before serving
+# anything. Verified by assembling exactly this file set and importing rag.
+#
+# If rag.py gains a local import, add it here. Nothing enforces this.
 COPY rag.py admin_ingest.py confidence_framework.py llm_endpoint.py config.py ./
+COPY auth_store.py source_provenance.py prompt_evidence.py ./
+COPY community_time.py community_attribution.py ./
+COPY local_tts.py local_translation.py ./
 COPY data/ ./data/
 
 EXPOSE 8000
