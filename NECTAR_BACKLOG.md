@@ -210,24 +210,50 @@ at each step. Current baseline: **451 pass / 9 fail** (all
 
 `Neo4jRAGSkeleton.query` lacks two filters that `ConceptRetriever.retrieve`
 applies. Measured over the same 112 triples, so the comparison isolates
-algorithm from data, the graph path returns **11 off-topic triples across 8
-representative questions**:
+algorithm from data, at the `top_k` the API actually uses
+(`SYNTHESIS_EVIDENCE_LIMIT = 10`, passed at `rag.py:2434`): the graph path
+returns **27 off-topic triples across 8 representative questions**.
 
 ```
-question                                    graph   csv   dropped by topic
-What languages do the Garo speak?               6     6                  1
-Where do the Garo live?                         6     4                  5
-What is the Garo population?                    6     1                  5
-...                                                        TOTAL        11
+question                                       graph  csv  off-topic
+What languages do the Garo speak?                 10   10          4
+What is the traditional religion of the Garo?     10   10          4
+Where do the Garo live?                           10    4          8
+What medicinal plants are used?                   10   10          0
+How has Garo livelihood changed?                  10    8          2
+What is the Garo population?                      10    1          9
+Tell me about matrilineal inheritance              5    5          0
+What happens during antepartum care?               1    1          0
+                                              TOTAL              27
 ```
 
-Worst case is the population question: **6 triples returned where the CSV path
-correctly returns 1**, so five sixths of the evidence handed to synthesis is
-off-topic hub noise. On a language question,
-`GaroCommunity -[RESIDENTS]-> GaroHills_Meghalaya` scores **8.28 — tied with
-the three correct triples**, so ranking cannot separate them. Only a topic
-filter can. `matches_topic` also *promotes* real evidence, because removing
-noise frees a slot in `top_k`.
+Reproduce with `python tools/compare_retrieval_paths.py`.
+
+The counts matter less than what the triples are. **Asked for the traditional
+religion of the Garo, the four highest-scoring pieces of evidence handed to
+synthesis are about language and residence:**
+
+```
+score 8.49  (Garo_People)   -[BILINGUAL]->               (Garo_Language)
+score 8.49  (GaroCommunity) -[LANGUAGE_USED]->           (Garo)
+score 8.49  (GaroCommunity) -[HAS_LANGUAGE_Maintenance]-> (GaroLanguage)
+score 8.49  (GaroCommunity) -[RESIDENTS]->               (GaroHills_Meghalaya)
+```
+
+They tie at 8.49, so **ranking cannot separate them from correct evidence —
+only a topic filter can.** The population question is the worst case: 9 of 10
+returned triples are off-topic, where the CSV path correctly returns 1.
+"Where do the Garo live?" returns language triples; the location triples it
+*should* return (`HAS_LOCATION -> Telki/Jolui/Kakraid`) score 4.73, below the
+language noise at 8.28.
+
+`matches_topic` also *promotes* real evidence, because removing noise frees
+slots in `top_k`.
+
+**Note on an earlier figure:** this was first reported as 11 off-topic triples.
+That was measured at `top_k=6`, which is not what the API passes. At the real
+value of 10 it is 27. The harness now defaults to importing
+`SYNTHESIS_EVIDENCE_LIMIT` so it cannot drift from production again.
 
 1. Extract `matches_topic` from its closure inside `ConceptRetriever.retrieve`
    to module level in `rag.py`. **Pure refactor** — the baseline above must be
@@ -253,9 +279,9 @@ its own recall risk, listed below.
 with no live driver. Regression-test both measured cases: the `RESIDENTS` triple
 on a language question, and the population question returning one triple.
 
-A reproducible comparison harness was written during the design session and
-left untracked at `scratch_cmp_paths.py`. Re-run it when done: "dropped by
-topic" should be **0** across all 8 questions.
+Re-run `python tools/compare_retrieval_paths.py` when done: **off-topic must
+reach 0** without the `csv` column dropping. `--top-k` overrides the default if
+`SYNTHESIS_EVIDENCE_LIMIT` ever changes; `--question` checks a single case.
 
 ## G2 — Guarded two-hop expansion
 
