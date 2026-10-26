@@ -40,32 +40,22 @@ services:
       - CONFIDENCE_OLLAMA_URL=http://ollama:11434/api/chat
       - OLLAMA_MODEL=mistral:7b
       - PORT=8000
-    # Overrides Dockerfile.serve's CMD, which hardcodes --neo4j. CSV mode
-    # instead: the whole graph is 23KB across these 7 files, already baked
-    # into the image by Dockerfile.serve's `COPY data/`. Dropping Neo4j
-    # removes AuraDB credentials and a whole service from the handover.
-    # --kg is repeatable (sangeetha-multiple-csv-retrieval, merged 26 Oct).
-    command:
-      - python
-      - -u
-      - rag.py
-      - --serve
-      - --host
-      - "0.0.0.0"
-      - --kg
-      - data/production_graph/garo_1_kg_refined.csv
-      - --kg
-      - data/production_graph/garo_2_kg_refined.csv
-      - --kg
-      - data/production_graph/garo_3_kg_refined.csv
-      - --kg
-      - data/production_graph/garo_4_kg_refined.csv
-      - --kg
-      - data/production_graph/antepartum_care_kg_refined.csv
-      - --kg
-      - data/production_graph/ethnomedicinal_fifteen_clans_kg_refined.csv
-      - --kg
-      - data/production_graph/indigenous_plant_utilization_kg_refined.csv
+    # No command: override. Dockerfile.serve's CMD is already
+    #   python -u rag.py --serve --neo4j --host 0.0.0.0
+    # which is exactly what the Neo4j/AuraDB path needs.
+    #
+    # Retrieval runs against AuraDB, not the CSVs. rag.py:2820 picks ONE
+    # backend --
+    #   skeleton = Neo4jRAGSkeleton() if use_neo4j else RAGSkeleton(kg_path)
+    # -- so --neo4j makes every --kg flag dead. An earlier draft of this
+    # file passed 12 of them; they did nothing. The CSVs stay in the image
+    # (Dockerfile.serve's COPY data/) for load_production_graph.py and as
+    # the clean 112-triple reference corpus, but they are not the read path.
+    #
+    # NEO4J_URI / NEO4J_USERNAME / NEO4J_PASSWORD come from .env. config.py
+    # prepends neo4j+s:// to a bare Aura hostname and REFUSES an
+    # unencrypted URI to a remote host, because sentence_ref carries
+    # verbatim source-paper text.
     restart: unless-stopped
 
   web:

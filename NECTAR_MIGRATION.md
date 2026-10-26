@@ -104,19 +104,90 @@ The repo already carries `docker-compose.yml`, `Dockerfile` and
 triples the handover surface for no benefit. One box means one set of
 credentials, one runbook, one thing to restart.
 
-### D5 — CSV retrieval mode; Neo4j is optional
+### D5 — Neo4j (AuraDB) is the retrieval backend
 
-`data/production_graph/` is **23 KB across 7 CSV files**. `rag.py --kg <csv>`
-reads them directly via `ConceptRetriever`, which is where all recent work
-(topic filter, community attribution, multi-CSV support) has landed. Neo4j is a
-parallel path, not a dependency.
+**Reversed 2026-10-26.** An earlier draft of this decision dropped Neo4j for
+CSV mode. Neo4j is required, so the deployment reads the existing managed
+AuraDB instance and `--neo4j` stays as `Dockerfile.serve`'s CMD already has
+it. No edit to that CMD and no `command:` override in `docker-compose.yml`.
 
-Dropping it for the initial deploy removes AuraDB credentials, network egress
-and an entire service from the handover.
+**The two paths are mutually exclusive**, which is easy to miss. `rag.py:2820`:
 
-**Known edit required:** `Dockerfile.serve`'s CMD hardcodes `--neo4j`. For CSV
-mode it becomes `--kg data/production_graph/<file>.csv`, repeatable per file
-since the `sangeetha-multiple-csv-retrieval` merge.
+```python
+skeleton = Neo4jRAGSkeleton() if use_neo4j else RAGSkeleton(kg_path, approach=approach)
+```
+
+`--neo4j` wins outright and every `--kg` flag is dead. A draft of
+`docker-compose.yml` passed twelve of them alongside `--neo4j`; they did
+nothing. `data/production_graph/` still ships in the image (`COPY data/`) for
+`load_production_graph.py` and as the clean reference corpus, but it is not
+the read path.
+
+**AuraDB over a self-hosted container.** Zero infrastructure work, no fourth
+service, no volume budget, and it matches what Render serves today. The cost
+is a cloud dependency and a credential set that must survive the handover —
+recorded under open items, not resolved here.
+
+**Two consequences worth writing down.**
+
+*The graph path is behind the CSV path on precision.* Both share
+`question_keywords`, `keyword_weights`, `score_triple_weighted` and
+`dedupe_triples`. Only `ConceptRetriever.retrieve` has:
+
+| Behaviour | CSV | Neo4j |
+|---|---|---|
+| `filter_community_periods` (time-aware narrowing) | yes | no |
+| Drops zero-scoring triples (`score > 0`) | yes | no |
+| `matches_topic` — community identity alone is not topic relevance | yes | no |
+| `group_responses` (community attribution) | yes | no |
+
+Without `matches_topic`, a question about languages retrieves anything that
+merely mentions "Garo"; without the score cut, zero-scoring triples reach
+synthesis as evidence. Both push in the wrong direction for a project that
+accepts low recall to avoid confident wrong answers. **Investigation and a
+plan are owed before any code changes here** — `Neo4jRAGSkeleton.query` is
+also what Render serves, so this is not a Nectar-local edit.
+
+*The data differs, not just the code path.* AuraDB holds 697 nodes / 715
+relationships, 670 of them with no current `run_id` — leftover from earlier
+ungated loads, per `docs/ICSE_SEIS_EVIDENCE_REPORT.md`. The CSV export is 112
+triples. Deploying on `--neo4j` serves the messier superset. Whether to clean
+AuraDB before the demo is an open question in that report, not settled here.
+
+### D5a — `Dockerfile.serve` copied five modules and needed twelve
+
+Found 2026-10-26 while checking D5, and it blocked the deploy outright in
+*either* retrieval mode.
+
+`Dockerfile.serve` was last edited 5 Oct (`971132a`). Since then `auth_store`
+(13 Oct), `local_tts` (13 Oct), `source_provenance` (15 Oct),
+`community_time` and `community_attribution` (16 Oct), plus
+`local_translation` and `prompt_evidence`, all became unguarded module-level
+imports in `rag.py`. None were in the `COPY`. The container dies at
+`rag.py:42`:
+
+```
+ModuleNotFoundError: No module named 'auth_store'
+```
+
+Verified by assembling a directory holding exactly the files the image would
+hold and importing `rag`: it fails as above, and succeeds once those seven are
+added. The `COPY` now names all twelve, and nothing enforces that — if
+`rag.py` gains a local import, it has to be added by hand.
+
+**This implies the live Render deployment has been serving a pre-13-Oct image
+or failing to build since.** Not investigated here; worth checking before the
+demo.
+
+**torch and transformers stay out.** `local_tts.py` and
+`local_translation.py` are the only users and both import them lazily inside
+functions, so the image starts and English retrieval works without them.
+Shipping them would add multi-GB wheels plus model files that
+`local_files_only=True` will not download at runtime anyway. The cost:
+backend TTS is unavailable (it refuses cleanly unless `TTS_ENABLED=1`), and
+`TRANSLATION_PROVIDER` must be set to `llm`, because `rag.py:1068` defaults
+it to `local`, which would route a Bangla or Hindi question into
+`import torch` and raise. English questions never touch that path.
 
 ### D6 — Attach a volume for persistence
 
@@ -197,13 +268,28 @@ Three details in that configuration worth not rediscovering:
 - **nginx `proxy_read_timeout` is 180s.** The 60s default would cut off
   every real synthesis call (rag.py allows 130s) and surface it as a 504
   that looks like a broken API rather than a slow one.
-- **Neo4j is overridden out in compose, not by editing `Dockerfile.serve`.**
-  That keeps the existing Render deployment working during the transition.
+- **No `command:` override in compose.** `Dockerfile.serve`'s CMD is
+  already `python -u rag.py --serve --neo4j --host 0.0.0.0`, which is what
+  the AuraDB path needs — see D5. An override existed only while CSV mode
+  was the plan.
+- **`NEO4J_USERNAME`, not `NEO4J_USER`.** `config.py` reads the former; the
+  latter fails as "Neo4j configuration is incomplete", which reads like a
+  missing credential rather than a misspelt variable.
 
-Verification status: `docker compose config` parses and all seven `--kg`
-paths resolve. **`nginx.conf` has not been runtime-tested** — the local
-Docker daemon was not running. Check `docker compose logs web` first on the
-instance.
+Verification status, 2026-10-26:
+
+- The compose file parses, declares three services, publishes only port 80,
+  and carries no `command:` override.
+- The exact 12-file set `Dockerfile.serve` copies imports `rag` cleanly,
+  checked by assembling that file set and importing it.
+- `resolve_neo4j_uri` confirmed on four inputs: a bare Aura hostname gains
+  `neo4j+s://`, an explicit `neo4j+s://` passes through, `neo4j://` to a
+  remote host raises `InsecureNeo4jURI`, and `neo4j://neo4j:7687` is allowed
+  as a private host.
+- **`nginx.conf` has not been runtime-tested** — the local Docker daemon was
+  not running. Check `docker compose logs web` first on the instance.
+- **No connection to AuraDB has been made from this configuration.** The
+  first `docker compose up` is the first real test of the credentials.
 
 ## Notes for whoever picks this up
 

@@ -72,13 +72,30 @@ the address — it goes in the Flutter build in step 6.
 ## 5. Deploy
 
 ```bash
-git clone https://github.com/Aryan3337/EAT-40005-Extraction.git
+# -b dev is required: the default branch is main, which does not have
+# deploy/nectar/ or the merged retrieval work.
+git clone -b dev https://github.com/Aryan3337/EAT-40005-Extraction.git
 cd EAT-40005-Extraction/deploy/nectar
 
 cp .env.example .env
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # paste into ADMIN_UPLOAD_SECRET
 nano .env
+```
 
+`.env` needs **four** values before the API will start. Retrieval reads
+AuraDB, so the three `NEO4J_*` ones are not optional:
+
+| Variable | Where it comes from |
+|---|---|
+| `NEO4J_URI` | Aura console. The bare `<id>.databases.neo4j.io` is fine — `config.py` prepends `neo4j+s://` |
+| `NEO4J_USERNAME` | `neo4j` unless it was changed. **Not** `NEO4J_USER` |
+| `NEO4J_PASSWORD` | Shown once when the Aura instance was created |
+| `ADMIN_UPLOAD_SECRET` | The `token_urlsafe` value you just generated |
+
+Missing any of the three Neo4j values and the container exits at startup
+with `Neo4j configuration is incomplete.`
+
+```bash
 docker compose up -d --build
 docker compose exec ollama ollama pull mistral:7b     # ~4.7GB, several minutes
 ```
@@ -88,7 +105,14 @@ Check it:
 ```bash
 docker compose ps                        # three containers, all Up
 curl -s localhost/health                 # through nginx
-docker compose logs -f api
+docker compose logs -f api               # expect "RAG API listening on ..."
+```
+
+A real question end to end, which also proves AuraDB is reachable and
+Ollama has the model (expect 40s+ on CPU):
+
+```bash
+curl -s -X POST localhost/query -H 'Content-Type: application/json'   -d '{"query": "What languages do the Garo speak?"}'
 ```
 
 ## 6. Build and deploy the web frontend
@@ -150,14 +174,30 @@ may keep accruing SU. Confirm with Nectar support before relying on either.
 | 504 after ~60s on `/query` | `proxy_read_timeout` in `nginx.conf` dropped below rag.py's 130s synthesis timeout |
 | Answers work but are slow | Expected on CPU. First call after startup also loads the model into RAM |
 | `/admin/*` returns 403 | `ADMIN_UPLOAD_SECRET` missing from `.env`, or the admin UI's prompt has a different value |
-| API exits at startup | Check `docker compose logs api`. A missing `--kg` file is the usual cause |
+| API exits at startup, `Neo4j configuration is incomplete` | One of `NEO4J_URI` / `NEO4J_USERNAME` / `NEO4J_PASSWORD` is missing from `.env`. Note it is `NEO4J_USERNAME`, not `NEO4J_USER` |
+| API exits at startup, `Refusing an unencrypted Neo4j connection` | `NEO4J_URI` has a `neo4j://` scheme pointing at a remote host. Drop the scheme and let `config.py` add `neo4j+s://` |
+| API exits at startup, `ModuleNotFoundError` | A local module `rag.py` imports is not in `Dockerfile.serve`'s `COPY`. This happened once already — the five-file list went stale on 13 Oct |
+| A Bangla or Hindi question 500s | `TRANSLATION_PROVIDER` is unset or `local`, which needs torch. Set it to `llm` |
+| `/tts` refuses | Expected. Backend speech needs torch, which this image does not carry |
 | Site loads, every request fails | `API_BASE_URL` was wrong or empty at Flutter build time. Rebuild and re-upload |
 | Ollama "model not found" | The `ollama pull` in step 5 did not run, or ran before the volume was mounted |
 
 ## What this deployment deliberately does not include
 
-- **Neo4j.** CSV retrieval mode instead — the full graph is 23 KB across
-  7 files. AuraDB remains available for the graph path but is not required.
+- **A self-hosted Neo4j.** Retrieval reads the existing managed AuraDB
+  instance. The handover therefore includes AuraDB credentials and depends
+  on that account surviving. Worth knowing: AuraDB's live contents (697
+  nodes / 715 relationships, 670 of them carrying no current `run_id`) are
+  a messier superset of the clean 112-triple export in
+  `data/production_graph/`. The CSVs ship in the image but are not the read
+  path — see `docker-compose.yml`.
+- **The four CSV-path precision filters.** `Neo4jRAGSkeleton.query` lacks
+  `filter_community_periods`, the `score > 0` cut, `matches_topic` and
+  `group_responses`, all of which `ConceptRetriever.retrieve` applies. The
+  deployed graph path is measurably less precise than the CSV path. Tracked
+  in `../../NECTAR_MIGRATION.md`.
+- **Backend TTS and local translation.** Both need torch and multi-GB model
+  files. `TTS_ENABLED` stays unset and `TRANSLATION_PROVIDER=llm`.
 - **HTTPS.** Port 80 only. Adding TLS needs a DNS name, which the project
   does not currently have.
 - **GPU.** No usable GPU flavour exists on this allocation. See
