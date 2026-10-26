@@ -1,0 +1,82 @@
+# Nectar deployment: the whole chatbot on one m3.xlarge.
+#
+#   docker compose up -d --build
+#
+# Three containers. Only nginx publishes a port, so the security group
+# needs port 80 open and nothing else -- the API and Ollama are reachable
+# only on the internal compose network.
+#
+# Decisions behind this file are in ../../NECTAR_MIGRATION.md.
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: p85_ollama
+    # Models live on the attached volume, not the root disk, so they
+    # survive an instance rebuild. ~4.7GB for mistral:7b.
+    volumes:
+      - /mnt/data/ollama:/root/.ollama
+    # Deliberately NO ports: -- publishing 11434 would expose an
+    # unauthenticated Ollama to the internet. The API reaches it over the
+    # compose network instead.
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.serve
+    container_name: p85_api
+    depends_on:
+      - ollama
+    env_file:
+      - .env
+    environment:
+      # "ollama" is the compose service name. llm_endpoint.is_private_host
+      # accepts any single-label hostname precisely so this works -- no
+      # TRUSTED_LLM_HOST needed here, unlike the Render + tunnel setup,
+      # because inference is on the same network rather than across the
+      # public internet.
+      - OLLAMA_URL=http://ollama:11434/api/generate
+      - CONFIDENCE_OLLAMA_URL=http://ollama:11434/api/chat
+      - OLLAMA_MODEL=mistral:7b
+      - PORT=8000
+    # Overrides Dockerfile.serve's CMD, which hardcodes --neo4j. CSV mode
+    # instead: the whole graph is 23KB across these 7 files, already baked
+    # into the image by Dockerfile.serve's `COPY data/`. Dropping Neo4j
+    # removes AuraDB credentials and a whole service from the handover.
+    # --kg is repeatable (sangeetha-multiple-csv-retrieval, merged 26 Oct).
+    command:
+      - python
+      - -u
+      - rag.py
+      - --serve
+      - --host
+      - "0.0.0.0"
+      - --kg
+      - data/production_graph/garo_1_kg_refined.csv
+      - --kg
+      - data/production_graph/garo_2_kg_refined.csv
+      - --kg
+      - data/production_graph/garo_3_kg_refined.csv
+      - --kg
+      - data/production_graph/garo_4_kg_refined.csv
+      - --kg
+      - data/production_graph/antepartum_care_kg_refined.csv
+      - --kg
+      - data/production_graph/ethnomedicinal_fifteen_clans_kg_refined.csv
+      - --kg
+      - data/production_graph/indigenous_plant_utilization_kg_refined.csv
+    restart: unless-stopped
+
+  web:
+    image: nginx:alpine
+    container_name: p85_web
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # The Flutter web build output. See README.md for how to produce it.
+      - ./web:/usr/share/nginx/html:ro
+    restart: unless-stopped

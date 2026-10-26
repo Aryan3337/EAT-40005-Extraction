@@ -30,3 +30,7 @@ flutter_application/macos/Flutter/GeneratedPluginRegistrant.swift
 flutter_application/windows/flutter/generated_plugin_registrant.cc
 flutter_application/windows/flutter/generated_plugin_registrant.h
 flutter_application/windows/flutter/generated_plugins.cmake
+
+# Nectar deploy: build output and secrets
+deploy/nectar/web/*
+!deploy/nectar/web/.gitkeep
