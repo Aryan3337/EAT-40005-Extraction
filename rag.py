@@ -41,6 +41,7 @@ from admin_ingest import (check_admin_secret, current_queue, ingest_pdf,
                           validate_upload)
 from auth_store import AuthStore
 from llm_endpoint import ollama_tunnel_headers, resolve_llm_endpoint
+from embeddings import TripleEmbeddingIndex
 import local_tts
 from source_provenance import provenance_fields
 from community_time import filter_community_periods
@@ -238,6 +239,74 @@ def dedupe_triples(triples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         seen.add(key)
         unique.append(triple)
     return unique
+
+
+def reciprocal_rank_fusion(
+    rankings: List[List[int]],
+    k: int = 60,
+) -> Dict[int, float]:
+    """Fuse several ranked index lists into one score per index.
+
+        RRF_score(d) = sum over rankers of 1 / (k + rank(d))
+
+    RRF only uses rank, so the two scorers' different scales (IDF-weighted
+    integers vs. cosine similarities) never need normalizing against each
+    other. k=60 is the Cormack et al. default.
+    """
+    scores: Dict[int, float] = {}
+    for ranking in rankings:
+        for rank, idx in enumerate(ranking):
+            scores[idx] = scores.get(idx, 0.0) + 1.0 / (k + rank + 1)
+    return scores
+
+
+def _build_embedding_index_or_none(triples: List[Dict[str, Any]]) -> Optional[TripleEmbeddingIndex]:
+    """Build the semantic index, or return None if Ollama is unreachable."""
+    try:
+        index = TripleEmbeddingIndex()
+        index.build_or_load(triples)
+        return index
+    except Exception as error:
+        print(f"Semantic index unavailable, falling back to keyword-only: {error}")
+        return None
+
+
+def _semantic_candidate_indices(
+    embedding_index: Optional[TripleEmbeddingIndex],
+    question: str,
+    candidates: List[Dict[str, Any]],
+    full_triples: List[Dict[str, Any]],
+) -> List[int]:
+    """Map the semantic ranking (indices into full_triples) onto indices
+    into candidates, dropping triples that were filtered out."""
+    if embedding_index is None:
+        return []
+
+    full_ranking = embedding_index.semantic_ranking(question)
+    if not full_ranking:
+        return []
+
+    key_to_idx: Dict[Tuple[Any, Any, Any], int] = {}
+    for i, triple in enumerate(candidates):
+        key = (triple.get("subject"), triple.get("predicate"), triple.get("object"))
+        key_to_idx.setdefault(key, i)
+
+    mapped: List[int] = []
+    seen: Set[int] = set()
+    for full_idx in full_ranking:
+        if full_idx >= len(full_triples):
+            continue
+        triple = full_triples[full_idx]
+        key = (triple.get("subject"), triple.get("predicate"), triple.get("object"))
+        if key not in key_to_idx:
+            continue
+        idx = key_to_idx[key]
+        if idx in seen:
+            continue
+        seen.add(idx)
+        mapped.append(idx)
+    return mapped
+
 
 
 # ============================================================================
@@ -451,61 +520,58 @@ Return only the query, no explanation."""
 
 class ConceptRetriever:
     """
-    Retrieves triples by scoring every triple against the question's content
-    words -- the same question_keywords/score_triple ranking
-    Neo4jRAGSkeleton.query uses on the graph path.
+    Retrieves triples by fusing two independent rankings of the same graph:
+        1. Keyword scoring -- question_keywords/score_triple_weighted with
+           the existing community-period filter and topic filter.
+        2. Semantic scoring -- cosine similarity against per-triple
+           embeddings of the structured triple plus its source sentence.
 
-    This approach is fast, deterministic, and does not require an LLM.
-    It is the recommended primary retrieval strategy.
+    Fused via Reciprocal Rank Fusion. Additive: if the embedding index is
+    None, the semantic ranking is empty and RRF returns the keyword ranking
+    order unchanged, so this degrades to exactly the previous behaviour.
     """
 
-    def __init__(self, kg: KnowledgeGraph):
+    def __init__(self, kg: "KnowledgeGraph",
+                 embedding_index: Optional[TripleEmbeddingIndex] = None):
         self.kg = kg
+        self.embedding_index = embedding_index
 
     def _extract_entities(self, question: str) -> Set[str]:
         """
         Find known entities from the KG that appear in the question as whole words.
-        This avoids partial matches (e.g., 'Garo' should not match 'GaroWomen').
-        Used by RetrieverComparator for its diagnostic entity count; retrieve()
-        no longer needs it, since score_triple already rewards a subject/object
-        match over one that merely appears in a source sentence.
+        Used by RetrieverComparator for its diagnostic entity count.
         """
         question_lower = question.lower()
         entities = set()
         for entity in self.kg.get_all_entities():
-            if re.search(r'\b' + re.escape(entity) + r'\b', question_lower):
+            if re.search(r'\\b' + re.escape(entity) + r'\\b', question_lower):
                 entities.add(entity)
         return entities
 
-    def retrieve(self, question: str, top_k: int = DEFAULT_TOP_K) -> List[Dict]:
-        """Scores every triple against the question's content words and
-        returns the highest-ranked, deduped matches.
+    def _keyword_ranking(
+        self,
+        question: str,
+        candidates: List[Dict[str, Any]],
+    ) -> List[int]:
+        """Indices into candidates ordered best-first by the keyword scorer,
+        with the existing community-topic filter applied.
 
-        Previously this had its own three-stage fallback (known-entity
-        match, then predicate keyword match, then sentence_ref search) with
-        its own scoring: 2 points per entity match, 1 per predicate keyword,
-        plus a bonus for the LENGTH of sentence_ref ("longer = more
-        context"). That rewarded verbose citations -- precisely the
-        pathology MAX_SENTENCE_REF_CHARS exists to stop on the extraction
-        side -- and ranked this CSV fallback differently from the graph
-        path it is meant to stand in for. Scoring now goes through the same
-        score_triple() the graph path uses, so a question gets the same
-        answer whether or not AuraDB happens to be reachable.
+        The topic filter runs only on the keyword side. Applying it to the
+        semantic ranking too would drop exactly the triples semantic search
+        exists to find.
         """
         keywords = question_keywords(question)
         if not keywords:
             return []
 
-        # Weighted by keyword_weights so a rare, on-topic keyword outranks a
-        # flat match on the graph's hub entity -- see keyword_weights.
-        candidates = filter_community_periods(self.kg.triples, question)
         weights = keyword_weights(keywords, candidates)
-        scored = [(score_triple_weighted(triple, weights), triple) for triple in candidates]
-        # Stable sort on the negated score keeps the CSV's row order as the
-        # tie-break, so equal-scoring results do not shuffle between calls.
+        scored = [
+            (score_triple_weighted(triple, weights), i)
+            for i, triple in enumerate(candidates)
+        ]
         scored.sort(key=lambda pair: -pair[0])
-        matches = [triple for score, triple in scored if score > 0]
-        # In this corpus, community identity alone does not establish topic relevance.
+        matches = [(score, i) for score, i in scored if score > 0]
+
         identity_terms = {"garo", "mandi", "mande", "people", "community"}
         topics = [word for word in keywords if word not in identity_terms]
         topic_forms = {
@@ -525,11 +591,29 @@ class ConceptRetriever:
                     return True
             return False
 
-        focused = [triple for triple in matches if matches_topic(triple)]
+        focused = [(score, i) for score, i in matches if matches_topic(candidates[i])]
         if focused:
             matches = focused
-        return group_responses(dedupe_triples(matches), top_k)
+        return [i for score, i in matches]
 
+    def retrieve(self, question: str, top_k: int = DEFAULT_TOP_K) -> List[Dict]:
+        """Question in, highest-ranked triples out, from a fused keyword +
+        semantic ranking over the community-filtered candidates.
+        """
+        candidates = filter_community_periods(self.kg.triples, question)
+
+        keyword_ranking = self._keyword_ranking(question, candidates)
+        semantic_ranking = _semantic_candidate_indices(
+            self.embedding_index, question, candidates, self.kg.triples
+        )
+
+        if not keyword_ranking and not semantic_ranking:
+            return []
+
+        fused = reciprocal_rank_fusion([keyword_ranking, semantic_ranking])
+        ordered = sorted(fused.keys(), key=lambda i: -fused[i])
+        matches = [candidates[i] for i in ordered]
+        return group_responses(dedupe_triples(matches), top_k)
 
 # ============================================================================
 # 4. Evaluation and Comparison (with Data‑Driven Rationale)
@@ -685,7 +769,8 @@ class RAGSkeleton:
         self.kg = KnowledgeGraph(kg_path)
         self.approach = approach
         if approach == "concept":
-            self.retriever = ConceptRetriever(self.kg)
+            embedding_index = _build_embedding_index_or_none(self.kg.triples)
+            self.retriever = ConceptRetriever(self.kg, embedding_index=embedding_index)
         elif approach == "cypher":
             self.retriever = CypherRetriever(self.kg)
         else:
@@ -753,42 +838,18 @@ class Neo4jRAGSkeleton:
 
         self.driver = GraphDatabase.driver(uri, auth=(username, password))
 
-    # Finds graph relationships whose entities or source text match the question.
-    def query(self, question: str, top_k: int = DEFAULT_TOP_K) -> List[Dict]:
-        """Fetch every triple the question's words touch, then rank in Python.
+        # Fetched once here so the graph path runs the same keyword +
+        # semantic ranking as the CSV path.
+        self._all_triples = self._fetch_all_triples()
+        self._embedding_index = _build_embedding_index_or_none(self._all_triples)
 
-        Ranking moved out of Cypher deliberately. The old query scored with
-        `reduce` over a hardcoded relationship_terms list -- speak/language/
-        dialect, population, live/locat/resid, is_a/type -- matched against
-        the predicate NAME. The graph's predicates are LANGUAGE_USED,
-        EXTENT_OF_USE, HAS_LANGUAGE_Maintenance, HAS_TRADITIONAL_RELIGION and
-        so on; only POPULATION ever matched one, so 10 of 11 predicate types
-        scored 0, ORDER BY relevance was a tie across nearly everything, and
-        Neo4j's scan order chose the answer.
-
-        Scoring here instead makes the ranking unit-testable without a live
-        database, and lets a match on the subject or object outrank one that
-        merely mentions the word in a source sentence.
-
-        This is a full relationship scan with no index -- free at the current
-        45 triples and fine into the low thousands, but it is the documented
-        ceiling on this read path. FETCH_LIMIT bounds the worst case.
-        """
-        keywords = question_keywords(question)
-        if not keywords:
-            return []
-
+    def _fetch_all_triples(self) -> List[Dict[str, Any]]:
+        """Pulls every non-archived relationship in the graph once."""
         cypher = """
         MATCH (s:Entity)-[r]->(o:Entity)
         WHERE coalesce(r.archived, false) = false
           AND coalesce(s.archived, false) = false
           AND coalesce(o.archived, false) = false
-          AND any(keyword IN $keywords WHERE
-            toLower(coalesce(s.name, '')) CONTAINS keyword OR
-            toLower(coalesce(o.name, '')) CONTAINS keyword OR
-            toLower(type(r)) CONTAINS keyword OR
-            toLower(coalesce(r.sentence_ref, '')) CONTAINS keyword OR
-            toLower(coalesce(r.passage, '')) CONTAINS keyword)
         RETURN elementId(r) AS id,
                s.name AS subject,
                type(r) AS predicate,
@@ -803,28 +864,48 @@ class Neo4jRAGSkeleton:
                coalesce(r.confidence, '') AS confidence
         LIMIT $fetch_limit
         """
-
         with self.driver.session() as session:
-            result = session.run(
-                cypher,
-                keywords=keywords,
-                fetch_limit=self.FETCH_LIMIT,
-            )
-            candidates = [dict(record) for record in result]
-            for candidate in candidates:
-                candidate.update(provenance_fields(candidate))
+            result = session.run(cypher, fetch_limit=self.FETCH_LIMIT)
+            triples = [dict(record) for record in result]
+            for triple in triples:
+                triple.update(provenance_fields(triple))
+            return triples
 
-        # Weighted by keyword_weights so a rare, on-topic keyword outranks a
-        # flat match on the graph's hub entity -- see keyword_weights.
-        # Stable sort on the negated score keeps Cypher's order as the
-        # tie-break, so equal-scoring results do not shuffle between calls.
-        weights = keyword_weights(keywords, candidates)
-        candidates.sort(key=lambda triple: -score_triple_weighted(triple, weights))
+    # Finds graph relationships whose entities or source text match the question.
+    def query(self, question: str, top_k: int = DEFAULT_TOP_K) -> List[Dict]:
+        """Rank the graph's triples for a question by fusing two signals:
 
-        # Dedupe before truncating, so a duplicate doesn't cost a real
-        # candidate its place in top_k. Sorting first means the
-        # highest-scoring instance of each fact is the one kept.
-        return dedupe_triples(candidates)[:top_k]
+            1. Keyword ranking -- score_triple_weighted, unchanged.
+            2. Semantic ranking -- cosine similarity against per-triple
+               embeddings of the structured triple plus sentence_ref.
+
+        Fused with Reciprocal Rank Fusion, identical to ConceptRetriever's
+        logic, so a question gets the same answer whether or not AuraDB
+        is reachable.
+        """
+        keyword_ranking: List[int] = []
+        keywords = question_keywords(question)
+        if keywords:
+            weights = keyword_weights(keywords, self._all_triples)
+            scored = [
+                (score_triple_weighted(triple, weights), i)
+                for i, triple in enumerate(self._all_triples)
+            ]
+            scored.sort(key=lambda pair: -pair[0])
+            keyword_ranking = [i for score, i in scored if score > 0]
+
+        semantic_ranking = (
+            self._embedding_index.semantic_ranking(question)
+            if self._embedding_index is not None else []
+        )
+
+        if not keyword_ranking and not semantic_ranking:
+            return []
+
+        fused = reciprocal_rank_fusion([keyword_ranking, semantic_ranking])
+        ordered = sorted(fused.keys(), key=lambda i: -fused[i])
+        matches = [self._all_triples[i] for i in ordered]
+        return dedupe_triples(matches)[:top_k]
 
     # Formats Neo4j triples for the Flutter assistant response.
     def format_output(self, triples: List[Dict]) -> str:
@@ -877,7 +958,7 @@ ANSWER_SYNTHESIS_TIMEOUT_SECONDS = 130
 # tokens/sec), which is most of the timeout budget before decoding even
 # starts. Triples already arrive score-sorted, so keeping the top N keeps the
 # most relevant evidence.
-SYNTHESIS_EVIDENCE_LIMIT = 10
+SYNTHESIS_EVIDENCE_LIMIT = 20
 
 # How long to wait for Ollama to even ACCEPT a connection, separate from how
 # long to wait for it to finish generating (above). This matters once the
