@@ -169,11 +169,41 @@ client consent/CAPEX form.
 
 | | Workstream | Depends on | Status |
 |---|---|---|---|
-| W1 | Nectar foundation — instance, volume, security groups, keys | — | Decided, not built |
-| W2 | Ollama onto Nectar, retire the tunnel | W1 | Not started |
-| W3 | API + Flutter off Render onto Nectar | W1 | Not started |
+| W1 | Nectar foundation — instance, volume, security groups, keys | — | **Runbook written**; nothing launched yet |
+| W2 | Ollama onto Nectar, retire the tunnel | W1 | **Configured** in `deploy/nectar/docker-compose.yml`; not deployed |
+| W3 | API + Flutter off Render onto Nectar | W1 | **Configured** (nginx + build steps); not deployed |
 | W4 | Neo4j: AuraDB stays, or self-host | W1 | Deferred by D5 |
-| W5 | Handover pack | partly none | This document is the first piece |
+| W5 | Handover pack | partly none | This document + `deploy/nectar/README.md` |
+
+## What is built
+
+`deploy/nectar/` holds everything needed to stand the instance up. Nothing
+has been launched on Nectar yet — every file below is written and committed
+but unexercised against a real VM.
+
+| File | Purpose |
+|---|---|
+| `docker-compose.yml` | Ollama + `rag.py` API + nginx. Only port 80 published |
+| `nginx.conf` | Serves the Flutter build, reverse-proxies the API |
+| `.env.example` | `ADMIN_UPLOAD_SECRET` plus optional translation vars |
+| `README.md` | Full runbook: launch parameters through to troubleshooting |
+
+Three details in that configuration worth not rediscovering:
+
+- **No `TRUSTED_LLM_HOST` is needed.** `llm_endpoint.is_private_host()`
+  accepts any single-label hostname, so `http://ollama:11434` passes. The
+  Tailscale tunnel, `ollama_tunnel_proxy.py` and `OLLAMA_TUNNEL_SECRET` are
+  obsolete here rather than migrated — inference runs beside the API.
+- **nginx `proxy_read_timeout` is 180s.** The 60s default would cut off
+  every real synthesis call (rag.py allows 130s) and surface it as a 504
+  that looks like a broken API rather than a slow one.
+- **Neo4j is overridden out in compose, not by editing `Dockerfile.serve`.**
+  That keeps the existing Render deployment working during the transition.
+
+Verification status: `docker compose config` parses and all seven `--kg`
+paths resolve. **`nginx.conf` has not been runtime-tested** — the local
+Docker daemon was not running. Check `docker compose logs web` first on the
+instance.
 
 ## Notes for whoever picks this up
 
