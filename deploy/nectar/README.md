@@ -103,7 +103,7 @@ AuraDB, so the three `NEO4J_*` ones are not optional:
 | Variable | Where it comes from |
 |---|---|
 | `NEO4J_URI` | Aura console. The bare `<id>.databases.neo4j.io` is fine — `config.py` prepends `neo4j+s://` |
-| `NEO4J_USERNAME` | `neo4j` unless it was changed. **Not** `NEO4J_USER` |
+| `NEO4J_USERNAME` | **Not `neo4j`** on the P85 instance, and not `NEO4J_USER` either. Verified 2026-10-27: `neo4j` fails with `Neo.ClientError.Security.Unauthorized`; the working value is the same 8-hex string as the instance id in `NEO4J_URI`. Copy it from the Aura console verbatim |
 | `NEO4J_PASSWORD` | Shown once when the Aura instance was created |
 | `ADMIN_UPLOAD_SECRET` | The `token_urlsafe` value you just generated |
 
@@ -196,17 +196,25 @@ may keep accruing SU. Confirm with Nectar support before relying on either.
 | `/tts` refuses | Expected. Backend speech needs torch, which this image does not carry |
 | Site loads, every request fails | `API_BASE_URL` was wrong or empty at Flutter build time. Rebuild and re-upload |
 | Ollama "model not found" | The `ollama pull` in step 5 did not run, or ran before the volume was mounted |
+| API exits at startup, `Neo.ClientError.Security.Unauthorized` | `NEO4J_USERNAME` was set to `neo4j`. On the P85 instance the username is the instance id, not `neo4j` — see the credentials table in step 5 |
 | Admitted papers and the review queue vanish after a restart | `/mnt/data/uploads` was not created in step 3, or `UPLOADS_DIR=/app/uploads` was removed from `docker-compose.yml`. Without both, uploads sit on the container's writable layer and `docker compose down` deletes them |
 
 ## What this deployment deliberately does not include
 
 - **A self-hosted Neo4j.** Retrieval reads the existing managed AuraDB
   instance. The handover therefore includes AuraDB credentials and depends
-  on that account surviving. Worth knowing: AuraDB's live contents (697
-  nodes / 715 relationships, 670 of them carrying no current `run_id`) are
-  a messier superset of the clean 112-triple export in
-  `data/production_graph/`. The CSVs ship in the image but are not the read
-  path — see `docker-compose.yml`.
+  on that account surviving. The CSVs ship in the image but are not the
+  read path — see `docker-compose.yml`.
+
+  **Corrected 2026-10-27.** This section used to warn that the live graph
+  was a messier superset of the clean export — 697 nodes / 715
+  relationships, 670 of them carrying no current `run_id`. That is no
+  longer true. Measured against the live instance: 195 nodes, 124
+  relationships, of which **112 are `Entity`->`Entity` and all 112 carry
+  both a `run_id` and a `sentence_ref`**, matching the 112 rows across
+  `data/production_graph/*_kg_refined.csv` exactly. The unattributed
+  relationships are gone. The remaining 12 relationships are the auth and
+  chat-history graph (`User`, `Conversation`, `ChatMessage`).
 - **The four CSV-path precision filters.** `Neo4jRAGSkeleton.query` lacks
   `filter_community_periods`, the `score > 0` cut, `matches_topic` and
   `group_responses`, all of which `ConceptRetriever.retrieve` applies. The
