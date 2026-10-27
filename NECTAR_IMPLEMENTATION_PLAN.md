@@ -341,11 +341,21 @@ handover.
 
 Before anything is called done:
 
-- `python -m pytest tests/ -q` — **451 pass / 9 fail / 2 collection errors** is
-  the known-good baseline (the 9 are all `tests/test_rag_languages.py`,
-  pre-existing; the errors are `test_auth_store.py` and `test_insert.py`, which
-  needs live Neo4j). A tenth failure is a regression, not noise. **No block in
-  this plan changes Python code**, so this baseline should not move at all.
+- `python -m pytest tests/ -q` — **473 pass / 9 fail / 0 collection errors**
+  is the known-good baseline as of 2026-10-27. The 9 are all
+  `tests/test_rag_languages.py`, pre-existing. A tenth failure is a
+  regression, not noise.
+
+  This figure replaces the **451 / 9 / 2** recorded when this plan was
+  written, and the old one was not measurable: `test_auth_store.py`'s
+  collection error aborted collection for the whole suite, so the documented
+  command ran **zero tests** and exited 1. Reading it through `| tail` hid
+  the exit code and it looked like a pass. Fixed in `tests/test_auth_store.py`
+  — the file had been asserting a registration feature reverted on 15 Oct.
+  `test_insert.py` no longer errors either; it does not need live Neo4j.
+
+  **No migration block in this plan changes Python code**, so this baseline
+  should not move for M, P or O work.
 - A real `/query` through nginx returns graph-backed triples, not a template.
 - The runbook followed end to end on a fresh instance by someone who did not
   write it.

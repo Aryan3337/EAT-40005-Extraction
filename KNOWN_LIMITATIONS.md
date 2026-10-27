@@ -664,3 +664,69 @@ token — none of the three gates evaluate whether a subject is a meaningful
 noun. Same general class of gap as the declined predicate-fit gate: a gate
 can confirm a quote is genuine without confirming the triple built from it
 makes sense.
+
+## 25. Registration collects a username and phone number and throws them away
+
+The registration form asks for a username, a phone country code and a phone
+number. None of the three is stored, and nothing tells the person that.
+
+`auth_service.dart:122` puts all three in the POST body:
+
+```dart
+if (registrationDetails != null) ...{
+  'username': registrationDetails.username.trim(),
+  'phone_country_code': registrationDetails.phoneCountryCode,
+  'phone_number': registrationDetails.phoneNumber.trim(),
+},
+```
+
+`rag.py`'s `_handle_auth` (line 2565) reads two keys:
+
+```python
+email = str(payload.get("email", ""))
+password = str(payload.get("password", ""))
+```
+
+and `AuthStore.register(email, password)` has no parameter for the rest, so
+they are discarded in silence — no warning, no 400, and the account is
+created successfully.
+
+**How it got this way.** `658ec35` (15 Oct) added a five-field registration
+form end to end: `register(email, password, username, phone_country_code,
+phone_number)`, the validators `_normalise_username`,
+`_normalise_phone_country_code` and `_normalise_phone_number`, and
+`tests/test_auth_store.py` covering them. `93c85bf`, hours later the same
+day, reverted the backend to email plus password and deleted all three
+validators, but left the Flutter client and the test file alone. The test
+file's stale reference to `AuthStore._normalise_phone_country_code` sat in a
+`@pytest.mark.parametrize` argument, which is evaluated at import, so it
+aborted collection for the **entire** suite rather than failing one module.
+`python -m pytest tests/ -q` ran zero tests and exited non-zero for twelve
+days without anyone noticing, which is §16 doing exactly what §16 says: no
+CI runs this suite, so the only thing standing between a broken collection
+and a silent green is whether a human happened to read the output. Piping
+through `tail` hides the exit code, which is how it reads as a pass.
+
+**The visible consequence is on the login page, not the registration page.**
+The login field is labelled "Username / Email" and `login_page.dart:178`
+validates a typed username against a regex, but `AuthStore.login` runs
+`MATCH (u:User {email: $email})` and no `username` property is ever written
+to any `:User` node. Logging in by username therefore cannot succeed for any
+account, and the failure surfaces as "Invalid credentials" — indistinguishable
+from a wrong password.
+
+**Not fixed here deliberately.** Closing it properly means choosing a
+direction, not patching: either restore the fields through `register`,
+`_handle_auth`, the Cypher write and a uniqueness check plus an `OR`-match on
+login, or remove them from the form and relabel the login field. The first is
+a day of work and needs a decision about accounts already registered without
+a username. `tests/test_auth_store.py` was instead narrowed to the two
+normalisers that exist, with the mismatch recorded here.
+
+What *was* fixed alongside it: `93c85bf` also replaced `_normalise_email`'s
+validation with `len >= 3 and "@" in value`, which accepts `@example.com`
+(no local part), `person@localhost` (no dotted TLD) and
+`person..name@example.com`. `658ec35`'s stricter pattern is restored.
+Registration and email changes are the only callers; `login` normalises via
+`_normalise_identifier`, which stays loose by design, so no existing account
+can be locked out by the change.
