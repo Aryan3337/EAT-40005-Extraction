@@ -262,6 +262,26 @@ the difference between a document that reads correctly and one that works.
 - **Accounts the system depends on.** §13 already says these should belong to a
   shared team account rather than a personal one, so access outlives the
   handover.
+
+  **Decided 2026-10-27, not yet done:** that shared account is
+  `s2026_eat40006_p85@outlook.com`. It serves two separate purposes that are
+  easy to conflate, so name both in the inventory:
+
+  1. **The site's admin account** — the `:User` node with `role: 'admin'`.
+     Today that node's `email` property is the literal string `mandiadmin`,
+     which is not an address and cannot have come from `register()`: both the
+     current and the pre-2026-10-27 validator reject a value with no `@`, so it
+     was written by hand in Cypher. Migrating it to the real address is a
+     property rename on one node plus a fresh password hash. The address is a
+     valid email, so `_normalise_email` accepts it and nothing else has to
+     change.
+  2. **The login for the AuraDB console**, which is where `NEO4J_URI`,
+     `NEO4J_USERNAME` and `NEO4J_PASSWORD` are read and rotated.
+
+  Distinct from both: `NEO4J_USERNAME` is the **database** credential
+  (`6ba8a37e`, the instance id — see `deploy/nectar/.env.example`). It grants
+  no privilege in the application. Three different things called "admin" and
+  no reader should have to work out which is which.
 - **SU economics:** 0.457 SU/hr, ~1 year on 4000 SU, where to check
   consumption, and that shelving is the only thing that actually stops the
   burn. The shelve-vs-shutoff question is still open with Nectar support —
