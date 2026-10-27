@@ -822,9 +822,22 @@ mismatch is real and still unresolved, but it is not what happens here --
 the request never took the translation path at all, which is precisely the
 bug. Expect the 504 to appear only once detection is fixed.
 
-The 9 pre-existing failures in the test baseline are all
-`tests/test_rag_languages.py`, which is very likely the same area. Nobody
-has yet checked whether those tests describe this exact defect.
+**The 9 pre-existing failures in `tests/test_rag_languages.py` are NOT
+this defect** -- checked 2026-10-28, because the earlier guess that they
+were "very likely the same area" was wrong and worth killing before
+someone acts on it. They are stale tests:
+
+- `es`, `fr` and `zh` subtests assert support for Spanish, French and
+  Mandarin. `ANSWER_LANGUAGES` (`rag.py:972`) is now only `en`, `hi` and
+  `bn`, and `translate_question` raises `ValueError` for anything else, so
+  these test a product that no longer exists.
+- The one `hi` subtest is a wording mismatch, not a behaviour one: it
+  expects the refusal to contain "पर्याप्त जुड़ी हुई जानकारी" while the
+  message in `_NO_EVIDENCE_MESSAGES` now reads "पर्याप्त जुड़े हुए प्रमाण".
+
+So this defect has **no failing test covering it**. A regression test
+belongs with the fix -- assert that a Devanagari question reaches
+`translate_question` at all, which is the step that is being skipped.
 
 **Practical consequence today:** tell anyone trying the deployment to ask
 in English. A Bangla or Hindi question does not error, it politely says it
