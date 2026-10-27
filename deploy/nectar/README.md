@@ -231,9 +231,20 @@ docker compose exec ollama ollama pull mistral:7b     # ~4.7GB, several minutes
 
 Check it:
 
+**Set `$SITE` first.** Once TLS is in place (step 7) port 80 is nothing
+but a redirect, so a plain `curl localhost/...` returns **301**, not the
+answer you were looking for -- and `-L` does not rescue it, because it
+follows to `https://localhost/` where the certificate does not match.
+Before TLS exists, use `SITE=http://localhost`.
+
+```bash
+SITE=https://$(ip -4 route get 1.1.1.1 | sed -n 's/.*src \([0-9.]*\).*/\1/p').sslip.io
+echo $SITE          # https://<instance-ip>.sslip.io
+```
+
 ```bash
 docker compose ps                        # three containers, all Up
-curl -s localhost/health                 # through nginx
+curl -s $SITE/health                     # through nginx
 docker compose logs -f api               # expect "RAG API listening on ..."
 ```
 
@@ -248,13 +259,13 @@ delete the account afterwards:
 
 ```bash
 # 1. Register. Returns {"token": ..., "email": ..., "role": "user"}.
-TOKEN=$(curl -s -X POST localhost/auth/register \
+TOKEN=$(curl -s -X POST $SITE/auth/register \
   -H 'Content-Type: application/json' \
   -d '{"email":"m2-verify@example.com","password":"m2-verify-pass-2026"}' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
 
 # 2. Ask. ~63s on m3.xlarge, measured 2026-10-27.
-curl -s -X POST localhost/query \
+curl -s -X POST $SITE/query \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $TOKEN" \
   -d '{"query": "What languages do the Garo speak?"}'
@@ -309,8 +320,8 @@ signature of an empty `web/`, not a broken nginx.
 Verify from the instance:
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' localhost/            # 200
-curl -s -o /dev/null -w '%{size_download}\n' localhost/main.dart.js   # ~2.9MB
+curl -s -o /dev/null -w '%{http_code}\n' $SITE/               # 200
+curl -s -o /dev/null -w '%{size_download}\n' $SITE/main.dart.js  # ~2.9MB
 ```
 
 **Do not upload dotfiles.** The `build/web/*` glob above is deliberate:
