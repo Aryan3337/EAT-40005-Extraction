@@ -196,15 +196,54 @@ backlog. **~2 days.**
 
 ## P1 — TLS
 
-**Blocked by:** M2 (done) · **Size:** 0.5-1 day · **This is now the
-critical path, not merely on it**
+**Blocked by:** M2 · **Size:** 0.5-1 day · **DONE 2026-10-27**
 
-M2 established that Chrome refuses the bare-IP `http://` URL outright:
-HTTPS-First upgrades it to `https://`, 443 refuses the connection, and
-there is no interstitial to click through. Until P1 lands, the site is
-openable only with HTTPS-First disabled or through an SSH local forward.
-Treat it as the remaining blocker on anyone being able to use the
-deployment, and do it before M3.
+**The site is live and openable at https://136.186.108.232.sslip.io/.**
+Certificate issued for that name, expiring 2027-01-25, renewing
+automatically. All three gates below pass: a trusted chain with no
+`-k`, `http://` redirecting, and `certbot renew --dry-run` succeeding.
+Verified end to end in Chrome -- register, ask a question, grounded
+answer with sources -- not just by `curl`.
+
+What was built: a `listen 443 ssl;` block in `nginx.conf` with the
+`location` blocks unchanged, an ACME-challenge block on 80 ahead of the
+redirect, a `certbot` service renewing twice daily, a 6h nginx reload
+loop so renewals are picked up, and `init-letsencrypt.sh` to break the
+chicken-and-egg (nginx will not start without the certificate file that
+nginx must be running to obtain).
+
+| Decision | Why |
+|---|---|
+| **Staging run first, always** | `sslip.io` is **not** on the Public Suffix List, so Let's Encrypt counts every `*.sslip.io` certificate on the internet against ONE shared registered-domain limit. Retrying a misconfiguration against production burns a limit that is not ours alone. Staging proved the plumbing first; production then succeeded first try |
+| **`--cert-name p85`, not the domain** | Puts the certificate at `live/p85/` instead of `live/<ip>.sslip.io/`. The IP is instance-bound, so otherwise a rebuild would change a path inside `nginx.conf`. Now a rebuild needs `init-letsencrypt.sh` re-run and nothing edited |
+| **Domain derived from the instance's own IP** | Classic Provider puts the public address directly on `eth0` -- no NAT, no floating IP -- so `ip route get` yields it. One less thing to remember after a rebuild |
+| **Certificates on `/mnt/data`** | Survive `docker compose down`, so a restart does not re-issue and walk into the shared rate limit |
+| **No HSTS** | It is cached for its max-age and cannot be withdrawn, and this hostname derives from an IP a rebuild changes. Pinning a demo URL to https in every visitor's browser is a trap for whoever inherits this |
+
+**The bare IP is still imperfect and that is now permanent.**
+`https://<ip>/` is answered but with a name-mismatch warning, because the
+certificate is for the sslip.io name. It is at least *clickable*, unlike
+the pre-TLS refused connection. **Hand out the sslip.io URL.**
+
+**Two findings worth more than the TLS work itself:**
+
+1. **A `.git` directory was being served from the web root.** It rode
+   along in a `tar`-based upload of the Flutter build -- the runbook's
+   `scp build/web/*` glob skips dotfiles, a tar does not -- and a scanner
+   pulled `/.git/config` within the hour. That repo turned out to hold one
+   commit of public build artifacts, no source and no credentials, so the
+   actual exposure was nil. It was removed, and `nginx.conf` now denies
+   dotfiles with `/.well-known` exempted so renewal still works. Worth
+   remembering that this repo's history has carried AuraDB credentials
+   three times (`KNOWN_LIMITATIONS` 13) -- the same mistake with the main
+   repo would not have been harmless.
+2. **`nginx.conf` is a single-file bind mount, so editing it and
+   reloading does nothing.** Any write that replaces the file -- `git
+   pull`, `tar -x`, `scp`, `sed -i` -- creates a new inode while the
+   container stays bound to the old one, and `nginx -s reload` reports
+   success having re-read the unchanged file. Use `docker compose up -d
+   --force-recreate web`. The certificate mounts are directory mounts and
+   are unaffected, which is why renewal pickup works on a plain reload.
 
 Render terminated TLS. Nectar does not, and the API serves `/auth/register`
 and `/auth/login`, which accept passwords, plus `ADMIN_UPLOAD_SECRET` in a
@@ -228,7 +267,8 @@ cleartext is worse than shipping no login form. Record whichever you chose in
 `HANDOVER.md`.
 
 **Done when:** `curl https://<ip>.sslip.io/health` succeeds with a valid chain,
-`http://` redirects, and `certbot renew --dry-run` passes.
+`http://` redirects, and `certbot renew --dry-run` passes. **All three verified
+2026-10-27**, plus a full sign-in and question answered in Chrome.
 
 ## P2 — Reproducible frontend build
 
@@ -409,7 +449,7 @@ thing, this is it.
 | Track | Size | Can start | Needs |
 |---|---|---|---|
 | M — Migrate | ~0.5 d left | M1+M2 **done**; only M3 remains | Nectar dashboard, Render access |
-| P — Parity | ~2 d | after M2 | nginx/Docker, Flutter |
+| P — Parity | ~1 d left | P1 **done**; only P2 remains | Flutter, Docker |
 | O — Optional | 0.5 d | after M2 | — |
 | H — Handover | ~4 d | alongside | whoever did the work |
 

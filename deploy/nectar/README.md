@@ -313,31 +313,79 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost/            # 200
 curl -s -o /dev/null -w '%{size_download}\n' localhost/main.dart.js   # ~2.9MB
 ```
 
-### Then open `http://<instance-ip>` — and expect Chrome to refuse
+**Do not upload dotfiles.** The `build/web/*` glob above is deliberate:
+it skips them. A `tar`-based copy does not, and on 2026-10-27 that put a
+complete `.git` directory into the web root, which nginx served to the
+internet -- a scanner pulled `/.git/config` within the hour. That
+particular repo held only public build artifacts, but a served `.git` is
+a clonable copy of whatever history it has. `nginx.conf` now denies
+dotfiles outright, but do not rely on that alone.
 
-**A bare-IP `http://` URL does not open in a current Chrome.** Chrome's
-HTTPS-First upgrades `http://136.186.108.232/` to `https://`, nothing
-listens on 443, and the visitor lands on a connection-error page with no
-"continue anyway" option — there is no certificate warning to click
-through, because the connection is refused outright. Verified 2026-10-27:
-`curl` gets `200` from port 80 while Chrome shows an error page for the
-same address.
+### Then open the site
 
-This makes **TLS a reachability requirement, not polish**. Until it lands,
-the site is openable only by:
+**The URL is `https://<instance-ip>.sslip.io/`, not the bare IP.** Hand
+that one out; it is the only address with a matching certificate.
 
-- a browser with HTTPS-First disabled, or
-- an SSH local forward, which `localhost` exempts from the upgrade:
-  `ssh -i ~/.ssh/p85_nectar -N -L 8099:localhost:80 ubuntu@<instance-ip>`
-  then `http://localhost:8099/`. Confirmed working — the Flutter sign-in
-  screen renders. Note that the frontend's baked `API_BASE_URL` still
-  points at the public IP, so API calls from a tunnelled page are
-  cross-origin and may fail; the tunnel proves the app boots, not that
-  the full flow works.
+A bare-IP URL does not work properly in a current Chrome, and the failure
+is confusing in both directions:
 
-When TLS lands, `API_BASE_URL` changes and **the frontend must be rebuilt
-and re-uploaded** — the value is compiled in, not read at runtime.
+- `http://<instance-ip>/` -- Chrome's HTTPS-First rewrites this to
+  `https://` before the request leaves the browser, so nginx's own
+  80 -> 443 redirect never runs.
+- `https://<instance-ip>/` -- answered, but with a certificate issued for
+  `<ip>.sslip.io`, so the browser shows a name-mismatch warning. It can be
+  clicked through, unlike the pre-TLS state where the connection was
+  refused outright with no bypass at all.
 
+`curl` is not a good test of any of this: it has no HTTPS-First and will
+happily report 200 from port 80 on a site no browser can open.
+
+
+## 7. TLS
+
+**Done 2026-10-27.** Certificate issued for `136.186.108.232.sslip.io`,
+expiring 2027-01-25, renewing automatically. This section is what to do
+on a REBUILT instance, where the IP -- and therefore the domain -- has
+changed.
+
+```bash
+cd ~/EAT-40005-Extraction/deploy/nectar
+./init-letsencrypt.sh                 # staging: proves the plumbing
+STAGING=0 FORCE=1 LETSENCRYPT_EMAIL=s2026_eat40006_p85@outlook.com \
+    ./init-letsencrypt.sh             # the real certificate
+```
+
+The script derives the domain from the instance's own IP, so a rebuild
+needs no edit to it or to `nginx.conf`. Read its header comment before
+changing anything; the ordering in it is load-bearing.
+
+**Always do the staging run first.** `sslip.io` is NOT on the Public
+Suffix List, so Let's Encrypt counts every `*.sslip.io` certificate
+issued anywhere on the internet against ONE shared registered-domain
+limit. A misconfiguration retried against production burns a limit that
+is not ours alone. Staging has its own generous limits and its
+certificate is untrusted by design -- that is not the failure you are
+looking for.
+
+**Renewal** runs in the `certbot` container twice a day and acts only
+inside the last 30 days of the 90-day certificate. `web` reloads nginx
+every 6h so a renewed certificate is actually picked up -- nginx reads
+certificates at start and reload only, so without that a renewal lands on
+disk while the expired one keeps being served. Both containers are
+`restart: unless-stopped`, so this survives a reboot.
+
+Check it:
+
+```bash
+docker compose run --rm --entrypoint certbot certbot renew --dry-run
+echo | openssl s_client -connect <ip>.sslip.io:443 \
+  -servername <ip>.sslip.io 2>/dev/null | openssl x509 -noout -dates
+```
+
+The certificate lives at `/mnt/data/letsencrypt` -- on the volume, so
+`docker compose down` does not throw it away and force a re-issue, and
+under the cert name `p85` rather than the domain, so no path inside
+`nginx.conf` contains the IP.
 ---
 
 ## Operating it
@@ -358,6 +406,23 @@ docker compose up -d --build         # rebuild after a git pull
 cd ~/EAT-40005-Extraction && git pull
 cd deploy/nectar && docker compose up -d --build
 ```
+
+**After editing `nginx.conf`, recreate the container -- a reload is not
+enough:**
+
+```bash
+docker compose up -d --force-recreate web
+```
+
+`nginx.conf` is a single-FILE bind mount, and almost everything that
+writes a file replaces it rather than editing it in place -- `git pull`,
+`tar -x`, `scp`, even `sed -i`. The replacement is a new inode, and the
+running container stays bound to the old one. So `nginx -s reload` cheerfully
+re-reads the file you thought you changed and reports success. Cost an
+entirely avoidable debugging detour on 2026-10-27.
+
+The certificate mounts are DIRECTORY mounts and do not have this problem,
+which is why renewal pickup works with a plain reload.
 
 **Watching credit burn:** `m3.xlarge` costs 0.457 SU/hr, so the 4000 SU
 budget is about a year of continuous uptime. Check consumption under
@@ -387,6 +452,11 @@ may keep accruing SU. Confirm with Nectar support before relying on either.
 | Signed in fine, then every request 401s after a deploy | Sessions live in API memory, not AuraDB. `docker compose restart api` / `up -d --build` invalidates every token. Users sign in again; accounts themselves are safe in AuraDB |
 | `/` returns 403, log says `directory index ... is forbidden` | `deploy/nectar/web/` is empty — the Flutter build in step 6 was never uploaded |
 | Chrome shows a connection error on `http://<instance-ip>` while `curl` gets 200 | Chrome's HTTPS-First upgraded the bare IP to `https://` and nothing listens on 443. Not a server fault. Use the SSH local forward in step 6 until TLS lands |
+| Edited `nginx.conf`, reloaded, nothing changed | Single-file bind mount: the editor wrote a new inode and the container still has the old one. `docker compose up -d --force-recreate web` |
+| Browser warns the certificate name does not match | The bare IP was used. The certificate is for `<ip>.sslip.io`; hand out that URL |
+| `init-letsencrypt.sh` fails at validation | Port 80 must be reachable from the internet for HTTP-01. Check the security group, and that the `/.well-known/acme-challenge/` block still precedes the redirect in `nginx.conf` |
+| Certificate expired despite the certbot container running | nginx had not been reloaded since renewal. The 6h reload loop in `web`'s `command:` is what does that -- check it was not dropped |
+| A path starting with a dot returns 404 | Deliberate. `nginx.conf` denies dotfiles after a `.git` directory was served from the web root on 2026-10-27. `/.well-known/` is exempt |
 
 ## What this deployment deliberately does not include
 

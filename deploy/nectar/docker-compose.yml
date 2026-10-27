@@ -77,8 +77,48 @@ services:
       - api
     ports:
       - "80:80"
+      # 443 is not optional. Chrome's HTTPS-First rewrites http://<bare-ip>
+      # to https:// before the request leaves the browser, so with nothing
+      # listening here the site is unreachable in a current Chrome even
+      # though curl gets 200 from port 80.
+      - "443:443"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
       # The Flutter web build output. See README.md for how to produce it.
       - ./web:/usr/share/nginx/html:ro
+      # Certificates, on the attached volume so they survive `docker compose
+      # down` and an instance rebuild. That is a rate-limit protection as
+      # much as a convenience: sslip.io is NOT on the Public Suffix List, so
+      # Let's Encrypt counts every *.sslip.io certificate on the internet
+      # against one shared registered-domain limit. Re-issuing on every
+      # restart is a good way to find that limit.
+      - /mnt/data/letsencrypt:/etc/letsencrypt:ro
+      - /mnt/data/certbot-www:/var/www/certbot:ro
+    # Reload every 6h so a certificate renewed by the certbot service below
+    # is actually picked up. nginx only reads its certificates at
+    # start/reload, so without this a renewal lands on disk and the site
+    # keeps serving the expired one until someone restarts it by hand.
+    # The $$ is compose escaping for a literal $.
+    command: >
+      /bin/sh -c "while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g 'daemon off;'"
+    restart: unless-stopped
+
+  # Renews the certificate. Does nothing until init-letsencrypt.sh has
+  # obtained one -- `certbot renew` with no certificates is a no-op, not an
+  # error. The webroot path and domain are recorded in the renewal config at
+  # issue time, so plain `renew` is correct here; passing -d or -w again
+  # risks conflicting with what was stored.
+  #
+  # Twice daily is what Let's Encrypt asks for: renewal only acts inside the
+  # last 30 days of a 90-day certificate, so the other ~120 runs exit
+  # immediately, and the frequency is what absorbs a few days of downtime
+  # without anything expiring.
+  certbot:
+    image: certbot/certbot:latest
+    container_name: p85_certbot
+    volumes:
+      - /mnt/data/letsencrypt:/etc/letsencrypt
+      - /mnt/data/certbot-www:/var/www/certbot
+    entrypoint: >
+      /bin/sh -c "trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done"
     restart: unless-stopped
