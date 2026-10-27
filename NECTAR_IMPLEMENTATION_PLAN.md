@@ -64,22 +64,35 @@ Owner: one person, needs Nectar dashboard access and the AuraDB credentials.
 
 **Blocks:** everything · **Size:** 0.5 day · **Needs:** Nectar dashboard
 
-Follow `deploy/nectar/README.md` steps 1–4. Three deviations from that
-runbook:
+Follow `deploy/nectar/README.md` steps 1–4, which can now be followed
+literally.
 
-- **Volume is 20 GiB**, not the 30 the runbook says. The only things on it are
-  the Ollama model and `uploads/`; 30 GiB took 60% of a 50 GiB quota to hold a
-  re-downloadable file. 20 GiB leaves room for a second model if the backlog's
-  extraction work ever lands.
-- **Open 443 as well as 80**, for P1. Still never 8000 or 11434.
-- **Mount `uploads/` onto the volume.** `UPLOADS_DIR` defaults to `uploads/`
-  *inside the container*, so without this every admitted paper and the review
-  queue are destroyed by `docker compose down`. Add to the `api` service:
-  `- /mnt/data/uploads:/app/uploads`, and set `UPLOADS_DIR=/app/uploads`.
+**The three deviations this block used to list are landed in the repo**
+(`d7c6851`, pushed 2026-10-27) — do not apply them by hand, and do not
+"restore" what looks like a wrong figure:
+
+| Was a deviation | Now |
+|---|---|
+| Volume 20 GiB, not 30 | Runbook step 3 says 20 GiB, with the reasoning inline |
+| Open 443 as well as 80 | Runbook step 2's rule table has three rows |
+| Mount `uploads/` onto the volume | `docker-compose.yml` carries both `UPLOADS_DIR=/app/uploads` and the `/mnt/data/uploads:/app/uploads` bind mount |
+
+They moved into the repo because M2 deploys by `git clone -b dev`: a
+correction a deployer has to remember under time pressure is a correction
+that gets missed. The third was a real data-loss defect, not a precaution —
+`rag.py:2206` defaults `UPLOADS_DIR` to a *relative* `"uploads"`, which under
+`Dockerfile.serve`'s `WORKDIR /app` lands on the container's writable layer,
+so `docker compose down` destroyed every admitted paper and the review queue.
+Fixing it needed both halves plus a `/mnt/data/uploads` the runbook never
+created alongside `/mnt/data/ollama`.
+
+A companion walkthrough of these four steps, for whoever is at the dashboard:
+https://claude.ai/artifact/6so53xdFn4z6kjJRP78prm
 
 **Done when:** `ssh ubuntu@<floating-ip>` works, `lsblk` shows the volume at
-`/mnt/data`, `/etc/fstab` has the `nofail` entry, and `df -h /mnt/data` shows
-20 GiB.
+`/mnt/data`, `/etc/fstab` has the `nofail` entry, `df -h /mnt/data` shows
+20 GiB, and `/mnt/data` contains both `ollama/` and `uploads/` owned by
+`ubuntu`.
 
 ## M2 — Deploy against AuraDB
 
@@ -243,10 +256,28 @@ written in the final two days is a list of things someone half-remembers.
 **Blocked by:** M2, P1, P2 · **Size:** 1 day
 
 Every surprise found during M2 goes into `deploy/nectar/README.md`'s
-troubleshooting table. Update `NECTAR_MIGRATION.md`'s verification section — it
-currently says `nginx.conf` is untested and no AuraDB connection has been made,
-both of which M2 settles either way. Correct the runbook's 30 GiB volume figure
-to 20. Delete anything the deployment no longer does.
+troubleshooting table. Delete anything the deployment no longer does.
+
+**Done already, 2026-10-27** — a docs pass ahead of M1 cleared most of this
+block, so what is left is genuinely only what M2 teaches:
+
+- Runbook's 30 GiB figure corrected to 20, with the reasoning inline.
+- `NECTAR_MIGRATION.md`'s verification section updated: the AuraDB credentials
+  are confirmed working, and the stale 697/715/670 graph figures are replaced
+  everywhere they appeared (`NECTAR_MIGRATION.md`, `NECTAR_BACKLOG.md`,
+  `deploy/nectar/README.md`).
+- `NEO4J_USERNAME` corrected in `.env.example`, the runbook, the main
+  `README.md` and the troubleshooting table — it is **not** `neo4j`.
+- The runbook's "HTTPS needs a DNS name" line corrected; P1's `sslip.io`
+  approach needs none.
+- Test baseline corrected from a figure that never ran to 473/9/0.
+
+**Still open, and only M2 can close it:** `nginx.conf` has never been
+runtime-tested, because it was written against a Docker daemon that was down.
+That is now the single largest untested thing in the deployment — check
+`docker compose logs web` first. Also still open: nothing exercises
+`config.py`'s `resolve_neo4j_uri` prepend branch, because the `.env` URI
+already carries an explicit `neo4j+s://`.
 
 **Have someone who did not do Track M follow the runbook on a fresh instance.**
 It is the only real test of a runbook, it is cheap against 4000 SU, and it is

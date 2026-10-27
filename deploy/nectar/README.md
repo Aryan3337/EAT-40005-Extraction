@@ -222,8 +222,13 @@ may keep accruing SU. Confirm with Nectar support before relying on either.
   in `../../NECTAR_MIGRATION.md`.
 - **Backend TTS and local translation.** Both need torch and multi-GB model
   files. `TTS_ENABLED` stays unset and `TRANSLATION_PROVIDER=llm`.
-- **HTTPS.** Port 80 only. Adding TLS needs a DNS name, which the project
-  does not currently have.
+- **HTTPS.** Port 80 only *as deployed*. The reason given here used to be
+  that TLS needs a DNS name the project does not have; that is no longer the
+  blocker. `NECTAR_IMPLEMENTATION_PLAN.md` P1 uses `<floating-ip>.sslip.io`,
+  which resolves to the IP with nothing to buy or register, and the security
+  group already opens 443. P1 is on the critical path, not optional: the API
+  serves `/auth/register` and `/auth/login`, which carry passwords, plus
+  `ADMIN_UPLOAD_SECRET` in a request header — all cleartext on port 80.
 - **GPU.** No usable GPU flavour exists on this allocation. See
   `../../NECTAR_MIGRATION.md`.
 - **The Tailscale tunnel.** `ollama_tunnel_proxy.py`, the Funnel and

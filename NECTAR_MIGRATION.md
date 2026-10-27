@@ -148,11 +148,23 @@ accepts low recall to avoid confident wrong answers. **Investigation and a
 plan are owed before any code changes here** — `Neo4jRAGSkeleton.query` is
 also what Render serves, so this is not a Nectar-local edit.
 
-*The data differs, not just the code path.* AuraDB holds 697 nodes / 715
-relationships, 670 of them with no current `run_id` — leftover from earlier
-ungated loads, per `docs/ICSE_SEIS_EVIDENCE_REPORT.md`. The CSV export is 112
-triples. Deploying on `--neo4j` serves the messier superset. Whether to clean
-AuraDB before the demo is an open question in that report, not settled here.
+*The data no longer differs.* **Superseded 2026-10-27.** This paragraph used
+to say AuraDB held 697 nodes / 715 relationships with 670 carrying no current
+`run_id` — leftover ungated loads, per `docs/ICSE_SEIS_EVIDENCE_REPORT.md` —
+so that deploying on `--neo4j` served a messier superset of the 112-triple CSV
+export, and that whether to clean it first was an open question.
+
+It has been cleaned. Measured against the live instance 2026-10-27: **195
+nodes, 124 relationships**, of which **112 are `Entity`->`Entity` and all 112
+carry both a `run_id` and a `sentence_ref`** — matching the 112 rows across
+`data/production_graph/*_kg_refined.csv` exactly. The two run ids present are
+`2026-10-08-overnight-batch` (67) and `20261005T021421Z-cab24022` (45). The
+remaining 12 relationships are the auth and chat-history graph (`User`,
+`Conversation`, `ChatMessage`).
+
+So the graph path and the CSV path now read the same corpus, and the open
+question above is closed. What remains different between the two paths is the
+code, not the data: the four missing precision filters described above.
 
 ### D5a — `Dockerfile.serve` copied five modules and needed twelve
 
@@ -275,11 +287,19 @@ Three details in that configuration worth not rediscovering:
 - **`NEO4J_USERNAME`, not `NEO4J_USER`.** `config.py` reads the former; the
   latter fails as "Neo4j configuration is incomplete", which reads like a
   missing credential rather than a misspelt variable.
+- **The username is not `neo4j`.** Added 2026-10-27. On this instance the
+  working username is the 8-hex-character string that is also the instance id
+  in `NEO4J_URI`; `neo4j` fails with
+  `Neo.ClientError.Security.Unauthorized`. `deploy/nectar/.env.example` and
+  the runbook both used to say `neo4j`, and both are corrected. Not unique to
+  this instance either — `PRUNER_README.md:93` carries the same
+  instance-id-as-username shape for a different database.
 
 Verification status, 2026-10-26:
 
 - The compose file parses, declares three services, publishes only port 80,
-  and carries no `command:` override.
+  and carries no `command:` override. (The security group opens 443 as well,
+  ahead of the TLS work; nothing publishes it yet.)
 - The exact 12-file set `Dockerfile.serve` copies imports `rag` cleanly,
   checked by assembling that file set and importing it.
 - `resolve_neo4j_uri` confirmed on four inputs: a bare Aura hostname gains
@@ -287,9 +307,23 @@ Verification status, 2026-10-26:
   remote host raises `InsecureNeo4jURI`, and `neo4j://neo4j:7687` is allowed
   as a private host.
 - **`nginx.conf` has not been runtime-tested** — the local Docker daemon was
-  not running. Check `docker compose logs web` first on the instance.
-- **No connection to AuraDB has been made from this configuration.** The
-  first `docker compose up` is the first real test of the credentials.
+  not running. Check `docker compose logs web` first on the instance. Still
+  true as of 2026-10-27.
+
+Updated 2026-10-27:
+
+- **The AuraDB credentials now work, and one of them was wrong in the docs.**
+  A connection was made from a development machine using the `.env` values and
+  the `neo4j` Python driver: it authenticates, and the schema and node counts
+  above were read over it. This found that `NEO4J_USERNAME` is not `neo4j` —
+  see the bullet above.
+- **Be precise about what that does and does not settle.** It proves the URI,
+  username and password are correct and the instance is reachable. It does
+  **not** exercise `config.py`'s `resolve_neo4j_uri` (the `.env` URI already
+  carries an explicit `neo4j+s://`, so the prepend branch was never taken),
+  and it does not test the connection from inside the container or from the
+  Nectar instance's network. The first `docker compose up` is still the first
+  test of those.
 
 ## Notes for whoever picks this up
 

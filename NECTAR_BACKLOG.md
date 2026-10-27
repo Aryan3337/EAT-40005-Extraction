@@ -200,9 +200,16 @@ track to delegate to anyone without dashboard access.
 
 Both branches touch retrieval code that **Render also serves until
 `NECTAR_IMPLEMENTATION_PLAN.md` M3 lands**. Own branch, own PR, baseline proven
-at each step. Current baseline: **451 pass / 9 fail** (all
-`tests/test_rag_languages.py`, pre-existing) **+ 2 collection errors**
-(`test_auth_store.py`, and `test_insert.py` which needs live Neo4j).
+at each step. Current baseline, re-measured 2026-10-27: **473 pass / 9 fail /
+0 collection errors** (the 9 are all `tests/test_rag_languages.py`,
+pre-existing). Run it as `python -m pytest tests/ -q`.
+
+This replaces the **451 / 9 / 2** figure recorded when this file was written,
+which was not a measurement: `test_auth_store.py`'s collection error aborted
+collection for the whole suite, so that command ran **zero tests** and exited
+1. Fixed 2026-10-27 — the file had been asserting a registration feature
+reverted on 15 Oct. `test_insert.py` no longer errors either; it does not need
+live Neo4j.
 
 ## G1 — Port `matches_topic` to the graph path
 
@@ -297,8 +304,24 @@ traverse.** Measured over the 112-triple export:
 | connected components | 49 | **45** |
 | largest component | 27 entities (17%) | 30 (20%) |
 
-AuraDB is worse-shaped, not better: `GaroCommunity` alone carries 434 of its
-715 relationships. Every retrieval `MATCH` in the codebase is single-hop today.
+**Re-measured against live AuraDB 2026-10-27.** This paragraph used to say
+AuraDB was worse-shaped than the CSV corpus, with `GaroCommunity` carrying 434
+of its 715 relationships. That is no longer the case, because the graph was
+cleaned. The live shape now essentially *is* the CSV shape:
+
+| | CSV corpus | live AuraDB, 2026-10-27 |
+|---|---|---|
+| entities | 159 | 181 (159 connected + 22 isolated) |
+| degree-1 leaves | 139 (87%) | 139 |
+| `GaroCommunity` degree | 13 | 25 |
+
+So the table above applies to the deployed graph too, and the argument for
+building two-hop expansion **guarded** is unchanged — it rests on 87% of
+entities being leaves, which both corpora agree on. The 22 isolated entities
+carry no `Entity`->`Entity` relationship at all and are unreachable by any
+traversal, single- or multi-hop.
+
+Every retrieval `MATCH` in the codebase is single-hop today.
 
 Unguarded two-hop expansion therefore either finds nothing new — starting from a
 leaf, 88% of the time — or dumps a hub's whole neighbourhood into the evidence
@@ -333,6 +356,12 @@ The graph holds five spellings of one entity — `Garo`, `GaroCommunity`,
 `Garo_Language` and `Mandai_TMPs` / `MandaiTMPs`. Nothing reconciles a new
 extraction against entities already in the graph, so every paper mints fresh
 near-duplicates.
+
+**Still true after the 2026-10-27 cleanup** — checked directly against the live
+instance, which returns all of `Garo`, `GaroCommunity`, `GaroPeople`,
+`Garo_People`, `Garo_Community`, `GaroLanguage` and `Garo_Language`. Cleaning
+the unattributed relationships did not canonicalise anything, so this item is
+untouched by it.
 
 `neo4j_loader/insert.py:40` is the insertion point: `insert_triple` does
 `MERGE (s:Entity {name: $subject})`. Canonicalise the name immediately before
@@ -370,10 +399,14 @@ G3 fixes new loads; the existing graph still holds the duplicates. Write a
 merging matches, reusing the `run_id` stamping convention from
 `neo4j_loader/insert.py` so the merge is auditable and reversible.
 
-**Export the graph before running it.** This rewrites the production database,
-and `docs/ICSE_SEIS_EVIDENCE_REPORT.md` already flags 670 of 715 relationships
-as carrying no current `run_id` — the live DB is messier than the CSV export, so
-do not assume what you will find.
+**Export the graph before running it.** This rewrites the production database.
+The warning that used to stand here — that the live DB was messier than the CSV
+export, 670 of 715 relationships carrying no `run_id` — no longer applies: as
+of 2026-10-27 the live graph is exactly the clean 112-triple corpus. That makes
+this item *easier*, not unnecessary: the duplicate-entity problem it addresses
+(`GaroCommunity` vs `Garo_People` vs `Garo People`) is a property of the corpus
+itself, not of the uncleaned leftovers. Re-measure before starting; do not
+assume either figure.
 
 **Done when:** `--dry-run` lists exactly the intended merges, a real run reduces
 entity count, and a before/after triple count proves nothing was lost.
@@ -390,9 +423,12 @@ entity count, and a before/after triple count proves nothing was lost.
   screen. Three surfaces, no extra compute.
 - **Generalising `topic_forms`** beyond its two hardcoded entries (`languages`,
   `speak`), with the recall risk stated explicitly.
-- **Cleaning AuraDB's 670 `run_id`-less relationships.** Data, not code, and it
-  changes what the system answers. Open question in
-  `docs/ICSE_SEIS_EVIDENCE_REPORT.md`.
+- ~~**Cleaning AuraDB's 670 `run_id`-less relationships.**~~ **Done — verified
+  2026-10-27, not by this team's planned work.** The live instance now holds
+  195 nodes / 124 relationships, of which 112 are `Entity`->`Entity` and all
+  112 carry a `run_id` and a `sentence_ref`, matching the CSV export exactly.
+  Nothing in this repo records who cleaned it or how, which is worth knowing
+  before anyone relies on it staying clean.
 - **Concurrency limiting.** `ThreadingHTTPServer` accepts in parallel, one
   Ollama serialises at ~40s each, so the fourth simultaneous question exceeds
   `rag.py`'s 130s timeout and reads as a failure rather than a wait. Accepted

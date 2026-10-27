@@ -312,6 +312,15 @@ should be `git rm --cached`'d when `main` and `dev` are reconciled.
 Any account the system depends on should be owned by the shared team
 account, not a personal one, so access outlives the handover.
 
+**Update, 2026-10-27: that account is now named.**
+`s2026_eat40006_p85@outlook.com` becomes both the site's admin account and
+the login for the AuraDB console. Decided, not yet done — the migration steps
+and the reason it is two distinct things are in
+`NECTAR_IMPLEMENTATION_PLAN.md` H2. Keep three things apart when writing the
+inventory: the application's `role: 'admin'` `:User` node, the AuraDB console
+login, and `NEO4J_USERNAME`, which is a database credential and grants no
+application privilege at all.
+
 **Update, 2026-10-05:** the live production AuraDB instance currently in use
 (the one holding the 45 real triples, `*.databases.neo4j.io` referenced in
 `.env`) is a separate, newly-provisioned instance, not one of the three dead
@@ -376,10 +385,23 @@ lists files. It has never run the 177-test suite, on any branch.
 ## 17. Only the unit tests are automated
 
 As measured 2026-10-04: 177 tests, all in-process. **Update, 2026-10-07: now
-298 tests**, still all in-process — the count has grown steadily with each
-fix in this document, but the shape of the gap is unchanged. Not one crosses
-a boundary: nothing exercises `add_triples` against a real database, the
-HTTP API, or extraction into storage.
+298 tests. Update, 2026-10-27: 482 collected — 473 pass, 9 fail**, still all
+in-process. The count has grown steadily with each fix in this document, but
+the shape of the gap is unchanged. Not one crosses a boundary: nothing
+exercises `add_triples` against a real database, the HTTP API, or extraction
+into storage. The 9 failures are all `tests/test_rag_languages.py` and
+pre-existing.
+
+**A warning about reading that number, found 2026-10-27.** Between 15 and 27
+October, `python -m pytest tests/ -q` ran **zero tests**.
+`tests/test_auth_store.py` referenced a deleted method from inside a
+`@pytest.mark.parametrize` argument, which is evaluated at import, so
+collection aborted for the entire suite and pytest exited 1 having run
+nothing. Twelve days of "the tests pass" rested on output nobody read to the
+end — and piping the command through `tail`, which is the natural way to
+read it, hides the exit code. This is §16 with the consequence attached: with
+no CI running the suite, a broken collection and a green run are
+indistinguishable unless a human reads the last line.
 
 `smoke_test.py` covers those seams and is the command to run before
 believing the system works. It reports PASS/FAIL/SKIP per stage, and a SKIP
@@ -718,10 +740,41 @@ from a wrong password.
 **Not fixed here deliberately.** Closing it properly means choosing a
 direction, not patching: either restore the fields through `register`,
 `_handle_auth`, the Cypher write and a uniqueness check plus an `OR`-match on
-login, or remove them from the form and relabel the login field. The first is
-a day of work and needs a decision about accounts already registered without
-a username. `tests/test_auth_store.py` was instead narrowed to the two
-normalisers that exist, with the mismatch recorded here.
+login, or remove them from the form and relabel the login field. The second
+needs a decision about accounts already registered without a username.
+`tests/test_auth_store.py` was instead narrowed to the two normalisers that
+exist, with the mismatch recorded here.
+
+**Most of the first option is already written, on a branch nobody merged.**
+`origin/JohnsBranch` commit `9900407` (19 Oct, "Add username support for
+registration and login in AuthStore") adds `_normalise_username`,
+`register(..., username=None)`, a `user_username_unique` constraint, and the
+`OR`-match on login:
+
+```cypher
+MATCH (u:User)
+WHERE toLower(u.email) = $identifier
+   OR toLower(coalesce(u.username, '')) = $identifier
+```
+
+It is not an ancestor of `dev` and has not moved since 19 Oct. Evaluate it
+before writing this from scratch.
+
+**The live database already has data from it.** Verified against AuraDB
+2026-10-27: the `user_username_unique` constraint exists, and of the two
+`:User` nodes one carries `username: 'betty'`. So the schema is ahead of the
+deployed code — `dev` can neither write that property nor authenticate
+against it. New accounts created through `dev` get no username, which the
+constraint permits because Neo4j uniqueness allows repeated nulls.
+
+**The admin account is stranger still.** Its `email` property is the literal
+string `mandiadmin`, which no validator in this repo's history accepts — both
+the current pattern and the `"@" in value` check it replaced reject a value
+with no `@`. It was therefore written by hand in Cypher, not through
+`register()`. It still authenticates on `dev`, because `login` matches the
+`email` property and `_normalise_identifier` only trims and lowercases. See
+`NECTAR_IMPLEMENTATION_PLAN.md` H2 for the decision to move it to a shared
+team address.
 
 What *was* fixed alongside it: `93c85bf` also replaced `_normalise_email`'s
 validation with `len >= 3 and "@" in value`, which accepts `@example.com`
