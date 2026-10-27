@@ -355,6 +355,18 @@ STAGING=0 FORCE=1 LETSENCRYPT_EMAIL=s2026_eat40006_p85@outlook.com \
     ./init-letsencrypt.sh             # the real certificate
 ```
 
+**To use a real domain instead**, point an A record at the instance and
+pass the name as the first argument:
+
+```bash
+STAGING=0 FORCE=1 LETSENCRYPT_EMAIL=... ./init-letsencrypt.sh garochatbot.com
+```
+
+`nginx.conf` needs no change -- it has no domain in it. The Flutter bundle
+does: rebuild it with `--dart-define=API_BASE_URL=https://garochatbot.com`
+or the page will call the old origin. Whether to buy a domain at all is an
+open handover question, not a technical one -- see H2 and H4 in
+`../../NECTAR_IMPLEMENTATION_PLAN.md`.
 The script derives the domain from the instance's own IP, so a rebuild
 needs no edit to it or to `nginx.conf`. Read its header comment before
 changing anything; the ordering in it is load-bearing.

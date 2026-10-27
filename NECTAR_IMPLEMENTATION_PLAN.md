@@ -398,6 +398,33 @@ the difference between a document that reads correctly and one that works.
   (`6ba8a37e`, the instance id — see `deploy/nectar/.env.example`). It grants
   no privilege in the application. Three different things called "admin" and
   no reader should have to work out which is which.
+- **The site's address, and who can change it.** The site is served at
+  `https://136.186.108.232.sslip.io/`. That name is not bought, owned or
+  configured by anyone: `sslip.io` is a public service that resolves any
+  `<ip>.sslip.io` to that IP, chosen during P1 specifically so the project
+  would not have to buy DNS. It works, and it is free, and it is ugly, and
+  **it embeds the instance's IP address**, so rebuilding the VM changes the
+  URL.
+
+  **Raised 2026-10-27 and deliberately left to the client.** A real name
+  (`garochatbot.com` or similar) is roughly 30 minutes of work -- see H4 --
+  but it is an ongoing cost and an ongoing renewal obligation, and the
+  question is not the ~AU$15/yr, it is who holds it in five years. A domain
+  registered to a student's personal account expires once that student has
+  graduated, which is §13's failure mode with a new coat of paint. Two
+  routes, and they are not equivalent:
+
+  | Route | Owner | Cost | Who can start it |
+  |---|---|---|---|
+  | **Subdomain of `swin.edu.au`** | Swinburne, institutionally | free | **Only Swinburne IT.** A student cannot self-assign one. Fold it into the H3 conversation about an SSH CIDR -- one request, two answers |
+  | **Public domain, e.g. `garochatbot.com`** | whoever registers it | ~AU$15-20/yr | Anyone with a card. Not gated by the university -- the reason to go slowly is ownership, not access. Register to the shared project account, never a personal one |
+
+  `garochatbot.com`, `.org`, `.net` and `mandichatbot.com` all had no DNS
+  records on 2026-10-27, so they were almost certainly unregistered.
+
+  **Until this is decided the sslip.io URL is the real address and the
+  handover must say so plainly**, rather than leaving a successor to
+  wonder whether a domain was lost.
 - **SU economics:** 0.457 SU/hr, ~1 year on 4000 SU, where to check
   consumption, and that shelving is the only thing that actually stops the
   burn. The shelve-vs-shutoff question is still open with Nectar support —
@@ -433,6 +460,38 @@ Written specs, not aspirations, so a successor can pick any of them up cold.
 The measurements that justify them are in `NECTAR_BACKLOG.md` — H4 is the
 reader-facing summary, the backlog is the detail.
 
+**Give the site a real domain.** Smallest item here by a distance, and the
+only one a non-developer can mostly action. P1 was built so this is a
+configuration change rather than a code change: `nginx.conf` contains no
+domain at all (`server_name _`, certificate at `live/p85/` via
+`--cert-name`), and `init-letsencrypt.sh` takes the domain as its first
+argument, falling back to deriving `<ip>.sslip.io` only when none is given.
+
+Once the name exists and an **A record points it at the instance's IP**:
+
+```bash
+cd ~/EAT-40005-Extraction/deploy/nectar
+STAGING=0 FORCE=1 LETSENCRYPT_EMAIL=s2026_eat40006_p85@outlook.com \
+    ./init-letsencrypt.sh garochatbot.com
+
+# then, on a machine with Flutter:
+cd flutter_application
+flutter build web --release --dart-define=API_BASE_URL=https://garochatbot.com
+scp -i ~/.ssh/p85_nectar -r build/web/* \
+  ubuntu@<instance-ip>:~/EAT-40005-Extraction/deploy/nectar/web/
+```
+
+The Flutter rebuild is **not optional**: `API_BASE_URL` is compiled into
+the bundle, so a page served from the new domain would otherwise still
+call the old origin and every request would fail.
+
+**The real argument for this is not cosmetic.** The current URL contains
+the instance's IP, and that IP is instance-bound -- Nectar's Classic
+Provider assigns it at boot and there is no floating IP to reattach (M1).
+So today, rebuilding the VM changes the site's address, invalidates the
+certificate and forces a frontend rebuild. With a real domain, a rebuild
+is one DNS record edit. It converts the most fragile thing about this
+deployment into a routine operation.
 **Rank streaming first.** Every Ollama call sets `"stream": False`
 (`rag.py:405`, `:1585`, `:1713`, and `confidence_framework.py:303`) and
 `nginx.conf` sets `proxy_buffering on`, so a 40s answer is 40s of blank screen.
