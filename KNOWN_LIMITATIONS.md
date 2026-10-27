@@ -783,3 +783,50 @@ validation with `len >= 3 and "@" in value`, which accepts `@example.com`
 Registration and email changes are the only callers; `login` normalises via
 `_normalise_identifier`, which stays loose by design, so no existing account
 can be locked out by the change.
+
+## 26. A Hindi question is answered as though it were English, and finds nothing
+
+**Observed on the live Nectar deployment, 2026-10-27**, against
+`https://136.186.108.232.sslip.io/query` with `TRANSLATION_PROVIDER=llm`.
+
+Asking *"What languages do the Garo speak?"* in English returns a grounded
+answer built from ten triples, each with a `sentence_ref` and a page number,
+in 63s. Asking the same question in Hindi --
+`गारो लोग कौन सी भाषाएँ बोलते हैं?` -- returns **HTTP 200 in 72s** with:
+
+```json
+{"language": "en",
+ "answer": "I could not find enough connected evidence to answer that
+             question. Try naming a specific person, place, event, or
+             relationship."}
+```
+
+The question is the only variable, so this is a language-handling defect
+rather than a gap in the graph.
+
+**Two things are wrong and they should not be conflated.** The response
+reports `"language": "en"` for Devanagari input, so whatever decides the
+request language did not classify it as Hindi. Retrieval then matched
+Devanagari text against a graph whose entity names and predicates are
+English, found nothing, and the synthesis gate correctly refused rather
+than inventing an answer. **The refusal is the system behaving well** --
+see the precision-over-recall stance -- but it is downstream of the real
+fault, and fixing retrieval without fixing detection would just produce a
+confident wrong answer instead of an honest refusal.
+
+**What this is not:** it is not the 504 that was predicted. The reasoning
+was that a non-English question costs three sequential Ollama calls under
+`TRANSLATION_TIMEOUT_SECONDS = 240` while `nginx.conf` caps a response at
+`proxy_read_timeout 180s`, so the request would be cut off. That timeout
+mismatch is real and still unresolved, but it is not what happens here --
+the request never took the translation path at all, which is precisely the
+bug. Expect the 504 to appear only once detection is fixed.
+
+The 9 pre-existing failures in the test baseline are all
+`tests/test_rag_languages.py`, which is very likely the same area. Nobody
+has yet checked whether those tests describe this exact defect.
+
+**Practical consequence today:** tell anyone trying the deployment to ask
+in English. A Bangla or Hindi question does not error, it politely says it
+found nothing, which reads like an empty knowledge base rather than a
+language fault.
