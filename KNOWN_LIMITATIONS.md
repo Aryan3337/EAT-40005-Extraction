@@ -921,14 +921,40 @@ Two consequences that are easy to miss:
    (limitation 26), and whose translation quality is already recorded as
    frequently misspelt (`rag.py:1615`).
 
-**The obvious lever** is to generate only the requested language and
-translate on demand when the user switches. That is roughly a 3x latency
-cut and would move every measured question comfortably inside both the
-130s `ANSWER_SYNTHESIS_TIMEOUT_SECONDS` and the 180s
-`proxy_read_timeout`. The trade-off is that switching language in the UI
-would then cost a round trip instead of being instant -- which is the
-design intent of the current behaviour, and why this is recorded as a
-decision to revisit rather than simply a bug.
+**The obvious lever** would be to generate only the requested language and
+translate on demand when the user switches -- roughly a 3x latency cut,
+enough to move every measured question comfortably inside both the 130s
+`ANSWER_SYNTHESIS_TIMEOUT_SECONDS` and the 180s `proxy_read_timeout`.
+
+**DECIDED 2026-10-27: do NOT do this. Keep generating all three.** The
+intended users are in Bangladesh, so a Bangla answer is not an optional
+extra that a minority might click through to -- it is the deliverable for
+the primary audience. Making it lazy would mean the people the project
+exists for are the ones who wait twice, once for the English answer and
+again for the translation they actually wanted. Paying that cost up front,
+on every request, is the correct trade for this product even though it
+reads as waste when measured in English.
+
+**Do not 'optimise' this away.** If you are here because answers are slow,
+the latency is understood and accepted; see the mitigations below rather
+than reaching for the language feature.
+
+**What that decision makes more important, not less:**
+
+- **The timeout headroom is now a known, accepted risk that still needs
+  managing.** Keeping 3x the work means the 180s `proxy_read_timeout` is
+  the binding constraint, and one benchmark question already hit it. The
+  cheap mitigation is to raise it -- the user waits longer rather than
+  seeing a 504 -- and that is a one-line `nginx.conf` change, not a code
+  change. Not yet applied.
+- **Backlog G1 matters more.** Fewer off-topic triples means a shorter
+  evidence block, a shorter prompt, and less to translate.
+- **Limitation 26 becomes a priority rather than a curiosity.** A Bangla
+  *question* currently returns nothing. Pre-translating every answer into
+  Bangla, for an audience that cannot yet ask in Bangla, only pays off
+  once 26 is fixed. Today the Bangla audience must ask in English and read
+  the translated answer -- which does work, and is presumably the interim
+  path.
 
 **Unrelated but adjacent:** the 504 was the first question after an idle
 period, and `OLLAMA_KEEP_ALIVE` is unset, so Ollama evicts the model after
