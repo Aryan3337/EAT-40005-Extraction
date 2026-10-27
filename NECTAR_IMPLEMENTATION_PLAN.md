@@ -118,6 +118,21 @@ volume still mounted *after a reboot*, `/etc/fstab` has the `nofail` entry,
 **Blocked by:** M1 · **Blocks:** M3, P1, P2, O1, H1 · **Size:** 0.5 day, plus
 however long first-contact debugging takes
 
+**DONE 2026-10-27.** All three containers Up, `mistral:7b` pulled onto the
+volume, AuraDB reachable, the Flutter frontend built and uploaded, and
+`http://136.186.108.232/` serving the app. The gate query returned real
+triples with `sentence_ref`s and page numbers in **63s**, against a ~130s
+budget. Every finding below is already written into
+`deploy/nectar/README.md` -- re-read the runbook rather than this summary.
+
+| Finding | Why it matters |
+|---|---|
+| **The verification `curl` in this plan and in the runbook was wrong** -- `/query` returns `401 Sign in is required.` without a bearer token | It fails in under a second, which reads like a broken API rather than a missing header. Register via `/auth/register` and pass `Authorization: Bearer <token>`. Both documents now carry the working sequence |
+| **Chrome will not open `http://<instance-ip>`** | HTTPS-First upgrades the bare IP to `https://`, nothing listens on 443, and the visitor gets a connection error with no bypass to click through. `curl` gets 200 from the same address. This moves **P1 from parity work to whether the site is reachable at all** |
+| **Accounts live in AuraDB; sessions live in API memory** | Accounts survive `docker compose down` and an instance rebuild with no volume involved. Tokens do not -- a rebuild signs everyone out. A test account is also a write to the production graph, so delete it afterwards |
+| **`nginx.conf` works as written** | This was the plan's single largest untested item. It proxies `/health`, `/query` and the static bundle correctly on first run. No change needed |
+| **An empty `web/` presents as a 403**, `directory index ... is forbidden` | Reads like an nginx permissions fault; it is only the missing frontend upload |
+
 ```bash
 git clone -b dev https://github.com/Aryan3337/EAT-40005-Extraction.git
 cd EAT-40005-Extraction/deploy/nectar
@@ -137,23 +152,21 @@ then `scp` to `deploy/nectar/web/`. Manual for now; P2 fixes that. Left empty,
 `API_BASE_URL` falls back to `http://127.0.0.1:8000`, which in a visitor's
 browser means *their* machine.
 
-**Two things have never been tested and are the likely failure points:**
+**The two things this block called untested have now both been run, and
+both worked unmodified:**
 
-1. **`nginx.conf` has never been run.** It was written against a Docker daemon
-   that was down. Check `docker compose logs web` **first**.
-2. **No process has ever connected to AuraDB from this configuration.** This is
-   the first real test of those credentials and of `config.py`'s TLS rule.
+1. **`nginx.conf`** had been written against a Docker daemon that was down.
+   It serves the static bundle and proxies `/health` and `/query` correctly
+   on first run.
+2. **AuraDB from this configuration.** The credentials and `config.py`'s TLS
+   rule both work. Note the `.env` URI carries an explicit `neo4j+s://`, so
+   `resolve_neo4j_uri`'s prepend branch is still unexercised.
 
-**Done when** all three containers are `Up`, the site loads, and:
-
-```bash
-curl -s localhost/health
-curl -s -X POST localhost/query -H 'Content-Type: application/json' \
-  -d '{"query": "What languages do the Garo speak?"}'
-```
-
-returns real triples rather than a template fallback, in under ~130s. Expect
-40s+ on CPU; the first call also loads the model into RAM.
+**Done when** all three containers are `Up`, the site loads, and a query
+returns real triples rather than a template fallback, in under ~130s. The
+`/query` call needs a bearer token -- the runbook's step 5 has the register
+-> query -> delete-the-account sequence. Expect 40s+ on CPU; the first call
+also loads the model into RAM. **All verified 2026-10-27, at 63s.**
 
 ## M3 — Decommission Render
 
@@ -183,7 +196,15 @@ backlog. **~2 days.**
 
 ## P1 — TLS
 
-**Blocked by:** M2 · **Size:** 0.5–1 day · **Keep this on the critical path**
+**Blocked by:** M2 (done) · **Size:** 0.5-1 day · **This is now the
+critical path, not merely on it**
+
+M2 established that Chrome refuses the bare-IP `http://` URL outright:
+HTTPS-First upgrades it to `https://`, 443 refuses the connection, and
+there is no interstitial to click through. Until P1 lands, the site is
+openable only with HTTPS-First disabled or through an SSH local forward.
+Treat it as the remaining blocker on anyone being able to use the
+deployment, and do it before M3.
 
 Render terminated TLS. Nectar does not, and the API serves `/auth/register`
 and `/auth/login`, which accept passwords, plus `ADMIN_UPLOAD_SECRET` in a
@@ -291,12 +312,17 @@ block, so what is left is genuinely only what M2 teaches:
   approach needs none.
 - Test baseline corrected from a figure that never ran to 473/9/0.
 
-**Still open, and only M2 can close it:** `nginx.conf` has never been
-runtime-tested, because it was written against a Docker daemon that was down.
-That is now the single largest untested thing in the deployment — check
-`docker compose logs web` first. Also still open: nothing exercises
-`config.py`'s `resolve_neo4j_uri` prepend branch, because the `.env` URI
-already carries an explicit `neo4j+s://`.
+**Closed by M2, 2026-10-27:** `nginx.conf` has now been runtime-tested and
+works unmodified -- it proxies `/health`, `/query` and the static bundle on
+first run. The deployment's largest untested item is gone.
+
+**Still open:** nothing exercises `config.py`'s `resolve_neo4j_uri` prepend
+branch, because the `.env` URI already carries an explicit `neo4j+s://`.
+
+**Added by M2**, already written into the runbook and listed here so H1
+does not rediscover them: the `/query` bearer-token requirement, Chrome's
+HTTPS-First refusal of the bare IP, the in-memory session lifetime, and
+the empty-`web/` 403.
 
 **Have someone who did not do Track M follow the runbook on a fresh instance.**
 It is the only real test of a runbook, it is cheap against 4000 SU, and it is
@@ -382,7 +408,7 @@ thing, this is it.
 
 | Track | Size | Can start | Needs |
 |---|---|---|---|
-| M — Migrate | ~1.5 d | **now** | Nectar dashboard, AuraDB creds |
+| M — Migrate | ~0.5 d left | M1+M2 **done**; only M3 remains | Nectar dashboard, Render access |
 | P — Parity | ~2 d | after M2 | nginx/Docker, Flutter |
 | O — Optional | 0.5 d | after M2 | — |
 | H — Handover | ~4 d | alongside | whoever did the work |

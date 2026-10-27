@@ -238,10 +238,47 @@ docker compose logs -f api               # expect "RAG API listening on ..."
 ```
 
 A real question end to end, which also proves AuraDB is reachable and
-Ollama has the model (expect 40s+ on CPU):
+Ollama has the model (expect 40s+ on CPU).
+
+**`/query` requires a signed-in user.** Posting to it with no
+`Authorization` header returns `401 {"error": "Sign in is required."}` in
+well under a second, which is easy to misread as the API being broken when
+it is in fact working. Register a throwaway account, use its token, and
+delete the account afterwards:
 
 ```bash
-curl -s -X POST localhost/query -H 'Content-Type: application/json'   -d '{"query": "What languages do the Garo speak?"}'
+# 1. Register. Returns {"token": ..., "email": ..., "role": "user"}.
+TOKEN=$(curl -s -X POST localhost/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"m2-verify@example.com","password":"m2-verify-pass-2026"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+
+# 2. Ask. ~63s on m3.xlarge, measured 2026-10-27.
+curl -s -X POST localhost/query \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"query": "What languages do the Garo speak?"}'
+```
+
+Expect an `answer`, an `evidence` block of triples each carrying a
+`sentence_ref` and a page number, and `translations` for `en`/`hi`/`bn`. A
+template fallback instead means retrieval found nothing — check the API log
+for an AuraDB error.
+
+Accounts live in **AuraDB**, not on the volume, so a throwaway account is a
+write to the production graph and outlives the container. Delete it when
+you are done — and note that sessions are held in API memory, so every
+token is invalidated by `docker compose restart api` anyway:
+
+```bash
+docker compose exec -T api python -c "
+from neo4j import GraphDatabase
+from config import URI, USERNAME, PASSWORD
+d = GraphDatabase.driver(URI, auth=(USERNAME, PASSWORD))
+with d.session() as s:
+    s.run('MATCH (u:User {email: \$e}) DETACH DELETE u', e='m2-verify@example.com').consume()
+    print([r['email'] for r in s.run('MATCH (u:User) RETURN u.email AS email')])
+d.close()"
 ```
 
 ## 6. Build and deploy the web frontend
@@ -265,7 +302,41 @@ scp -i ~/.ssh/p85_nectar -r build/web/* \
   ubuntu@<instance-ip>:~/EAT-40005-Extraction/deploy/nectar/web/
 ```
 
-Then open `http://<instance-ip>` in a browser.
+Until this upload exists, `/` returns **403** and the nginx log says
+`directory index of "/usr/share/nginx/html/" is forbidden`. That is the
+signature of an empty `web/`, not a broken nginx.
+
+Verify from the instance:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' localhost/            # 200
+curl -s -o /dev/null -w '%{size_download}\n' localhost/main.dart.js   # ~2.9MB
+```
+
+### Then open `http://<instance-ip>` — and expect Chrome to refuse
+
+**A bare-IP `http://` URL does not open in a current Chrome.** Chrome's
+HTTPS-First upgrades `http://136.186.108.232/` to `https://`, nothing
+listens on 443, and the visitor lands on a connection-error page with no
+"continue anyway" option — there is no certificate warning to click
+through, because the connection is refused outright. Verified 2026-10-27:
+`curl` gets `200` from port 80 while Chrome shows an error page for the
+same address.
+
+This makes **TLS a reachability requirement, not polish**. Until it lands,
+the site is openable only by:
+
+- a browser with HTTPS-First disabled, or
+- an SSH local forward, which `localhost` exempts from the upgrade:
+  `ssh -i ~/.ssh/p85_nectar -N -L 8099:localhost:80 ubuntu@<instance-ip>`
+  then `http://localhost:8099/`. Confirmed working — the Flutter sign-in
+  screen renders. Note that the frontend's baked `API_BASE_URL` still
+  points at the public IP, so API calls from a tunnelled page are
+  cross-origin and may fail; the tunnel proves the app boots, not that
+  the full flow works.
+
+When TLS lands, `API_BASE_URL` changes and **the frontend must be rebuilt
+and re-uploaded** — the value is compiled in, not read at runtime.
 
 ---
 
@@ -312,6 +383,10 @@ may keep accruing SU. Confirm with Nectar support before relying on either.
 | Ollama "model not found" | The `ollama pull` in step 5 did not run, or ran before the volume was mounted |
 | API exits at startup, `Neo.ClientError.Security.Unauthorized` | `NEO4J_USERNAME` was set to `neo4j`. On the P85 instance the username is the instance id, not `neo4j` — see the credentials table in step 5 |
 | Admitted papers and the review queue vanish after a restart | `/mnt/data/uploads` was not created in step 3, or `UPLOADS_DIR=/app/uploads` was removed from `docker-compose.yml`. Without both, uploads sit on the container's writable layer and `docker compose down` deletes them |
+| `POST /query` returns `401 Sign in is required.` | Not a fault. `/query` needs `Authorization: Bearer <token>` from `/auth/register` or `/auth/login`. See step 5 |
+| Signed in fine, then every request 401s after a deploy | Sessions live in API memory, not AuraDB. `docker compose restart api` / `up -d --build` invalidates every token. Users sign in again; accounts themselves are safe in AuraDB |
+| `/` returns 403, log says `directory index ... is forbidden` | `deploy/nectar/web/` is empty — the Flutter build in step 6 was never uploaded |
+| Chrome shows a connection error on `http://<instance-ip>` while `curl` gets 200 | Chrome's HTTPS-First upgraded the bare IP to `https://` and nothing listens on 443. Not a server fault. Use the SSH local forward in step 6 until TLS lands |
 
 ## What this deployment deliberately does not include
 
