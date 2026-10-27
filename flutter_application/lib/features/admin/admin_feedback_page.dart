@@ -74,9 +74,8 @@ class _AdminFeedbackPageState extends State<AdminFeedbackPage> {
       await _refresh();
     } on AdminException catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(error.message)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(error.message)));
     }
   }
 
@@ -222,14 +221,21 @@ class _FeedbackTile extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 8),
-            Text(item.responseText, maxLines: 4, overflow: TextOverflow.ellipsis),
+            Text(
+              item.responseText,
+              maxLines: 4,
+              overflow: TextOverflow.ellipsis,
+            ),
             if (item.comment.isNotEmpty) ...[
               const SizedBox(height: 8),
               Text('“${item.comment}”'),
             ],
             if (item.triples.isNotEmpty) ...[
               const SizedBox(height: 12),
-              Text('Triples shown', style: Theme.of(context).textTheme.labelMedium),
+              Text(
+                'Triples shown',
+                style: Theme.of(context).textTheme.labelMedium,
+              ),
               for (final triple in item.triples)
                 Padding(
                   padding: const EdgeInsets.only(top: 4),
@@ -418,7 +424,9 @@ class _FeedbackReviewDialogState extends State<_FeedbackReviewDialog> {
                         }),
                   title: Text(t.label),
                   subtitle: t.id.startsWith('csv:')
-                      ? const Text('From the CSV file, so it cannot be archived.')
+                      ? const Text(
+                          'From the CSV file, so it cannot be archived.',
+                        )
                       : null,
                 ),
             ],
@@ -431,8 +439,10 @@ class _FeedbackReviewDialogState extends State<_FeedbackReviewDialog> {
           child: const Text('Cancel'),
         ),
         TextButton(
-          onPressed: () =>
-              Navigator.pop(context, _ReviewResult('rejected', _note.text, const [])),
+          onPressed: () => Navigator.pop(
+            context,
+            _ReviewResult('rejected', _note.text, const []),
+          ),
           child: const Text('Dismiss'),
         ),
         FilledButton(

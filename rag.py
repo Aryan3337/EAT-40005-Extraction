@@ -2567,11 +2567,20 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 length = int(self.headers.get("Content-Length", "0"))
                 payload = json.loads(self.rfile.read(length) or b"{}")
                 email = str(payload.get("email", ""))
+                username = str(payload.get("username", ""))
                 password = str(payload.get("password", ""))
                 account = (
-                    get_auth_store().register(email, password)
+                    get_auth_store().register(email, password, username)
                     if register
-                    else get_auth_store().login(email, password)
+                    else get_auth_store().login(
+                        str(
+                            payload.get(
+                                "identifier",
+                                payload.get("username", email),
+                            )
+                        ),
+                        password,
+                    )
                 )
                 if account is None:
                     self._send_json(401, {"error": "Invalid credentials."})
@@ -2613,11 +2622,12 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 self._send_json(503, {"error": "Feedback storage is unavailable."})
 
         # An admin's verdict on one piece of user feedback. Uses the stricter
-        # shared-secret check (not just the admin role) because an approved
-        # review can archive triples out of the live graph, the same class of
-        # action as approving a paper in _handle_manual_review.
+        # admin-role check, enforced here from the session token. The app
+        # hiding the button from non-admins is only cosmetic; this is what
+        # actually refuses everyone else (403). Unlike paper upload/review it
+        # does not also need the shared ADMIN_UPLOAD_SECRET.
         def _handle_feedback_review(self) -> None:
-            if not self._admin_authorised():
+            if not self._admin_role_authorised():
                 return
             admin = self._authenticated_user()
             if admin is None:

@@ -32,26 +32,65 @@ void main() {
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
-  testWidgets('an admin sees the paper-admission entry point', (tester) async {
+  testWidgets('an admin lands on the dashboard, not the chat', (tester) async {
     await signIn(tester, testAdmin, testAdminPassword);
 
-    expect(find.byTooltip('Paper admission'), findsOneWidget);
+    expect(find.text('Admin dashboard'), findsOneWidget);
+    expect(find.byType(TextField), findsNothing);
   });
 
-  testWidgets('an ordinary user does not', (tester) async {
+  testWidgets('an ordinary user lands on the chat', (tester) async {
     await signIn(tester, testUser, testUserPassword);
 
-    expect(find.byTooltip('Paper admission'), findsNothing);
+    expect(find.text('Admin dashboard'), findsNothing);
+    expect(find.byTooltip('Admin dashboard'), findsNothing);
+    expect(find.byType(TextField), findsOneWidget);
   });
 
-  testWidgets('tapping it asks for the admin secret without crashing', (
+  testWidgets('the dashboard lists every feature as a tile', (tester) async {
+    await signIn(tester, testAdmin, testAdminPassword);
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('Chatbot'), findsOneWidget);
+    expect(find.text('Paper admission'), findsOneWidget);
+    expect(find.text('Feedback review'), findsOneWidget);
+    expect(find.text('Manage users'), findsOneWidget);
+  });
+
+  testWidgets('the chatbot tile opens the chat and back returns', (
+    tester,
+  ) async {
+    await signIn(tester, testAdmin, testAdminPassword);
+
+    await tester.tap(find.text('Chatbot'));
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField), findsOneWidget);
+    expect(find.text('Feedback review'), findsNothing);
+
+    await tester.tap(find.byTooltip('Admin dashboard'));
+    await tester.pumpAndSettle();
+    expect(find.text('Feedback review'), findsOneWidget);
+  });
+
+  testWidgets('signing out from the dashboard returns to login', (
+    tester,
+  ) async {
+    await signIn(tester, testAdmin, testAdminPassword);
+
+    await tester.tap(find.byTooltip('Sign out'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Sign in'), findsOneWidget);
+  });
+
+  testWidgets('tapping paper admission asks for the admin secret', (
     tester,
   ) async {
     // This is the one that failed in the browser: showDialog needs a context
     // below MaterialApp, and app.dart was passing one from above it.
     await signIn(tester, testAdmin, testAdminPassword);
 
-    await tester.tap(find.byTooltip('Paper admission'));
+    await tester.tap(find.text('Paper admission'));
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
@@ -60,7 +99,7 @@ void main() {
 
   testWidgets('entering the secret opens the admin screen', (tester) async {
     await signIn(tester, testAdmin, testAdminPassword);
-    await tester.tap(find.byTooltip('Paper admission'));
+    await tester.tap(find.text('Paper admission'));
     await tester.pumpAndSettle();
 
     await tester.enterText(find.byType(TextField).last, 'test-secret-123');
@@ -68,12 +107,19 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
+    expect(find.text('Admin dashboard'), findsNothing);
     expect(find.text('Paper admission'), findsWidgets);
+
+    await tester.tap(find.byTooltip('Back to dashboard'));
+    await tester.pumpAndSettle();
+    expect(find.text('Admin dashboard'), findsOneWidget);
   });
 
-  testWidgets('cancelling the secret prompt stays on the chat', (tester) async {
+  testWidgets('cancelling the secret prompt stays on the dashboard', (
+    tester,
+  ) async {
     await signIn(tester, testAdmin, testAdminPassword);
-    await tester.tap(find.byTooltip('Paper admission'));
+    await tester.tap(find.text('Paper admission'));
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('Cancel'));
@@ -81,6 +127,6 @@ void main() {
 
     expect(tester.takeException(), isNull);
     expect(find.text('Admin secret'), findsNothing);
-    expect(find.byTooltip('Paper admission'), findsOneWidget);
+    expect(find.text('Feedback review'), findsOneWidget);
   });
 }

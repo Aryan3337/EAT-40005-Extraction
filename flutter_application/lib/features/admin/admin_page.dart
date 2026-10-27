@@ -310,7 +310,7 @@ class _AdminPageState extends State<AdminPage> {
             ? null
             : IconButton(
                 icon: const Icon(Icons.arrow_back),
-                tooltip: 'Back to chat',
+                tooltip: 'Back to dashboard',
                 onPressed: widget.onClose,
               ),
         actions: [
