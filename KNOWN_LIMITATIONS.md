@@ -968,3 +968,64 @@ period, and `OLLAMA_KEEP_ALIVE` is unset, so Ollama evicts the model after
 5 minutes. Setting `OLLAMA_KEEP_ALIVE=-1` has been recommended since the
 pre-deployment spec check and is still not applied; on a low-traffic demo
 the first question asked is exactly the one that pays the reload.
+
+## 29. The Bangla answer invents a place the English answer does not contain
+
+Observed 2026-10-28 on the live instance, verifying the P2 deployment. One
+question, `Where do the Garo people live?`, asked through
+`https://136.186.108.232.sslip.io/query` with `TRANSLATION_PROVIDER=llm`.
+
+The English answer is faithful to the retrieved triples:
+
+> The Garo people live in Mymensingh, Bangladesh. They are also residents in
+> the Garo Hills (Meghalaya) and in neighboring parts of Goalpara (Assam).
+
+The Bangla translation of it is not:
+
+> গারো মানুষ বাংলাদেশে ময়মনসিংহ থেকে **উত্তর বাংলাদেশে** থাকে। তারা আরও গারো
+> হিল্স (মেঘালায়) ও **নির্দেশিত অঙ্গামের** গোয়ালপারা থেকে থাকে।
+>
+> (Garo manush Bangladesh e Mymensingh theke uttar Bangladesh e thake...)
+
+Two distinct faults, and the second is the serious one:
+
+1. **An unrequested romanised transliteration is appended** to the answer, in
+   parentheses, in both `bn` and `hi`. Nothing asked for it and no caller
+   strips it, so it reaches the user as part of the answer text.
+
+2. **It states that the Garo live "from Mymensingh to northern Bangladesh"**
+   -- উত্তর বাংলাদেশ, northern Bangladesh, appears in no triple, in no source
+   sentence and in the English answer it was given to translate. Mymensingh is
+   in north-central Bangladesh, so the claim is not absurd; it is simply not
+   something the evidence says. `নির্দেশিত অঙ্গামের` is additionally garbled
+   where the English reads "neighboring parts of".
+
+This is a different failure from the one recorded at `rag.py:1615`, which
+says the local model writes Bangla and Hindi "with frequent spelling errors".
+Misspelling is cosmetic. Adding a geographic claim is the hallucination class
+this project spends its whole retrieval design avoiding -- the relevance gate,
+the refusal-over-bridging rule, the single-hop retrieval -- and the
+translation step reintroduces it *after* every one of those defences has run.
+Nothing checks a translation against the evidence.
+
+**Why it matters more than it looks.** Per the 2026-10-27 decision to keep
+eager translations (`19b3168`), the Bangla answer is the deliverable for the
+primary audience, not an optional extra: users will be in Bangladesh, and
+limitation 26 means they must ask in English and read the Bangla answer. So
+the output least able to be checked by its reader is the one most likely to
+be wrong, and the English text that would expose the drift is sitting right
+next to it in the same response.
+
+**Not fixed here.** The sample is one question, which is enough to show the
+fault exists and not enough to size it. Sizing it is cheap and deterministic:
+re-run the 8 benchmark questions from `d5dec14`, keep `translations.en`
+alongside `translations.bn`, and count answers whose Bangla names a place,
+number or date the English does not. That measurement should come before any
+fix, because the candidate fixes differ in cost by an order of magnitude --
+stripping the transliteration is a regex, constraining the translation prompt
+is a prompt change, and validating a translation against the evidence is a
+second LLM pass per language on a path that already runs three.
+
+`origin/ahmed/feature-SCRUM-318-bangla-translation-quality` exists and was
+not reviewed for this; check whether it addresses either fault before writing
+anything new.

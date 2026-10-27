@@ -272,7 +272,7 @@ cleartext is worse than shipping no login form. Record whichever you chose in
 
 ## P2 — Reproducible frontend build
 
-**Blocked by:** M2 · **Size:** 1 day
+**Blocked by:** M2 · **Size:** 1 day · **DONE 2026-10-28**
 
 Render built the frontend on push. On Nectar nothing does: `deploy/nectar/web/`
 holds a `.gitkeep`, and the real artifact comes from `flutter build web` on a
@@ -290,6 +290,33 @@ has to remember to pass correctly.
 **Done when:** `docker compose up -d --build` from a clean clone produces a
 working site with no manual copy step, and the built JS contains the real
 origin (`grep -r "sslip.io"` over the build output finds it).
+
+**Done 2026-10-28, `62b1378`.** `deploy/nectar/Dockerfile.web` builds the
+frontend from a pinned, sha256-checked Flutter 3.47.6 SDK taken from Google's
+release bucket -- not a third-party SDK image, since
+`ghcr.io/cirruslabs/flutter` has no 3.47.6 tag. `deploy/nectar/web/` is gone
+and both bind mounts are off the `web` service: `nginx.conf` is baked in too,
+which also retires the single-file-mount trap where an edit plus
+`nginx -s reload` silently did nothing.
+
+Evidence: the image built on the instance first try (SDK checksum passed,
+`flutter build web` 52.5s), `grep -rl sslip.io /usr/share/nginx/html` inside
+the running container finds `main.dart.js`, and the served bundle is
+**2,957,851 bytes** -- the same size as the laptop build it replaces.
+`API_BASE_URL` now lives in `.env`; compose refuses to start without it and
+the Dockerfile checks again, because an *empty* value is the dangerous one
+(the site loads and silently calls the visitor's own machine).
+
+A cold build fetches ~1.5GB of SDK; a source-only rebuild reuses that layer,
+and a change to `nginx.conf` alone takes seconds because its COPY is in the
+final stage.
+
+**What it does not solve.** The instance's IP is still a value a human has to
+keep in step -- in `.env` and in the certificate name -- because there is no
+floating IP on this allocation. The build removes the *upload*, not the
+address. Pointing the frontend at its own origin at runtime (making
+`API_BASE_URL` unnecessary) would, and is in `NECTAR_BACKLOG.md` territory,
+not here.
 
 ---
 
