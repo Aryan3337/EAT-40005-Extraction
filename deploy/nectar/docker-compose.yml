@@ -19,6 +19,23 @@ services:
     # Deliberately NO ports: -- publishing 11434 would expose an
     # unauthenticated Ollama to the internet. The API reaches it over the
     # compose network instead.
+    environment:
+      # Never evict the model. Ollama's default is to unload after 5
+      # minutes idle, and reloading 5GB from the attached volume is slow
+      # enough that it pushed a question past nginx's 180s ceiling on
+      # 2026-10-27 -- a 504 on the FIRST question of an 8-question
+      # benchmark, with every later one answering fine because the model
+      # was by then resident.
+      #
+      # That is the worst possible shape for a demo: a quiet period is
+      # exactly what precedes the first question anyone asks, so the most
+      # visible request is the one most likely to fail.
+      #
+      # Costs 5GB of RAM held permanently against the 31GB on this
+      # flavour, ~20GB of which was free under full load during that
+      # benchmark. This box does one job; there is nothing else to spend
+      # that memory on.
+      - OLLAMA_KEEP_ALIVE=-1
     restart: unless-stopped
 
   api:
