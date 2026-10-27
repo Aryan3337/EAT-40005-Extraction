@@ -62,6 +62,41 @@ request exactly; vCPUs came in higher than asked.
 
 **Volume storage (50 GiB) is the binding constraint, not compute or SU.**
 
+**The allocation record itself, read 2026-10-27.** It is visible only to
+whoever submitted the allocation — every other tenant manager's
+"My Requests" list is empty — so ask Afzal rather than going looking:
+
+| Field | Value |
+|---|---|
+| State | Approved, `Provisioned: yes` |
+| **Window** | **19 Oct 2026 → 19 Oct 2027** (12 months) |
+| Contact | `achowdhary@swin.edu.au` |
+| Approver | `pwolynec@swin.edu.au` |
+| Project ID | `39543965fbe54d1ca3794f8b4a184806` |
+| **Associated Site** | **Swinburne**; `National funded: no` |
+| Current Resources | `Bundle: Standard`, plus "Volume Service Storage Swinburne (VIC) 50 GB" |
+
+That closes open item 2 below: **the allocation expires 19 Oct 2027** and
+Afzal is the contact of record for renewing it. Two further things follow.
+
+**The availability zone is `swinburne-01`.** A site allocation has a network
+in its own site's zone and nowhere else, which is why launching with
+Availability Zone = *Any* fails with `Failed to allocate the network(s), not
+rescheduling` — measured 2026-10-27 on instance
+`6867d2d0-bccf-47dc-b91c-8e77f767837d`, which had to be deleted and
+relaunched with the zone pinned. The volume must be created in the same zone
+or it cannot attach. `deploy/nectar/README.md` step 1 now says so; nothing in
+this repo did before, and the zone is not discoverable from the dashboard
+quota views a deployer can see.
+
+**The quota table above is the dashboard's bundle-derived view, not an
+approved per-zone grant.** `Current Resources` lists only the Standard bundle
+and the 50 GB volume: there is no compute line and no per-AZ vCPU/RAM
+breakdown. The 64 vCPU / 128 GB figures are what the launch wizard reports as
+available, and that is the right thing to measure `m3.xlarge` (16 / 32)
+against, so D1 is unaffected. But do not read that table as "Nectar approved
+64 vCPUs" when discussing headroom with Afzal or a successor.
+
 ## Decisions
 
 ### D1 — Instance: `m3.xlarge` (16 vCPU, 32 GB RAM), 0.457 SU/hr
@@ -230,8 +265,11 @@ A message covering item 3 was drafted on 26 Oct 2026.
    and nobody can restart a stopped instance or renew the allocation. Afzal or
    Tanjila must be added as a tenant manager before handover. *Highest risk item
    on this list.*
-2. **Allocation end date and renewal owner.** If it lapses mid-assessment the
-   assessors get a dead link.
+2. ~~**Allocation end date and renewal owner.**~~ **ANSWERED 2026-10-27** from
+   the allocation record above: the window is **19 Oct 2026 → 19 Oct 2027** and
+   `achowdhary@swin.edu.au` is the contact. Still open is who renews it once the
+   students' accounts deactivate — which is item 1, not this one. If it lapses
+   mid-assessment the assessors get a dead link.
 3. **Were the 2 GPUs actually approved, does use require a reservation, and what
    is the SU/hour for `qld-multi-gpu`?** A 196-vCPU node could burn 4000 SU in
    days.

@@ -64,8 +64,26 @@ Owner: one person, needs Nectar dashboard access and the AuraDB credentials.
 
 **Blocks:** everything · **Size:** 0.5 day · **Needs:** Nectar dashboard
 
-Follow `deploy/nectar/README.md` steps 1–4, which can now be followed
-literally.
+**DONE 2026-10-27.** `p85-chatbot` is live: `m3.xlarge` in availability zone
+**`swinburne-01`**, public IP **136.186.108.232**, key pair `p85-nectar`,
+security group `p85-chatbot` (22 from one `/32`, 80 and 443 open), 20 GiB
+volume `p85-data` mounted at `/mnt/data` by UUID with `ollama/` and
+`uploads/`, OS fully patched, verified across a reboot. Three findings from
+the real run are now in the runbook; re-read step 1 rather than this summary
+if you are rebuilding.
+
+Follow `deploy/nectar/README.md` steps 1–4, but **not in that numeric
+order** — the wizard in step 1 selects a security group and a key pair, so it is
+**2 → key pair → 1 → 3 → 4**. The numbers were kept so this file, `web/.gitkeep`
+and the runbook's own troubleshooting table keep pointing at the right places.
+
+**Three things the first real run established, all now in the runbook:**
+
+| Finding | Why it matters |
+|---|---|
+| **Availability Zone must be `swinburne-01`**, set explicitly | With AZ = *Any* the launch dies: `Failed to allocate the network(s), not rescheduling`. This is a site allocation at Swinburne (`Associated Site: Swinburne`, `National funded: no`), so only that zone has a network. The volume must be in the same zone to attach |
+| **There is no floating IP** | `Classic Provider` hands out the public IP at boot. The project has no router and no self-service network, so "Associate Floating IP" is not a step. The address is instance-bound: a rebuild changes it, invalidating the Flutter build's `API_BASE_URL` and P1's `<ip>.sslip.io` certificate |
+| **`ubuntu` is not in the `docker` group** on this image | Every `docker compose` command in M2 fails on `/var/run/docker.sock` until `sudo usermod -aG docker ubuntu` and a reconnect. Compose itself is present as the v2 plugin |
 
 **The three deviations this block used to list are landed in the repo**
 (`d7c6851`, pushed 2026-10-27) — do not apply them by hand, and do not
@@ -89,10 +107,11 @@ created alongside `/mnt/data/ollama`.
 A companion walkthrough of these four steps, for whoever is at the dashboard:
 https://claude.ai/artifact/6so53xdFn4z6kjJRP78prm
 
-**Done when:** `ssh ubuntu@<floating-ip>` works, `lsblk` shows the volume at
-`/mnt/data`, `/etc/fstab` has the `nofail` entry, `df -h /mnt/data` shows
-20 GiB, and `/mnt/data` contains both `ollama/` and `uploads/` owned by
-`ubuntu`.
+**Done when:** `ssh ubuntu@<instance-ip>` works, `findmnt /mnt/data` shows the
+volume still mounted *after a reboot*, `/etc/fstab` has the `nofail` entry,
+`df -h /mnt/data` shows 20 GiB, `/mnt/data` contains both `ollama/` and
+`uploads/` owned by `ubuntu`, and `id -nG` includes `docker`. All verified
+2026-10-27.
 
 ## M2 — Deploy against AuraDB
 
@@ -113,7 +132,7 @@ docker compose exec ollama ollama pull mistral:7b
 missing credential rather than a misspelt variable name.
 
 Then copy the frontend up per runbook step 6 — `flutter build web --release
---dart-define=API_BASE_URL=http://<floating-ip>` on a machine with Flutter,
+--dart-define=API_BASE_URL=http://<instance-ip>` on a machine with Flutter,
 then `scp` to `deploy/nectar/web/`. Manual for now; P2 fixes that. Left empty,
 `API_BASE_URL` falls back to `http://127.0.0.1:8000`, which in a visitor's
 browser means *their* machine.
@@ -171,7 +190,7 @@ and `/auth/login`, which accept passwords, plus `ADMIN_UPLOAD_SECRET` in a
 request header. On port 80 all of that crosses the network in cleartext,
 including over university wifi.
 
-Use `sslip.io` so no DNS purchase is needed — `<floating-ip>.sslip.io` resolves
+Use `sslip.io` so no DNS purchase is needed — `<instance-ip>.sslip.io` resolves
 to the IP automatically. Then certbot in the `web` container, or an
 `nginx:alpine` + certbot sidecar writing to a shared volume.
 
@@ -204,7 +223,7 @@ copy `build/web` into an `nginx:alpine` stage alongside `nginx.conf`. Replace
 the `web` service's `image:` and bind mounts with a `build:` block passing
 `API_BASE_URL` as an `args:` value.
 
-This is the only option where the floating IP stops being something a human
+This is the only option where the instance IP stops being something a human
 has to remember to pass correctly.
 
 **Done when:** `docker compose up -d --build` from a clean clone produces a

@@ -10,16 +10,61 @@ Expect **40–60 minutes** end to end, most of it the model download.
 
 ## 1. Launch the instance
 
+**Do step 2 first.** The launch wizard picks a security group and a key pair
+from lists, so both have to exist before you start it. Follow this file in the
+order **2 → the key pair below → 1 → 3 → 4 → 5 → 6**. The numbering is
+left alone because `../../NECTAR_IMPLEMENTATION_PLAN.md`, `web/.gitkeep` and
+the troubleshooting table below all cite these numbers.
+
+**The key pair, before the wizard.** Generate it locally and import only the
+public half, rather than letting the dashboard mint one and show you the
+private key once in a browser:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/p85_nectar -C "p85-nectar"
+cat ~/.ssh/p85_nectar.pub
+```
+
+Then **Compute -> Key Pairs -> Import Key Pair**: name `p85-nectar`, type
+**SSH Key**, paste that single line. On Windows the path is
+`$env:USERPROFILE\.ssh\p85_nectar` and `ssh-keygen` will not create the
+directory for you — run
+`New-Item -ItemType Directory -Force "$env:USERPROFILE\.ssh"` first. Keep the
+private key out of OneDrive or any other synced folder. An empty passphrase is
+reasonable here — the key opens a rebuildable demo VM, and the `scp` in step 6
+would otherwise prompt repeatedly — the secrets worth protecting on this
+instance live in `.env`.
+
 Nectar dashboard -> **Compute -> Instances -> Launch Instance**.
 
 | Tab | Value |
 |---|---|
-| **Details** | Instance name `p85-chatbot` |
+| **Details** | Instance name `p85-chatbot`; **Availability Zone `swinburne-01`** |
 | **Source** | Boot from **Image**: `NeCTAR Ubuntu 22.04 LTS (Jammy) amd64 (with Docker)`. Create New Volume: **No** |
 | **Flavour** | `m3.xlarge` — 16 VCPU, 32 GB RAM, 30 GB root, 0.457 SU/hr |
-| **Networks** | The project's default network |
-| **Security Groups** | See step 2 |
-| **Key Pair** | Create or select one. **Download the private key now** — it is shown once |
+| **Networks** | `Classic Provider` — the project's only network, usually pre-allocated |
+| **Security Groups** | `p85-chatbot` from step 2; deallocate `default` |
+| **Key Pair** | `p85-nectar`, imported above |
+
+**Set the availability zone explicitly. Leaving it on *Any* is how this
+fails.** Measured 2026-10-27, a launch with no zone set died with:
+
+```
+Build of instance 6867d2d0-bccf-47dc-b91c-8e77f767837d aborted:
+Failed to allocate the network(s), not rescheduling.
+```
+
+Nova placed the instance, then Neutron had no port to give it. This is a
+**site allocation at Swinburne** — the allocation record reads
+`Associated Site: Swinburne`, `National funded: no`, and its only storage line
+is "Volume Service Storage Swinburne (VIC) 50 GB" — so `swinburne-01` is the
+zone where the project has a network, and the volume in step 3 must be created
+in that same zone or it cannot attach. That record is visible only to whoever
+submitted the allocation (Afzal); every other tenant manager's "My Requests"
+list is empty, so it is not something a deployer can look up.
+
+An `Error` instance still holds quota. Delete it before relaunching rather
+than leaving it beside the new one.
 
 Not the `AI Ready` images: they are 15–19 GB of CUDA and PyTorch that a
 CPU-only deployment cannot use, and they would fill the 30 GB root disk.
@@ -42,8 +87,10 @@ Ollama to the internet.
 ## 3. Volume for the model and data
 
 **Volumes -> Volumes -> Create Volume**: name `p85-data`, size **20 GiB**
-(quota is 50 GiB total). Then **Manage Attachments** -> attach to
-`p85-chatbot`.
+(quota is 50 GiB total), source **No source, empty volume**, Availability
+Zone **`swinburne-01`** — the same zone as the instance, or it cannot
+attach. Then **Manage Attachments** -> attach to `p85-chatbot`; the status
+goes `Available` -> `In-use`.
 
 20 GiB, not 30: the only things stored here are the Ollama model (~4.7 GB,
 re-downloadable) and `uploads/`. 30 GiB spent 60% of the volume quota
@@ -57,32 +104,99 @@ SSH in and mount it. `/dev/vdb` is the usual device — confirm with `lsblk`
 before formatting, and **only format a brand new volume**:
 
 ```bash
-ssh -i <your-key>.pem ubuntu@<floating-ip>
+ssh -i ~/.ssh/p85_nectar ubuntu@<instance-ip>
 
 lsblk                                   # confirm the device name first
 sudo mkfs.ext4 /dev/vdb                 # NEW VOLUME ONLY - destroys data
 sudo mkdir -p /mnt/data
 sudo mount /dev/vdb /mnt/data
-echo '/dev/vdb /mnt/data ext4 defaults,nofail 0 2' | sudo tee -a /etc/fstab
+
+sudo blkid /dev/vdb                     # mkfs printed this UUID too
+echo 'UUID=<uuid-from-above> /mnt/data ext4 defaults,nofail 0 2' | sudo tee -a /etc/fstab
+cat /etc/fstab                          # the new entry must be on its own line
+
 sudo mkdir -p /mnt/data/ollama /mnt/data/uploads
 sudo chown -R ubuntu:ubuntu /mnt/data
 ```
 
-`nofail` matters: without it, a missing volume stops the instance booting.
+`nofail` matters: without it a missing volume stops the instance booting, and
+there is no console to fix it from.
+
+**`UUID=`, not `/dev/vdb`** (this runbook said `/dev/vdb` until 2026-10-27).
+Device names are assignment order, not identity: attach a second volume later
+and today's `vdb` can come back as `vdc`, at which point the fstab line mounts
+the wrong disk or nothing at all. A UUID follows the filesystem.
+
+`cat /etc/fstab` is not ceremony either. `tee -a` appends, so if the file had
+no trailing newline the new entry joins onto the end of the root entry and the
+instance does not boot.
 
 Both directories matter. `/mnt/data/uploads` is bind-mounted to
 `/app/uploads` by `docker-compose.yml`, which is the only reason admitted
 papers and `queue.jsonl` survive `docker compose down` -- `UPLOADS_DIR`
 otherwise defaults to a path on the container's writable layer.
 
-Confirm before moving on: `lsblk` shows the volume mounted at
-`/mnt/data`, `df -h /mnt/data` reports ~20 GiB, and `/etc/fstab` has the
-`nofail` line.
+Then patch the OS, while nothing is being served yet. A fresh Jammy image is
+~165 packages behind, ~140 of them security updates, and this box is about to
+publish a login form:
 
-## 4. Associate a floating IP
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo reboot
+```
 
-**Compute -> Instances -> Associate Floating IP** on `p85-chatbot`. Note
-the address — it goes in the Flutter build in step 6.
+**Answer the openssh-server prompt with "keep the local version currently
+installed."** The Nectar image ships a modified `sshd_config`, and that
+modification is what sets `passwordauthentication no` and `permitrootlogin
+no`; the maintainer's version would overwrite both. SSH is the only way into
+this instance. On the "daemons using outdated libraries" prompt accept the
+defaults — the reboot restarts everything regardless.
+
+Confirm before moving on. The reboot doubles as the fstab test, so run these
+*after* reconnecting:
+
+```bash
+findmnt /mnt/data                                # /dev/vdb on /mnt/data, ext4
+df -h /mnt/data                                  # ~20 GiB, ~1% used
+ls -la /mnt/data                                 # ollama/ + uploads/, owned by ubuntu
+docker --version                                 # Docker survived the upgrade
+docker compose version                           # the v2 plugin step 5 uses
+id -nG                                           # must include: docker
+sudo sshd -T | grep -i passwordauthentication    # expect: no
+```
+
+**`id -nG` will not include `docker` on a fresh instance** (verified
+2026-10-27 on this image), and without it every `docker compose` command in
+step 5 fails on `/var/run/docker.sock`. Fix it here:
+
+```bash
+sudo usermod -aG docker ubuntu
+```
+
+Then log out and back in — group membership is read at login, so the
+reconnect is what applies it — and check `docker ps` runs without `sudo`.
+
+## 4. The public address (there is no floating IP)
+
+**Nothing to do here but read the address.** `Classic Provider` assigns a
+routable public IPv4 at boot: take it from the **IP Address** column on the
+Instances page. Verified 2026-10-27 — `p85-chatbot` came up on
+`136.186.108.232` with no floating IP involved, and the project has no other
+network and no router. Floating IPs belong to projects running their own
+self-service network, which this one does not have, so the **Associate
+Floating IP** action this step used to describe does not apply.
+
+That address goes in the Flutter build in step 6.
+
+**It is instance-bound, which is a handover caveat rather than a detail.** A
+classic-provider address belongs to the instance, so destroying and recreating
+the VM yields a *different* address — invalidating both the `API_BASE_URL`
+compiled into the Flutter web build (step 6) and any `<ip>.sslip.io`
+certificate from `../../NECTAR_IMPLEMENTATION_PLAN.md` P1. The volume makes the
+data survive a rebuild; nothing makes the URL survive one. So a rebuild also
+means rebuilding the frontend, re-running certbot, and telling whoever holds
+the link. If a stable address matters more than that, ask Afzal whether the
+allocation can be given a router and a floating IP.
 
 ## 5. Deploy
 
@@ -137,7 +251,7 @@ On a machine with Flutter installed, **not** the instance:
 ```bash
 cd flutter_application
 flutter build web --release \
-  --dart-define=API_BASE_URL=http://<floating-ip>
+  --dart-define=API_BASE_URL=http://<instance-ip>
 ```
 
 `API_BASE_URL` must be the real address. Left empty it falls back to
@@ -147,11 +261,11 @@ machine, not the server.
 Copy the build up:
 
 ```bash
-scp -i <your-key>.pem -r build/web/* \
-  ubuntu@<floating-ip>:~/EAT-40005-Extraction/deploy/nectar/web/
+scp -i ~/.ssh/p85_nectar -r build/web/* \
+  ubuntu@<instance-ip>:~/EAT-40005-Extraction/deploy/nectar/web/
 ```
 
-Then open `http://<floating-ip>` in a browser.
+Then open `http://<instance-ip>` in a browser.
 
 ---
 
@@ -224,7 +338,7 @@ may keep accruing SU. Confirm with Nectar support before relying on either.
   files. `TTS_ENABLED` stays unset and `TRANSLATION_PROVIDER=llm`.
 - **HTTPS.** Port 80 only *as deployed*. The reason given here used to be
   that TLS needs a DNS name the project does not have; that is no longer the
-  blocker. `NECTAR_IMPLEMENTATION_PLAN.md` P1 uses `<floating-ip>.sslip.io`,
+  blocker. `NECTAR_IMPLEMENTATION_PLAN.md` P1 uses `<instance-ip>.sslip.io`,
   which resolves to the IP with nothing to buy or register, and the security
   group already opens 443. P1 is on the critical path, not optional: the API
   serves `/auth/register` and `/auth/login`, which carry passwords, plus
