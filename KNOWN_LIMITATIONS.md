@@ -830,3 +830,108 @@ has yet checked whether those tests describe this exact defect.
 in English. A Bangla or Hindi question does not error, it politely says it
 found nothing, which reads like an empty knowledge base rather than a
 language fault.
+
+## 27. The relevance gate refuses a question whose answer is the top-ranked triple
+
+**Measured on the live Nectar deployment, 2026-10-27**, running the eight
+benchmark questions from `tools/compare_retrieval_paths.py` through
+`https://136.186.108.232.sslip.io/query`.
+
+*"What is the Garo population?"* is **refused** -- "I could not find enough
+connected evidence to answer that question" -- while the evidence list
+returned alongside that refusal begins:
+
+```
+Population_Census_2022 -[POPULATION]-> 1,650,159      <-- the answer, ranked 1st
+Garo_People           -[BILINGUAL]-> Garo_Language
+GaroCommunity         -[LANGUAGE_USED]-> Garo
+GaroCommunity         -[HAS_LANGUAGE_MAINTENANCE]-> GaroLanguage
+GaroCommunity         -[RESIDENTS]-> GaroHills_Meghalaya
+Culture               -[OF_GAROPEOPLE]-> GaroPeople
+Garo_People           -[BILINGUAL]-> Bengali
+TraditionalGaroHouses -[HAVE_PROPERTY]-> bamboo floor
+GaroCommunityHealthStatus -[HAS_HEALTH_STATUS]-> good
+ModernCivilization    -[AFFECTS]-> GaroCommunity
+```
+
+The fact is in the corpus, retrieval found it, and ranked it first. The
+system still said it could not answer.
+
+**This is the graph-path precision gap turning into a recall failure, and
+it changes how that gap should be argued for.** Nine of those ten triples
+are off-topic -- the exact figure `tools/compare_retrieval_paths.py`
+reports for this question (graph 10, csv 1). The working theory is that
+nine irrelevant triples dilute the evidence block enough that the
+synthesis relevance gate judges the whole set irrelevant and refuses. It
+had previously been assumed that off-topic evidence was cosmetic, because
+the synthesizer visibly ignores it when it does answer (see the religion
+question, which answers correctly from one relevant triple among six
+language ones). That assumption is wrong at the margin: past some ratio,
+the junk does not get ignored, it suppresses the answer.
+
+So **backlog G1 (`matches_topic` on the graph path) is not a cosmetic
+fix.** It is plausibly the difference between answering and refusing on
+questions the corpus can answer. Verify that by re-running the eight
+questions after G1 lands -- this entry exists to make that a measurement
+rather than a hope.
+
+**Not every refusal is this bug.** Of three refusals in the same run, two
+were correct and should stay: *"How has Garo livelihood changed?"*
+retrieved only `LivelihoodPatterns -[MAINLYREFERS]-> {FoodHabit, DressCode,
+Religion, ...}`, which defines what livelihood means and says nothing about
+change over time; *"What happens during antepartum care?"* retrieved a
+single unrelated triple about British authorities and natural resources.
+Refusing there is the precision-over-recall posture working. Do not "fix"
+those by loosening the gate.
+
+
+## 28. Every query runs three LLM generations, so latency is ~3x what it needs to be
+
+**Measured on the live deployment, 2026-10-27.** Eight benchmark questions:
+one **504 at the 180s nginx ceiling**, one answer at **174s** (six seconds
+under it), and a spread of 8s / 24s / 27s / 72s / 106s / 122s. The
+deployment is operating at the edge of its own timeouts, not comfortably
+inside them.
+
+The cause is not the box. During the run `uptime` showed load 15.6 across
+16 cores with `llama-server` at 1600% CPU and 20 GB RAM free -- fully
+utilised, no contention, nothing else competing.
+
+**The cause is that `/query` answers in three languages every time.**
+`rag.py`'s `answer_translations` (line 1638) generates the English answer,
+then translates it into Hindi **and** Bengali, regardless of the language
+the client asked for. And because `TRANSLATION_PROVIDER=llm` -- which the
+no-third-party-provider constraint requires -- it takes the `else` branch
+at line 1672 and runs those translations **sequentially**. Only the
+`online` and `auto` providers get the `ThreadPoolExecutor`. So an English
+question costs one synthesis plus two serialized translation calls on a
+CPU-only box measured at 12.39 tok/s.
+
+Two consequences that are easy to miss:
+
+1. **The demo answer cache barely helps.** `data/demo_answer_cache.json`
+   hits for its three questions -- verified inside the running container --
+   but it only short-circuits the English generation. The two translation
+   calls still run, so *"Where do the Garo live?"* took **72s** rather than
+   being instant. Anyone describing those three questions as "pre-cached so
+   they return immediately" is describing the CSV/demo path, not this
+   deployment.
+2. **We are spending two thirds of the latency budget on output nobody
+   asked for**, in languages whose *question* path does not work at all
+   (limitation 26), and whose translation quality is already recorded as
+   frequently misspelt (`rag.py:1615`).
+
+**The obvious lever** is to generate only the requested language and
+translate on demand when the user switches. That is roughly a 3x latency
+cut and would move every measured question comfortably inside both the
+130s `ANSWER_SYNTHESIS_TIMEOUT_SECONDS` and the 180s
+`proxy_read_timeout`. The trade-off is that switching language in the UI
+would then cost a round trip instead of being instant -- which is the
+design intent of the current behaviour, and why this is recorded as a
+decision to revisit rather than simply a bug.
+
+**Unrelated but adjacent:** the 504 was the first question after an idle
+period, and `OLLAMA_KEEP_ALIVE` is unset, so Ollama evicts the model after
+5 minutes. Setting `OLLAMA_KEEP_ALIVE=-1` has been recommended since the
+pre-deployment spec check and is still not applied; on a low-traffic demo
+the first question asked is exactly the one that pays the reload.
