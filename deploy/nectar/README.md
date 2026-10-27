@@ -211,8 +211,8 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # paste into ADM
 nano .env
 ```
 
-`.env` needs **four** values before the API will start. Retrieval reads
-AuraDB, so the three `NEO4J_*` ones are not optional:
+`.env` needs **five** values before `docker compose up` will work.
+Retrieval reads AuraDB, so the three `NEO4J_*` ones are not optional:
 
 | Variable | Where it comes from |
 |---|---|
@@ -220,14 +220,22 @@ AuraDB, so the three `NEO4J_*` ones are not optional:
 | `NEO4J_USERNAME` | **Not `neo4j`** on the P85 instance, and not `NEO4J_USER` either. Verified 2026-10-27: `neo4j` fails with `Neo.ClientError.Security.Unauthorized`; the working value is the same 8-hex string as the instance id in `NEO4J_URI`. Copy it from the Aura console verbatim |
 | `NEO4J_PASSWORD` | Shown once when the Aura instance was created |
 | `ADMIN_UPLOAD_SECRET` | The `token_urlsafe` value you just generated |
+| `API_BASE_URL` | The origin visitors will type, e.g. `https://136.186.108.232.sslip.io`. Compiled into the frontend at build time, so it is needed by `up --build`, not just at runtime. Before TLS exists (step 7), `http://<instance-ip>` builds a working site; rebuild the `web` service after step 7 to move it to the `sslip.io` name |
 
 Missing any of the three Neo4j values and the container exits at startup
-with `Neo4j configuration is incomplete.`
+with `Neo4j configuration is incomplete.` Missing `API_BASE_URL` and compose
+refuses to build at all, naming the variable -- deliberately, because an
+empty one produces a site that loads and cannot reach its own API.
 
 ```bash
 docker compose up -d --build
 docker compose exec ollama ollama pull mistral:7b     # ~4.7GB, several minutes
 ```
+
+The first `--build` compiles the Flutter frontend inside the `web` image and
+fetches a ~1.5GB SDK to do it, so expect a few minutes before anything
+answers on port 80. That is the whole of the old "build and upload the
+frontend" step; section 6 covers rebuilding it.
 
 Check it:
 
@@ -294,43 +302,68 @@ d.close()"
 
 ## 6. Build and deploy the web frontend
 
-On a machine with Flutter installed, **not** the instance:
+**There is no separate step any more.** `docker compose up -d --build` in
+section 5 built the frontend as part of the `web` service. This section is
+what to know when it goes wrong or needs rebuilding.
+
+`deploy/nectar/Dockerfile.web` compiles the Flutter app inside the image: a
+pinned, checksummed Flutter 3.47.6 SDK from Google's release bucket, then
+`flutter build web --release`, then an `nginx:alpine` stage that holds the
+compiled site and `nginx.conf`. The document root is image content; nothing
+is uploaded.
+
+Rebuild just the frontend after a source or `API_BASE_URL` change:
 
 ```bash
-cd flutter_application
-flutter build web --release \
-  --dart-define=API_BASE_URL=http://<instance-ip>
+cd ~/EAT-40005-Extraction/deploy/nectar
+docker compose up -d --build web
 ```
 
-`API_BASE_URL` must be the real address. Left empty it falls back to
-`http://127.0.0.1:8000`, which in a browser means the visitor's own
-machine, not the server.
+A cold build fetches ~1.5GB of SDK and takes a few minutes; afterwards the
+SDK and the resolved dependencies are cached layers, so a source-only change
+rebuilds in well under a minute and a change to `nginx.conf` alone takes
+seconds.
 
-Copy the build up:
-
-```bash
-scp -i ~/.ssh/p85_nectar -r build/web/* \
-  ubuntu@<instance-ip>:~/EAT-40005-Extraction/deploy/nectar/web/
-```
-
-Until this upload exists, `/` returns **403** and the nginx log says
-`directory index of "/usr/share/nginx/html/" is forbidden`. That is the
-signature of an empty `web/`, not a broken nginx.
+**`API_BASE_URL` is a build-time value, set in `.env`.** It is compiled into
+`main.dart.js` by `--dart-define`; the frontend cannot be pointed somewhere
+else at runtime. Set it to the origin visitors type -- the `sslip.io` name,
+not the bare IP, and not the API container -- because nginx proxies the API
+routes on that same origin. Compose refuses to start without it and the
+Dockerfile checks again, so the old failure mode (empty value, site loads,
+every request quietly goes to the visitor's own machine) can no longer
+happen silently.
 
 Verify from the instance:
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' $SITE/               # 200
-curl -s -o /dev/null -w '%{size_download}\n' $SITE/main.dart.js  # ~2.9MB
+curl -s -o /dev/null -w '%{http_code}
+' $SITE/                 # 200
+curl -s -o /dev/null -w '%{size_download}
+' $SITE/main.dart.js  # ~2.9MB
+docker compose exec web grep -rl sslip.io /usr/share/nginx/html   # main.dart.js
 ```
 
-**Do not upload dotfiles.** The `build/web/*` glob above is deliberate:
-it skips them. A `tar`-based copy does not, and on 2026-10-27 that put a
-complete `.git` directory into the web root, which nginx served to the
-internet -- a scanner pulled `/.git/config` within the hour. That
-particular repo held only public build artifacts, but a served `.git` is
-a clonable copy of whatever history it has. `nginx.conf` now denies
-dotfiles outright, but do not rely on that alone.
+That last command is the one worth running: it proves the bundle being
+served was compiled with the real origin rather than the loopback fallback.
+
+**What this replaced, and why.** Until 2026-10-28 the site came from
+`flutter build web` on a laptop plus `scp` into `deploy/nectar/web/`. No file
+in the repository performed that step, so rebuilding the instance from a
+clean clone produced a **403** with `directory index of
+"/usr/share/nginx/html/" is forbidden` -- the signature of an empty document
+root, not a broken nginx. It also meant the live bundle's provenance was
+whatever happened to be on someone's laptop. Two incidents came from that
+arrangement: a `tar`-based copy carried a complete `.git` directory into the
+web root, which nginx served to the internet until a deny rule went in (a
+scanner pulled `/.git/config` within the hour), and `nginx.conf` as a
+single-file bind mount was edited in place and reloaded with no effect,
+because a replaced single-file mount needs a force-recreate rather than
+`nginx -s reload`. Both are structurally impossible now: the web root and the
+config are both built into the image.
+
+`deploy/nectar/web/` no longer exists. If an old instance still has one, it
+is inert -- nothing mounts it -- and can be deleted.
+
 
 ### Then open the site
 
@@ -467,18 +500,20 @@ may keep accruing SU. Confirm with Nectar support before relying on either.
 | API exits at startup, `ModuleNotFoundError` | A local module `rag.py` imports is not in `Dockerfile.serve`'s `COPY`. This happened once already — the five-file list went stale on 13 Oct |
 | A Bangla or Hindi question 500s | `TRANSLATION_PROVIDER` is unset or `local`, which needs torch. Set it to `llm` |
 | `/tts` refuses | Expected. Backend speech needs torch, which this image does not carry |
-| Site loads, every request fails | `API_BASE_URL` was wrong or empty at Flutter build time. Rebuild and re-upload |
+| Site loads, every request fails | `API_BASE_URL` was wrong when the `web` image was built. Fix it in `.env` and `docker compose up -d --build web`. Empty can no longer cause this -- compose and the Dockerfile both refuse -- but a *wrong* value still can |
 | Ollama "model not found" | The `ollama pull` in step 5 did not run, or ran before the volume was mounted |
 | API exits at startup, `Neo.ClientError.Security.Unauthorized` | `NEO4J_USERNAME` was set to `neo4j`. On the P85 instance the username is the instance id, not `neo4j` — see the credentials table in step 5 |
 | Admitted papers and the review queue vanish after a restart | `/mnt/data/uploads` was not created in step 3, or `UPLOADS_DIR=/app/uploads` was removed from `docker-compose.yml`. Without both, uploads sit on the container's writable layer and `docker compose down` deletes them |
 | `POST /query` returns `401 Sign in is required.` | Not a fault. `/query` needs `Authorization: Bearer <token>` from `/auth/register` or `/auth/login`. See step 5 |
 | Signed in fine, then every request 401s after a deploy | Sessions live in API memory, not AuraDB. `docker compose restart api` / `up -d --build` invalidates every token. Users sign in again; accounts themselves are safe in AuraDB |
-| `/` returns 403, log says `directory index ... is forbidden` | `deploy/nectar/web/` is empty — the Flutter build in step 6 was never uploaded |
-| Chrome shows a connection error on `http://<instance-ip>` while `curl` gets 200 | Chrome's HTTPS-First upgraded the bare IP to `https://` and nothing listens on 443. Not a server fault. Use the SSH local forward in step 6 until TLS lands |
-| Edited `nginx.conf`, reloaded, nothing changed | Single-file bind mount: the editor wrote a new inode and the container still has the old one. `docker compose up -d --force-recreate web` |
+| `/` returns 403, log says `directory index ... is forbidden` | Was the empty `deploy/nectar/web/` mount, which no longer exists. If it happens now the `web` image was built from a context missing `flutter_application/` -- check the build ran with `context: ../..` |
+| Chrome shows a connection error on `http://<instance-ip>` while `curl` gets 200 | Chrome's HTTPS-First upgraded the bare IP to `https://` and nothing listens on 443. Not a server fault. Resolved by step 7; use the `sslip.io` URL |
+| Edited `nginx.conf`, reloaded, nothing changed | It is baked into the `web` image as of 2026-10-28, so an edit on disk changes nothing until `docker compose up -d --build web`. (Before that it was a single-file bind mount, where the editor wrote a new inode and the container kept the old one -- the same symptom, a different cause.) |
 | Browser warns the certificate name does not match | The bare IP was used. The certificate is for `<ip>.sslip.io`; hand out that URL |
 | `init-letsencrypt.sh` fails at validation | Port 80 must be reachable from the internet for HTTP-01. Check the security group, and that the `/.well-known/acme-challenge/` block still precedes the redirect in `nginx.conf` |
 | Certificate expired despite the certbot container running | nginx had not been reloaded since renewal. The 6h reload loop in `web`'s `command:` is what does that -- check it was not dropped |
+| `web` image build fails on `sha256sum -c` | The pinned Flutter SDK archive did not match `FLUTTER_SHA256` in `Dockerfile.web`. Either the download was truncated (retry) or the pin is wrong for the version -- both values come from `releases_linux.json` and must change together |
+| `web` image build fails, `API_BASE_URL build arg is empty` | Working as intended. Set `API_BASE_URL` in `.env` |
 | A path starting with a dot returns 404 | Deliberate. `nginx.conf` denies dotfiles after a `.git` directory was served from the web root on 2026-10-27. `/.well-known/` is exempt |
 
 ## What this deployment deliberately does not include

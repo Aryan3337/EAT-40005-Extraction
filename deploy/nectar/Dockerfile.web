@@ -1,0 +1,110 @@
+# Builds the Flutter web frontend and serves it with nginx.
+#
+#   docker compose up -d --build
+#
+# Why this exists: until 2026-10-28 the live site was produced by running
+# `flutter build web` on a laptop and scp-ing build/web to the instance.
+# Nothing in the repository did it, so a successor who rebuilt the instance
+# got an empty document root -- deploy/nectar/web/ held only a .gitkeep.
+#
+# The build context is the REPOSITORY ROOT, not this directory, because the
+# frontend source and nginx.conf live in different trees. Compose passes
+# context: ../.. for exactly that reason; by hand it is
+#   docker build -f deploy/nectar/Dockerfile.web -t p85-web ../..
+
+# --- Stage 1: the Flutter SDK, pinned -------------------------------------
+FROM debian:bookworm-slim AS build
+
+# git is not optional: Flutter reads its own checkout to determine its
+# version, and refuses to run without it. curl and xz-utils fetch and unpack
+# the SDK; unzip handles the artifacts precache pulls down.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl git unzip xz-utils \
+ && rm -rf /var/lib/apt/lists/*
+
+# Pinned to the SDK that is known to build this app: Flutter 3.47.6 stable,
+# carrying Dart 3.13.5, which satisfies pubspec.yaml's `sdk: ^3.13.2`.
+#
+# Taken from Google's own release bucket and checksummed, rather than from a
+# third-party Flutter image. Two reasons: ghcr.io/cirruslabs/flutter has no
+# 3.47.6 tag (checked 2026-10-28 -- its manifest 404s), and this is the only
+# download in the whole deployment that is not a Docker image pinned by
+# digest, so it is the only one that needs a hash of its own.
+#
+# To move to a newer SDK, change both lines together -- the sha256 is the
+# value published for this archive in
+#   https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json
+ARG FLUTTER_VERSION=3.47.6
+ARG FLUTTER_SHA256=f1631b9c2c8b3529323db412b0d1beacf4a748f8783b0d7cf599a8fd5f461675
+
+# Build as a normal user. Both reasons fail confusingly rather than loudly:
+# Flutter's tooling objects to being run as root, and git refuses to read a
+# repository owned by a different user ("detected dubious ownership"), which
+# is what the unpacked SDK is.
+RUN useradd --create-home --shell /bin/bash builder
+
+WORKDIR /tmp/sdk
+RUN curl -fsSLO "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${FLUTTER_VERSION}-stable.tar.xz" \
+ && echo "${FLUTTER_SHA256}  flutter_linux_${FLUTTER_VERSION}-stable.tar.xz" | sha256sum -c - \
+ && tar -xf "flutter_linux_${FLUTTER_VERSION}-stable.tar.xz" -C /opt \
+ && rm -rf /tmp/sdk \
+ && chown -R builder:builder /opt/flutter
+
+USER builder
+ENV PATH="/opt/flutter/bin:${PATH}"
+# Belt and braces with the --disable-analytics below: the env var covers any
+# dart or flutter invocation made by the toolchain itself. This project sends
+# nothing to a third party that has not been approved, and a build container
+# reporting telemetry to Google is not an approved one.
+ENV FLUTTER_SUPPRESS_ANALYTICS=true
+
+# Engine artifacts in their own layer, so editing app source does not refetch
+# them. --no-cli-animations keeps the build log readable as a log rather than
+# as a terminal recording.
+RUN flutter config --disable-analytics --no-cli-animations \
+ && flutter precache --web
+
+WORKDIR /src
+# pubspec first and alone. Dependency resolution is the slow half of a cold
+# build and it only changes when these two files do. pubspec.lock is
+# committed, so this resolves to the same versions the laptop build used.
+COPY --chown=builder:builder flutter_application/pubspec.yaml flutter_application/pubspec.lock ./
+RUN flutter pub get
+
+COPY --chown=builder:builder flutter_application/ ./
+
+# The API origin, compiled into main.dart.js. There is no runtime setting for
+# this: api_config.dart reads it through String.fromEnvironment, and an empty
+# value does NOT fail -- it falls back to http://127.0.0.1:8000, which in a
+# visitor's browser means their own machine. The site then loads perfectly and
+# every request fails, which is the single most confusing outcome available
+# here and already has a row in README.md's troubleshooting table.
+#
+# So an empty value stops the build. Compose also refuses to start without it
+# (${API_BASE_URL:?...}); this is the half that protects a plain docker build.
+ARG API_BASE_URL
+RUN test -n "${API_BASE_URL}" || { \
+      echo "ERROR: the API_BASE_URL build arg is empty." >&2; \
+      echo "Set API_BASE_URL in deploy/nectar/.env to the site's own origin," >&2; \
+      echo "e.g. https://136.186.108.232.sslip.io -- see .env.example." >&2; \
+      exit 1; \
+    }
+RUN flutter build web --release --dart-define=API_BASE_URL="${API_BASE_URL}"
+
+# --- Stage 2: nginx and the compiled site ---------------------------------
+FROM nginx:alpine
+
+# The document root is image content now, not an upload. That retires a whole
+# class of accident: on 2026-10-27 a tar of the laptop build carried a .git
+# directory into the web root, and nginx served it until a deny rule went in.
+# What is served is now exactly what this file copied.
+COPY --from=build /src/build/web /usr/share/nginx/html
+
+# nginx.conf is baked in rather than bind-mounted, deliberately. As a
+# single-file bind mount it was edited in place and reloaded, and the reload
+# silently did nothing -- the container had to be force-recreated before the
+# change took effect, which cost a debugging session on 2026-10-27. A rebuild
+# cannot fail that quietly. This COPY sits after the Flutter stage, so a
+# conf-only change reuses the cached build and takes seconds.
+COPY deploy/nectar/nginx.conf /etc/nginx/conf.d/default.conf

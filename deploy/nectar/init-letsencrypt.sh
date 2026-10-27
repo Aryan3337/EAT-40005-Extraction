@@ -94,6 +94,11 @@ docker run --rm -v /mnt/data/letsencrypt:/etc/letsencrypt \
 # --- 2. nginx up, serving port 80 for the challenge -----------------------
 echo
 echo "Starting the stack..."
+# This builds the web image if it does not exist yet (Dockerfile.web compiles
+# the Flutter frontend, ~1.5GB of SDK on a cold build), so on a fresh instance
+# this line can take several minutes before nginx answers. The wait loop below
+# allows 60s, which assumes the image is already built -- run
+# `docker compose build web` first on a fresh instance.
 docker compose up -d
 echo "Waiting for nginx to answer on port 80..."
 # Any HTTP status means nginx answered; 404 for a nonexistent challenge
@@ -155,7 +160,10 @@ if [ "$STAGING" = "1" ]; then
     echo "Now run:  STAGING=0 FORCE=1 LETSENCRYPT_EMAIL=you@example.com $0"
 else
     echo "Done. The site is at https://${DOMAIN}/"
-    echo "Rebuild the Flutter bundle with"
-    echo "  --dart-define=API_BASE_URL=https://${DOMAIN}"
-    echo "or the browser will call the old origin and every request will fail."
+    echo
+    echo "If API_BASE_URL in .env is not already https://${DOMAIN}, set it and"
+    echo "rebuild the frontend, or the browser will call the old origin and"
+    echo "every request will fail:"
+    echo "  sed -i 's|^API_BASE_URL=.*|API_BASE_URL=https://${DOMAIN}|' .env"
+    echo "  docker compose up -d --build web"
 fi

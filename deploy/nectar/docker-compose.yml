@@ -88,7 +88,24 @@ services:
     restart: unless-stopped
 
   web:
-    image: nginx:alpine
+    # Builds the frontend from source rather than serving an uploaded
+    # directory. Before 2026-10-28 this was `image: nginx:alpine` with
+    # ./web bind-mounted, and ./web was produced by `flutter build web` on a
+    # laptop followed by scp -- a step no file in the repository performed, so
+    # a rebuilt instance served an empty document root. See Dockerfile.web.
+    #
+    # The context is the repository root because the frontend source and
+    # nginx.conf are in different trees.
+    build:
+      context: ../..
+      dockerfile: deploy/nectar/Dockerfile.web
+      args:
+        # The site's own origin, compiled into main.dart.js. Empty is the
+        # dangerous value, not a missing one -- api_config.dart falls back to
+        # http://127.0.0.1:8000, so the site loads and every request fails
+        # against the visitor's own machine. `:?` refuses to start without it,
+        # and Dockerfile.web checks again for a plain `docker build`.
+        API_BASE_URL: ${API_BASE_URL:?set API_BASE_URL in deploy/nectar/.env to the site origin, e.g. https://136.186.108.232.sslip.io}
     container_name: p85_web
     depends_on:
       - api
@@ -100,9 +117,12 @@ services:
       # though curl gets 200 from port 80.
       - "443:443"
     volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      # The Flutter web build output. See README.md for how to produce it.
-      - ./web:/usr/share/nginx/html:ro
+      # No nginx.conf or document-root mount: both are in the image now.
+      # nginx.conf as a single-file bind mount was the cause of an edit that
+      # appeared to apply and did not -- `nginx -s reload` on a replaced
+      # single-file mount reads the old inode, and only a force-recreate took
+      # the change. Rebuilding cannot fail that quietly.
+      #
       # Certificates, on the attached volume so they survive `docker compose
       # down` and an instance rebuild. That is a rate-limit protection as
       # much as a convenience: sslip.io is NOT on the Public Suffix List, so

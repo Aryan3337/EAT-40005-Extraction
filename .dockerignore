@@ -13,3 +13,13 @@ output/
 # the --kg fallback -- negations must come after the excludes above.
 !data/demo_answer_cache.json
 !data/production_graph/*.csv
+
+# Flutter build state. Dockerfile.web compiles the frontend inside the image,
+# so a laptop's build output and tool cache are both irrelevant and large --
+# and shipping a stale build/web into the context invites confusion about
+# which bundle is being served. Verified 2026-10-28 that the `*.json` and
+# `*.csv` lines above do NOT reach nested paths (Docker matches patterns
+# against the whole relative path, and `*` does not cross a separator), so
+# flutter_application/web/manifest.json still reaches the build.
+flutter_application/build/
+flutter_application/.dart_tool/
