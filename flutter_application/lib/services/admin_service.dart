@@ -96,9 +96,8 @@ class AdminService {
   }
 
   Future<List<AdminFeedback>> fetchFeedback({String? status}) async {
-    final uri = Uri.parse('$_baseUrl/admin/feedback').replace(
-      queryParameters: status == null ? null : {'status': status},
-    );
+    final uri = Uri.parse('$_baseUrl/admin/feedback')
+        .replace(queryParameters: status == null ? null : {'status': status});
     final response = await _runRequest(
       () => _client.get(uri, headers: _userAuthHeaders),
     );
@@ -138,14 +137,12 @@ class AdminService {
   }) async {
     final response = await _runRequest(
       () => _client.post(
-        Uri.parse(
-          '$_baseUrl/admin/feedback/${Uri.encodeComponent(id)}/review',
-        ),
+        Uri.parse('$_baseUrl/admin/feedback/${Uri.encodeComponent(id)}/review'),
         headers: {..._authHeaders, 'Content-Type': 'application/json'},
         body: jsonEncode({
           'action': action,
           'note': note.trim(),
-          if (archiveTripleIds != null) 'archive_triple_ids': archiveTripleIds,
+          'archive_triple_ids': ?archiveTripleIds,
           if (correction != null) 'correction': correction.toJson(),
         }),
       ),
