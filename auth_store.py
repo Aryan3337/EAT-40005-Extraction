@@ -3,6 +3,7 @@
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import uuid
 from typing import Any, Dict, List, Optional
@@ -621,10 +622,31 @@ class AuthStore:
                 conversation_id=conversation_id,
             ).consume()
 
+    # Restored from 658ec35, which 93c85bf replaced with an `"@" in value`
+    # check while reverting the five-field registration form. That check
+    # accepts "@example.com" (no local part), "person@localhost" (no dotted
+    # TLD) and "person..name@example.com" (consecutive dots), so an account
+    # could be created against an address that can never receive mail.
+    #
+    # Only register() and change_email() reach this. login() normalises
+    # through _normalise_identifier, which stays deliberately loose, so
+    # tightening here cannot lock out an existing account.
+    _EMAIL_PATTERN = re.compile(
+        r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+"
+        r"(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*"
+        r"@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+        r"[A-Za-z]{2,}"
+    )
+
     @staticmethod
     def _normalise_email(email: str) -> str:
         normalised = email.strip().lower()
-        if len(normalised) < 3 or len(normalised) > 254 or "@" not in normalised:
+        local_part = normalised.partition("@")[0]
+        if (
+            len(normalised) > 254
+            or len(local_part) > 64
+            or not AuthStore._EMAIL_PATTERN.fullmatch(normalised)
+        ):
             raise ValueError("Enter a valid email address.")
         return normalised
 

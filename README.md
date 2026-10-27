@@ -69,9 +69,18 @@ Copy the example file:
 Open the new `.env` file in VS Code and fill in the real Neo4j credentials (ask Aidan or another team member if you don't have them):
 
 NEO4J_URI=neo4j+s://your-instance-id.databases.neo4j.io
-NEO4J_USERNAME=neo4j
+NEO4J_USERNAME=your-instance-id
 NEO4J_PASSWORD=your-password-here
 
+
+**`NEO4J_USERNAME` is not `neo4j` on this project's instances.** Verified
+against the live database 2026-10-27: `neo4j` fails with
+`Neo.ClientError.Security.Unauthorized`, and the working username is the same
+8-hex-character string as the instance id in `NEO4J_URI`. It reads like a
+copy-paste mistake and is not one. Copy all three values from the Aura console
+or the credentials file verbatim and change nothing. (`PRUNER_README.md:93`
+carries the same shape for a different instance, so this is the team's normal
+setup, not a one-off.)
 
 **Never commit this file.** It's already excluded via `.gitignore` — don't remove it from there.
 

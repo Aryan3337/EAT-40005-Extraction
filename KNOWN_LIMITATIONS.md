@@ -312,6 +312,15 @@ should be `git rm --cached`'d when `main` and `dev` are reconciled.
 Any account the system depends on should be owned by the shared team
 account, not a personal one, so access outlives the handover.
 
+**Update, 2026-10-27: that account is now named.**
+`s2026_eat40006_p85@outlook.com` becomes both the site's admin account and
+the login for the AuraDB console. Decided, not yet done — the migration steps
+and the reason it is two distinct things are in
+`NECTAR_IMPLEMENTATION_PLAN.md` H2. Keep three things apart when writing the
+inventory: the application's `role: 'admin'` `:User` node, the AuraDB console
+login, and `NEO4J_USERNAME`, which is a database credential and grants no
+application privilege at all.
+
 **Update, 2026-10-05:** the live production AuraDB instance currently in use
 (the one holding the 45 real triples, `*.databases.neo4j.io` referenced in
 `.env`) is a separate, newly-provisioned instance, not one of the three dead
@@ -376,10 +385,23 @@ lists files. It has never run the 177-test suite, on any branch.
 ## 17. Only the unit tests are automated
 
 As measured 2026-10-04: 177 tests, all in-process. **Update, 2026-10-07: now
-298 tests**, still all in-process — the count has grown steadily with each
-fix in this document, but the shape of the gap is unchanged. Not one crosses
-a boundary: nothing exercises `add_triples` against a real database, the
-HTTP API, or extraction into storage.
+298 tests. Update, 2026-10-27: 482 collected — 473 pass, 9 fail**, still all
+in-process. The count has grown steadily with each fix in this document, but
+the shape of the gap is unchanged. Not one crosses a boundary: nothing
+exercises `add_triples` against a real database, the HTTP API, or extraction
+into storage. The 9 failures are all `tests/test_rag_languages.py` and
+pre-existing.
+
+**A warning about reading that number, found 2026-10-27.** Between 15 and 27
+October, `python -m pytest tests/ -q` ran **zero tests**.
+`tests/test_auth_store.py` referenced a deleted method from inside a
+`@pytest.mark.parametrize` argument, which is evaluated at import, so
+collection aborted for the entire suite and pytest exited 1 having run
+nothing. Twelve days of "the tests pass" rested on output nobody read to the
+end — and piping the command through `tail`, which is the natural way to
+read it, hides the exit code. This is §16 with the consequence attached: with
+no CI running the suite, a broken collection and a green run are
+indistinguishable unless a human reads the last line.
 
 `smoke_test.py` covers those seams and is the command to run before
 believing the system works. It reports PASS/FAIL/SKIP per stage, and a SKIP
@@ -664,3 +686,252 @@ token — none of the three gates evaluate whether a subject is a meaningful
 noun. Same general class of gap as the declined predicate-fit gate: a gate
 can confirm a quote is genuine without confirming the triple built from it
 makes sense.
+
+## 25. Registration collects a username and phone number and throws them away
+
+The registration form asks for a username, a phone country code and a phone
+number. None of the three is stored, and nothing tells the person that.
+
+`auth_service.dart:122` puts all three in the POST body:
+
+```dart
+if (registrationDetails != null) ...{
+  'username': registrationDetails.username.trim(),
+  'phone_country_code': registrationDetails.phoneCountryCode,
+  'phone_number': registrationDetails.phoneNumber.trim(),
+},
+```
+
+`rag.py`'s `_handle_auth` (line 2565) reads two keys:
+
+```python
+email = str(payload.get("email", ""))
+password = str(payload.get("password", ""))
+```
+
+and `AuthStore.register(email, password)` has no parameter for the rest, so
+they are discarded in silence — no warning, no 400, and the account is
+created successfully.
+
+**How it got this way.** `658ec35` (15 Oct) added a five-field registration
+form end to end: `register(email, password, username, phone_country_code,
+phone_number)`, the validators `_normalise_username`,
+`_normalise_phone_country_code` and `_normalise_phone_number`, and
+`tests/test_auth_store.py` covering them. `93c85bf`, hours later the same
+day, reverted the backend to email plus password and deleted all three
+validators, but left the Flutter client and the test file alone. The test
+file's stale reference to `AuthStore._normalise_phone_country_code` sat in a
+`@pytest.mark.parametrize` argument, which is evaluated at import, so it
+aborted collection for the **entire** suite rather than failing one module.
+`python -m pytest tests/ -q` ran zero tests and exited non-zero for twelve
+days without anyone noticing, which is §16 doing exactly what §16 says: no
+CI runs this suite, so the only thing standing between a broken collection
+and a silent green is whether a human happened to read the output. Piping
+through `tail` hides the exit code, which is how it reads as a pass.
+
+**The visible consequence is on the login page, not the registration page.**
+The login field is labelled "Username / Email" and `login_page.dart:178`
+validates a typed username against a regex, but `AuthStore.login` runs
+`MATCH (u:User {email: $email})` and no `username` property is ever written
+to any `:User` node. Logging in by username therefore cannot succeed for any
+account, and the failure surfaces as "Invalid credentials" — indistinguishable
+from a wrong password.
+
+**Not fixed here deliberately.** Closing it properly means choosing a
+direction, not patching: either restore the fields through `register`,
+`_handle_auth`, the Cypher write and a uniqueness check plus an `OR`-match on
+login, or remove them from the form and relabel the login field. The second
+needs a decision about accounts already registered without a username.
+`tests/test_auth_store.py` was instead narrowed to the two normalisers that
+exist, with the mismatch recorded here.
+
+**Most of the first option is already written, on a branch nobody merged.**
+`origin/JohnsBranch` commit `9900407` (19 Oct, "Add username support for
+registration and login in AuthStore") adds `_normalise_username`,
+`register(..., username=None)`, a `user_username_unique` constraint, and the
+`OR`-match on login:
+
+```cypher
+MATCH (u:User)
+WHERE toLower(u.email) = $identifier
+   OR toLower(coalesce(u.username, '')) = $identifier
+```
+
+It is not an ancestor of `dev` and has not moved since 19 Oct. Evaluate it
+before writing this from scratch.
+
+**The live database already has data from it.** Verified against AuraDB
+2026-10-27: the `user_username_unique` constraint exists, and of the two
+`:User` nodes one carries `username: 'betty'`. So the schema is ahead of the
+deployed code — `dev` can neither write that property nor authenticate
+against it. New accounts created through `dev` get no username, which the
+constraint permits because Neo4j uniqueness allows repeated nulls.
+
+**The admin account is stranger still.** Its `email` property is the literal
+string `mandiadmin`, which no validator in this repo's history accepts — both
+the current pattern and the `"@" in value` check it replaced reject a value
+with no `@`. It was therefore written by hand in Cypher, not through
+`register()`. It still authenticates on `dev`, because `login` matches the
+`email` property and `_normalise_identifier` only trims and lowercases. See
+`NECTAR_IMPLEMENTATION_PLAN.md` H2 for the decision to move it to a shared
+team address.
+
+What *was* fixed alongside it: `93c85bf` also replaced `_normalise_email`'s
+validation with `len >= 3 and "@" in value`, which accepts `@example.com`
+(no local part), `person@localhost` (no dotted TLD) and
+`person..name@example.com`. `658ec35`'s stricter pattern is restored.
+Registration and email changes are the only callers; `login` normalises via
+`_normalise_identifier`, which stays loose by design, so no existing account
+can be locked out by the change.
+
+## 26. A Hindi question is answered as though it were English, and finds nothing
+
+**Observed on the live Nectar deployment, 2026-10-27**, against
+`https://136.186.108.232.sslip.io/query` with `TRANSLATION_PROVIDER=llm`.
+
+Asking *"What languages do the Garo speak?"* in English returns a grounded
+answer built from ten triples, each with a `sentence_ref` and a page number,
+in 63s. Asking the same question in Hindi --
+`गारो लोग कौन सी भाषाएँ बोलते हैं?` -- returns **HTTP 200 in 72s** with:
+
+```json
+{"language": "en",
+ "answer": "I could not find enough connected evidence to answer that
+             question. Try naming a specific person, place, event, or
+             relationship."}
+```
+
+The question is the only variable, so this is a language-handling defect
+rather than a gap in the graph.
+
+**Two things are wrong and they should not be conflated.** The response
+reports `"language": "en"` for Devanagari input, so whatever decides the
+request language did not classify it as Hindi. Retrieval then matched
+Devanagari text against a graph whose entity names and predicates are
+English, found nothing, and the synthesis gate correctly refused rather
+than inventing an answer. **The refusal is the system behaving well** --
+see the precision-over-recall stance -- but it is downstream of the real
+fault, and fixing retrieval without fixing detection would just produce a
+confident wrong answer instead of an honest refusal.
+
+**What this is not:** it is not the 504 that was predicted. The reasoning
+was that a non-English question costs three sequential Ollama calls under
+`TRANSLATION_TIMEOUT_SECONDS = 240` while `nginx.conf` caps a response at
+`proxy_read_timeout 180s`, so the request would be cut off. That timeout
+mismatch is real and still unresolved, but it is not what happens here --
+the request never took the translation path at all, which is precisely the
+bug. Expect the 504 to appear only once detection is fixed.
+
+The 9 pre-existing failures in the test baseline are all
+`tests/test_rag_languages.py`, which is very likely the same area. Nobody
+has yet checked whether those tests describe this exact defect.
+
+**Practical consequence today:** tell anyone trying the deployment to ask
+in English. A Bangla or Hindi question does not error, it politely says it
+found nothing, which reads like an empty knowledge base rather than a
+language fault.
+
+## 27. The relevance gate refuses a question whose answer is the top-ranked triple
+
+**Measured on the live Nectar deployment, 2026-10-27**, running the eight
+benchmark questions from `tools/compare_retrieval_paths.py` through
+`https://136.186.108.232.sslip.io/query`.
+
+*"What is the Garo population?"* is **refused** -- "I could not find enough
+connected evidence to answer that question" -- while the evidence list
+returned alongside that refusal begins:
+
+```
+Population_Census_2022 -[POPULATION]-> 1,650,159      <-- the answer, ranked 1st
+Garo_People           -[BILINGUAL]-> Garo_Language
+GaroCommunity         -[LANGUAGE_USED]-> Garo
+GaroCommunity         -[HAS_LANGUAGE_MAINTENANCE]-> GaroLanguage
+GaroCommunity         -[RESIDENTS]-> GaroHills_Meghalaya
+Culture               -[OF_GAROPEOPLE]-> GaroPeople
+Garo_People           -[BILINGUAL]-> Bengali
+TraditionalGaroHouses -[HAVE_PROPERTY]-> bamboo floor
+GaroCommunityHealthStatus -[HAS_HEALTH_STATUS]-> good
+ModernCivilization    -[AFFECTS]-> GaroCommunity
+```
+
+The fact is in the corpus, retrieval found it, and ranked it first. The
+system still said it could not answer.
+
+**This is the graph-path precision gap turning into a recall failure, and
+it changes how that gap should be argued for.** Nine of those ten triples
+are off-topic -- the exact figure `tools/compare_retrieval_paths.py`
+reports for this question (graph 10, csv 1). The working theory is that
+nine irrelevant triples dilute the evidence block enough that the
+synthesis relevance gate judges the whole set irrelevant and refuses. It
+had previously been assumed that off-topic evidence was cosmetic, because
+the synthesizer visibly ignores it when it does answer (see the religion
+question, which answers correctly from one relevant triple among six
+language ones). That assumption is wrong at the margin: past some ratio,
+the junk does not get ignored, it suppresses the answer.
+
+So **backlog G1 (`matches_topic` on the graph path) is not a cosmetic
+fix.** It is plausibly the difference between answering and refusing on
+questions the corpus can answer. Verify that by re-running the eight
+questions after G1 lands -- this entry exists to make that a measurement
+rather than a hope.
+
+**Not every refusal is this bug.** Of three refusals in the same run, two
+were correct and should stay: *"How has Garo livelihood changed?"*
+retrieved only `LivelihoodPatterns -[MAINLYREFERS]-> {FoodHabit, DressCode,
+Religion, ...}`, which defines what livelihood means and says nothing about
+change over time; *"What happens during antepartum care?"* retrieved a
+single unrelated triple about British authorities and natural resources.
+Refusing there is the precision-over-recall posture working. Do not "fix"
+those by loosening the gate.
+
+
+## 28. Every query runs three LLM generations, so latency is ~3x what it needs to be
+
+**Measured on the live deployment, 2026-10-27.** Eight benchmark questions:
+one **504 at the 180s nginx ceiling**, one answer at **174s** (six seconds
+under it), and a spread of 8s / 24s / 27s / 72s / 106s / 122s. The
+deployment is operating at the edge of its own timeouts, not comfortably
+inside them.
+
+The cause is not the box. During the run `uptime` showed load 15.6 across
+16 cores with `llama-server` at 1600% CPU and 20 GB RAM free -- fully
+utilised, no contention, nothing else competing.
+
+**The cause is that `/query` answers in three languages every time.**
+`rag.py`'s `answer_translations` (line 1638) generates the English answer,
+then translates it into Hindi **and** Bengali, regardless of the language
+the client asked for. And because `TRANSLATION_PROVIDER=llm` -- which the
+no-third-party-provider constraint requires -- it takes the `else` branch
+at line 1672 and runs those translations **sequentially**. Only the
+`online` and `auto` providers get the `ThreadPoolExecutor`. So an English
+question costs one synthesis plus two serialized translation calls on a
+CPU-only box measured at 12.39 tok/s.
+
+Two consequences that are easy to miss:
+
+1. **The demo answer cache barely helps.** `data/demo_answer_cache.json`
+   hits for its three questions -- verified inside the running container --
+   but it only short-circuits the English generation. The two translation
+   calls still run, so *"Where do the Garo live?"* took **72s** rather than
+   being instant. Anyone describing those three questions as "pre-cached so
+   they return immediately" is describing the CSV/demo path, not this
+   deployment.
+2. **We are spending two thirds of the latency budget on output nobody
+   asked for**, in languages whose *question* path does not work at all
+   (limitation 26), and whose translation quality is already recorded as
+   frequently misspelt (`rag.py:1615`).
+
+**The obvious lever** is to generate only the requested language and
+translate on demand when the user switches. That is roughly a 3x latency
+cut and would move every measured question comfortably inside both the
+130s `ANSWER_SYNTHESIS_TIMEOUT_SECONDS` and the 180s
+`proxy_read_timeout`. The trade-off is that switching language in the UI
+would then cost a round trip instead of being instant -- which is the
+design intent of the current behaviour, and why this is recorded as a
+decision to revisit rather than simply a bug.
+
+**Unrelated but adjacent:** the 504 was the first question after an idle
+period, and `OLLAMA_KEEP_ALIVE` is unset, so Ollama evicts the model after
+5 minutes. Setting `OLLAMA_KEEP_ALIVE=-1` has been recommended since the
+pre-deployment spec check and is still not applied; on a low-traffic demo
+the first question asked is exactly the one that pays the reload.

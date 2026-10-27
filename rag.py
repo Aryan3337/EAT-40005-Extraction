@@ -254,7 +254,20 @@ class KnowledgeGraph:
 
     def __init__(self, csv_path: str):
         # Load all triples and build the in‑memory index.
-        self.triples = self._load_csv(csv_path)
+        paths = [csv_path] if isinstance(csv_path, (str, os.PathLike)) else list(csv_path)
+        if not paths:
+            raise ValueError("At least one CSV path is required.")
+        self.triples = []
+        seen_paths = set()
+        for path in paths:
+            resolved = Path(path).expanduser().resolve()
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            records = self._load_csv(str(resolved))
+            for record in records:
+                record["id"] = f"csv:{len(self.triples)}"
+                self.triples.append(record)
         self._build_index()
         print(f"Loaded {len(self.triples)} triples")
         print(f"Entities indexed: {len(self.entity_index)} unique names")
@@ -492,6 +505,29 @@ class ConceptRetriever:
         # tie-break, so equal-scoring results do not shuffle between calls.
         scored.sort(key=lambda pair: -pair[0])
         matches = [triple for score, triple in scored if score > 0]
+        # In this corpus, community identity alone does not establish topic relevance.
+        identity_terms = {"garo", "mandi", "mande", "people", "community"}
+        topics = [word for word in keywords if word not in identity_terms]
+        topic_forms = {
+            "languages": ("language",),
+            "speak": ("speaks", "speaking", "spoken", "bilingual", "language"),
+        }
+
+        def matches_topic(triple):
+            fields = ("subject", "predicate", "object", "question", "sentence_ref")
+            for word in topics:
+                forms = (word,) + topic_forms.get(word, ())
+                if any(
+                    _keyword_matches(form, str(triple.get(field) or "").lower())
+                    for form in forms
+                    for field in fields
+                ):
+                    return True
+            return False
+
+        focused = [triple for triple in matches if matches_topic(triple)]
+        if focused:
+            matches = focused
         return group_responses(dedupe_triples(matches), top_k)
 
 
@@ -1675,7 +1711,20 @@ Translation:"""
             "model": self.model,
             "prompt": prompt,
             "stream": False,
-            "options": {"temperature": 0.2, "num_predict": 400},
+            "options": {
+                "temperature": 0.2,
+                "num_predict": 400,
+                # 4096, not Ollama's default 2048. num_ctx covers prompt AND
+                # generation: measured on the 16-triple demo CSV the evidence
+                # prompt alone is ~1888 tokens, and num_predict reserves 400
+                # more -- 2288 against a 2048 window. Ollama does not error on
+                # that, it silently truncates the prompt from the LEFT, which
+                # drops the system instructions and part of the question. That
+                # is why the same question could return different answers.
+                # The production graph, with more triples and longer
+                # sentence_ref values, overruns further.
+                "num_ctx": 4096,
+            },
         }
         # Retries only a bare connection failure (see ANSWER_SYNTHESIS_CONNECTION_RETRIES
         # for why), never a slow-but-connected generation that ran out of time.
@@ -1694,8 +1743,19 @@ Translation:"""
                 print(f"Answer synthesis unavailable: {error}")
                 break
             else:
+                # A non-200 (404 missing model, 500 server error, 400 bad
+                # request) used to fall through to the templated fallback in
+                # silence, making a broken synthesis path look exactly like a
+                # working one from the outside. Say what happened.
+                if response.status_code != 200:
+                    print(
+                        f"Answer synthesis returned HTTP {response.status_code}: "
+                        f"{response.text[:300]}"
+                    )
                 if response.status_code == 200:
                     text = response.json().get("response", "").strip()
+                    if not text:
+                        print("Answer synthesis returned an empty response body.")
                     if text:
                         if not relevance_gate_enabled():
                             return self._clean_response(text)
@@ -1822,10 +1882,22 @@ Answer:"""
         if not lines:
             return self._GATE_UNREADABLE, None
 
+        # Models habitually decorate the marker -- "**RELEVANT: yes**", a
+        # backticked marker, a marker inside a code fence -- and the bare
+        # regex matched none of them. That is a FALSE refusal: the marker is
+        # present, just dressed up, and refusing it costs recall for no
+        # precision. Stripped from the MARKER LINE ONLY, so markdown inside
+        # the answer body (lines 2+) survives untouched.
+        #
+        # Deliberately still lines[0] and not a scan of the first few lines:
+        # tolerating a preamble before the marker widens what passes the
+        # gate, which is a different tradeoff and not one taken here.
+        marker_line = re.sub(r"[*`_#]+", "", lines[0])
+
         # [.:,;-]? consumes a single trailing punctuation mark after yes/no
         # (a model writing "RELEVANT: yes," must not leak a stray leading
         # comma -- and the meta-commentary after it -- into the answer).
-        match = re.match(r"\s*RELEVANT\s*:\s*(yes|no)\b[.:,;-]?\s*", lines[0], flags=re.IGNORECASE)
+        match = re.match(r"\s*RELEVANT\s*:\s*(yes|no)\b[.:,;-]?\s*", marker_line, flags=re.IGNORECASE)
         if not match:
             return self._GATE_UNREADABLE, None
         if match.group(1).lower() == "no":
@@ -1834,7 +1906,7 @@ Answer:"""
         # Keep anything trailing the marker on its own line: a model that
         # writes "RELEVANT: yes The Garo..." has still answered, and dropping
         # it would be a false refusal.
-        head = lines[0][match.end():].strip()
+        head = marker_line[match.end():].strip()
         tail = "\n".join(lines[1:]).strip()
         remainder = "\n".join(part for part in (head, tail) if part).strip()
         if not remainder:
@@ -2792,7 +2864,7 @@ def main() -> None:
         - (no flags)       : start an interactive session.
     """
     parser = argparse.ArgumentParser(description="RAG Retrieval Comparison")
-    parser.add_argument("--kg", help="Path to KG CSV file")
+    parser.add_argument("--kg", action="append", help="Path to KG CSV; repeat to load multiple files")
     parser.add_argument("--test-questions", action="store_true",
                         help="Run comparison with built-in test questions")
     parser.add_argument("--query", help="Single question to test")
@@ -2821,9 +2893,9 @@ def main() -> None:
     if not args.kg and not args.neo4j:
         parser.error("--kg is required unless --neo4j --serve is used")
 
-    if args.kg and not Path(args.kg).exists():
-        print(f"File not found: {args.kg}")
-        sys.exit(1)
+    for path in args.kg or []:
+        if not Path(path).expanduser().is_file():
+            parser.error(f"CSV file not found: {path}")
 
     if args.serve:
         serve_api(args.kg, args.host, args.port, args.approach, args.neo4j)
