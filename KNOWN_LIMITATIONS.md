@@ -687,10 +687,12 @@ noun. Same general class of gap as the declined predicate-fit gate: a gate
 can confirm a quote is genuine without confirming the triple built from it
 makes sense.
 
-## 25. Registration collects a username and phone number and throws them away
+## 25. Registration collects a phone number and throws it away
 
-The registration form asks for a username, a phone country code and a phone
-number. None of the three is stored, and nothing tells the person that.
+**Half fixed.** `373333c` (28 Oct) merged `JohnsBranch`, which stores the
+username and authenticates against it. The phone country code and phone
+number are still collected and still discarded, and nothing tells the person
+that.
 
 `auth_service.dart:122` puts all three in the POST body:
 
@@ -702,16 +704,39 @@ if (registrationDetails != null) ...{
 },
 ```
 
-`rag.py`'s `_handle_auth` (line 2565) reads two keys:
+`grep -rn phone rag.py auth_store.py` returns nothing, so the two phone keys
+are read by no one. The account is created successfully, with no warning and
+no 400.
 
-```python
-email = str(payload.get("email", ""))
-password = str(payload.get("password", ""))
+**What the username half now does.** `AuthStore.register` takes a third
+`username` argument, normalises it through `_normalise_username` (3-30
+characters, first character ASCII alphanumeric, then alphanumerics, dots,
+underscores or hyphens), writes it with `SET u.username = $username` under a
+`user_username_unique` constraint, and refuses a registration whose username
+collides with anyone's username *or* email. `login` matches either property:
+
+```cypher
+MATCH (u:User)
+WHERE toLower(u.email) = $identifier
+   OR toLower(coalesce(u.username, '')) = $identifier
 ```
 
-and `AuthStore.register(email, password)` has no parameter for the rest, so
-they are discarded in silence — no warning, no 400, and the account is
-created successfully.
+The client's regex (`login_page.dart`, `^[a-zA-Z0-9][a-zA-Z0-9_.-]{2,29}$`)
+and `_normalise_username` agree exactly, so a username the form accepts is
+one the server accepts. Accounts registered before this -- including the ones
+already in AuraDB -- keep working, because `coalesce` makes a null username
+unmatchable rather than an error, and they log in by email as they always
+did.
+
+**A defect that arrived with it, fixed 2026-10-28.** `_handle_auth` coerced
+the field with `str(payload.get("username", ""))`, so a client that did not
+send one at all handed `register()` an empty string, which
+`_normalise_username` rejected: `POST /auth/register` returned 400 quoting
+the 3-30 character rule for a value the caller never offered. The Flutter app
+always sends the field, so the UI never showed it -- but curl, any script and
+this repo's own registration examples all hit it. An absent username is now
+`None` and a blank one is still a 400, the difference being whether the caller
+tried. Covered by `tests/test_auth_register_endpoint.py`.
 
 **How it got this way.** `658ec35` (15 Oct) added a five-field registration
 form end to end: `register(email, password, username, phone_country_code,
@@ -729,57 +754,26 @@ CI runs this suite, so the only thing standing between a broken collection
 and a silent green is whether a human happened to read the output. Piping
 through `tail` hides the exit code, which is how it reads as a pass.
 
-**The visible consequence is on the login page, not the registration page.**
-The login field is labelled "Username / Email" and `login_page.dart:178`
-validates a typed username against a regex, but `AuthStore.login` runs
-`MATCH (u:User {email: $email})` and no `username` property is ever written
-to any `:User` node. Logging in by username therefore cannot succeed for any
-account, and the failure surfaces as "Invalid credentials" — indistinguishable
-from a wrong password.
-
-**Not fixed here deliberately.** Closing it properly means choosing a
-direction, not patching: either restore the fields through `register`,
-`_handle_auth`, the Cypher write and a uniqueness check plus an `OR`-match on
-login, or remove them from the form and relabel the login field. The second
-needs a decision about accounts already registered without a username.
-`tests/test_auth_store.py` was instead narrowed to the two normalisers that
-exist, with the mismatch recorded here.
-
-**Most of the first option is already written, on a branch nobody merged.**
-`origin/JohnsBranch` commit `9900407` (19 Oct, "Add username support for
-registration and login in AuthStore") adds `_normalise_username`,
-`register(..., username=None)`, a `user_username_unique` constraint, and the
-`OR`-match on login:
-
-```cypher
-MATCH (u:User)
-WHERE toLower(u.email) = $identifier
-   OR toLower(coalesce(u.username, '')) = $identifier
-```
-
-It is not an ancestor of `dev` and has not moved since 19 Oct. Evaluate it
-before writing this from scratch.
-
-**The live database already has data from it.** Verified against AuraDB
-2026-10-27: the `user_username_unique` constraint exists, and of the two
-`:User` nodes one carries `username: 'betty'`. So the schema is ahead of the
-deployed code — `dev` can neither write that property nor authenticate
-against it. New accounts created through `dev` get no username, which the
-constraint permits because Neo4j uniqueness allows repeated nulls.
+**To close the rest of it**, pick a direction for phone rather than patching:
+either carry `phone_country_code` and `phone_number` through `_handle_auth`,
+`register`, the Cypher write and a pair of validators -- `658ec35` is the
+reference, it was written and then deleted -- or remove the two fields from
+the registration form. The second is cheaper and loses nothing the product
+currently uses, since no feature reads a phone number.
 
 **The admin account is stranger still.** Its `email` property is the literal
-string `mandiadmin`, which no validator in this repo's history accepts — both
+string `mandiadmin`, which no validator in this repo's history accepts -- both
 the current pattern and the `"@" in value` check it replaced reject a value
 with no `@`. It was therefore written by hand in Cypher, not through
-`register()`. It still authenticates on `dev`, because `login` matches the
-`email` property and `_normalise_identifier` only trims and lowercases. See
+`register()`. It still authenticates, because `login` matches the `email`
+property and `_normalise_identifier` only trims and lowercases. See
 `NECTAR_IMPLEMENTATION_PLAN.md` H2 for the decision to move it to a shared
 team address.
 
-What *was* fixed alongside it: `93c85bf` also replaced `_normalise_email`'s
-validation with `len >= 3 and "@" in value`, which accepts `@example.com`
-(no local part), `person@localhost` (no dotted TLD) and
-`person..name@example.com`. `658ec35`'s stricter pattern is restored.
+What *was* fixed alongside the original entry: `93c85bf` also replaced
+`_normalise_email`'s validation with `len >= 3 and "@" in value`, which
+accepts `@example.com` (no local part), `person@localhost` (no dotted TLD)
+and `person..name@example.com`. `658ec35`'s stricter pattern is restored.
 Registration and email changes are the only callers; `login` normalises via
 `_normalise_identifier`, which stays loose by design, so no existing account
 can be locked out by the change.

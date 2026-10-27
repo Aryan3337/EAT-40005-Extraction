@@ -9,13 +9,18 @@ reference to AuthStore._normalise_phone_country_code sat inside a
 @pytest.mark.parametrize argument, so it was evaluated at import and took
 down collection for the WHOLE suite, not just this module.
 
-So: only test normalisers that exist. The two that do are _normalise_email
-(registration and email changes) and _normalise_identifier (login).
+So: only test normalisers that exist. The ones this file covers are
+_normalise_email (registration and email changes) and _normalise_identifier
+(login).
 
-What this file deliberately does NOT cover, because it is not AuthStore's
-bug to fix: the Flutter client still posts username, phone_country_code
-and phone_number (auth_service.dart:122) and rag.py's _handle_auth reads
-only email and password, so all three are silently discarded. Recorded in
+Half of that history has since been undone. 373333c restored
+_normalise_username, a user_username_unique constraint and an OR-match on
+login, so username IS now stored and login by username works --
+tests/test_auth_username_login.py covers the store side and
+tests/test_auth_register_endpoint.py the endpoint side. Phone is NOT:
+the Flutter client still posts phone_country_code and phone_number
+(auth_service.dart:122) and nothing in rag.py or auth_store.py reads
+either, so both are still silently discarded. Recorded in
 KNOWN_LIMITATIONS.md.
 """
 

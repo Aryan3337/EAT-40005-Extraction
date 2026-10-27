@@ -2567,7 +2567,16 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 length = int(self.headers.get("Content-Length", "0"))
                 payload = json.loads(self.rfile.read(length) or b"{}")
                 email = str(payload.get("email", ""))
-                username = str(payload.get("username", ""))
+                # An absent username is None, not "". A client that does not
+                # know about usernames -- curl, a script, the examples in
+                # deploy/nectar/README.md -- has none to give, and coercing
+                # that to "" made register() reject it with the 3-30
+                # character rule for a value the caller never offered.
+                # A username sent BLANK stays "" so that rule still fires:
+                # the caller tried to set one, and creating the account
+                # without it would hide their mistake.
+                username_sent = payload.get("username")
+                username = None if username_sent is None else str(username_sent)
                 password = str(payload.get("password", ""))
                 account = (
                     get_auth_store().register(email, password, username)
