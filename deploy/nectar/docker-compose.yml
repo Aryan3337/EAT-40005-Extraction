@@ -3,8 +3,8 @@
 #   docker compose up -d --build
 #
 # Three containers. Only nginx publishes a port, so the security group
-# needs port 80 open and nothing else -- the API and Ollama are reachable
-# only on the internal compose network.
+# needs 80 open (and 443 once TLS lands) and nothing else -- the API and
+# Ollama are reachable only on the internal compose network.
 #
 # Decisions behind this file are in ../../NECTAR_MIGRATION.md.
 
@@ -40,6 +40,12 @@ services:
       - CONFIDENCE_OLLAMA_URL=http://ollama:11434/api/chat
       - OLLAMA_MODEL=mistral:7b
       - PORT=8000
+      # rag.py:2206 reads UPLOADS_DIR and defaults it to a RELATIVE
+      # "uploads", which under Dockerfile.serve's WORKDIR /app resolves to
+      # /app/uploads -- the container's writable layer. Every admitted
+      # paper and the whole review queue would then be destroyed by
+      # `docker compose down`. Point it at the bind mount below instead.
+      - UPLOADS_DIR=/app/uploads
     # No command: override. Dockerfile.serve's CMD is already
     #   python -u rag.py --serve --neo4j --host 0.0.0.0
     # which is exactly what the Neo4j/AuraDB path needs.
@@ -56,6 +62,12 @@ services:
     # prepends neo4j+s:// to a bare Aura hostname and REFUSES an
     # unencrypted URI to a remote host, because sentence_ref carries
     # verbatim source-paper text.
+    volumes:
+      # Admin uploads and queue.jsonl on the attached volume, so they
+      # survive `docker compose down` and an instance rebuild. Paired with
+      # UPLOADS_DIR above -- the mount alone does nothing, because the
+      # default path is /app/uploads only by coincidence of the WORKDIR.
+      - /mnt/data/uploads:/app/uploads
     restart: unless-stopped
 
   web:

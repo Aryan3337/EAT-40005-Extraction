@@ -27,12 +27,13 @@ CPU-only deployment cannot use, and they would fill the 30 GB root disk.
 ## 2. Security group
 
 **Network -> Security Groups -> Create Security Group**, name it
-`p85-chatbot`, then add two ingress rules:
+`p85-chatbot`, then add three ingress rules:
 
 | Rule | Port | CIDR | Why |
 |---|---|---|---|
 | SSH | 22 | **your IP /32**, not `0.0.0.0/0` | Admin access |
 | HTTP | 80 | `0.0.0.0/0` | The public site |
+| HTTPS | 443 | `0.0.0.0/0` | TLS. Open it now; nothing listens on it until the TLS work lands, and a closed 443 blocks certbot's HTTP-01 redirect flow later |
 
 Do **not** open 8000 or 11434. The API and Ollama are reachable only on the
 internal Docker network; publishing them would expose an unauthenticated
@@ -40,12 +41,17 @@ Ollama to the internet.
 
 ## 3. Volume for the model and data
 
-**Volumes -> Volumes -> Create Volume**: name `p85-data`, size **30 GiB**
+**Volumes -> Volumes -> Create Volume**: name `p85-data`, size **20 GiB**
 (quota is 50 GiB total). Then **Manage Attachments** -> attach to
 `p85-chatbot`.
 
-The volume is what makes this instance rebuildable: models and graph data
-survive destroying and recreating the VM.
+20 GiB, not 30: the only things stored here are the Ollama model (~4.7 GB,
+re-downloadable) and `uploads/`. 30 GiB spent 60% of the volume quota
+holding a file that can be fetched again, and 20 still leaves room for a
+second model.
+
+The volume is what makes this instance rebuildable: the model and the
+admin uploads survive destroying and recreating the VM.
 
 SSH in and mount it. `/dev/vdb` is the usual device — confirm with `lsblk`
 before formatting, and **only format a brand new volume**:
@@ -58,11 +64,20 @@ sudo mkfs.ext4 /dev/vdb                 # NEW VOLUME ONLY - destroys data
 sudo mkdir -p /mnt/data
 sudo mount /dev/vdb /mnt/data
 echo '/dev/vdb /mnt/data ext4 defaults,nofail 0 2' | sudo tee -a /etc/fstab
-sudo mkdir -p /mnt/data/ollama
+sudo mkdir -p /mnt/data/ollama /mnt/data/uploads
 sudo chown -R ubuntu:ubuntu /mnt/data
 ```
 
 `nofail` matters: without it, a missing volume stops the instance booting.
+
+Both directories matter. `/mnt/data/uploads` is bind-mounted to
+`/app/uploads` by `docker-compose.yml`, which is the only reason admitted
+papers and `queue.jsonl` survive `docker compose down` -- `UPLOADS_DIR`
+otherwise defaults to a path on the container's writable layer.
+
+Confirm before moving on: `lsblk` shows the volume mounted at
+`/mnt/data`, `df -h /mnt/data` reports ~20 GiB, and `/etc/fstab` has the
+`nofail` line.
 
 ## 4. Associate a floating IP
 
@@ -181,6 +196,7 @@ may keep accruing SU. Confirm with Nectar support before relying on either.
 | `/tts` refuses | Expected. Backend speech needs torch, which this image does not carry |
 | Site loads, every request fails | `API_BASE_URL` was wrong or empty at Flutter build time. Rebuild and re-upload |
 | Ollama "model not found" | The `ollama pull` in step 5 did not run, or ran before the volume was mounted |
+| Admitted papers and the review queue vanish after a restart | `/mnt/data/uploads` was not created in step 3, or `UPLOADS_DIR=/app/uploads` was removed from `docker-compose.yml`. Without both, uploads sit on the container's writable layer and `docker compose down` deletes them |
 
 ## What this deployment deliberately does not include
 
