@@ -1127,10 +1127,14 @@ increasing cost:
    19b3168 decision -- Marcus's call, not a code decision.
 2. **Strip the appended transliterations and back-translations** -- a regex on
    the translation output. Fixes the presentation fault only. The false
-   geography stays.
+   geography stays. **DONE `5b626e7`, and it turned out to be the one that
+   works** -- see the second measurement below.
 3. **Constrain the translation prompt** (translate only, no notes, no
    transliteration, preserve quoted text verbatim). Plausibly fixes the
-   appendices and some drift; unproven against the inversions.
+   appendices and some drift; unproven against the inversions. **DONE
+   `5b626e7`, and measured: it does NOT fix the appendices.** It changes what
+   the model appends, twice to invented provenance. Kept because it did fix
+   the false geography in the case that reproduced it.
 4. **A bigger or translation-specific model for this step.** `mistral:7b` is
    doing a job it is bad at. Costs RAM on a box already holding 5GB resident.
 5. **Validate each translation against the evidence** -- a second LLM pass per
@@ -1161,6 +1165,99 @@ local string comparisons and could gate `llm` output today.
 `fill_leftover_english` is not portable -- it falls back to
 `google_translate` for unknown words (`rag.py:1305`) -- though its known-word
 dictionary is.
+
+
+### Measured again 2026-10-28, later: the prompt is not the fix, the strip is
+
+Options 2 and 3 are both **DONE** (`5b626e7`), and the measurement that
+proved them is the reason both were needed.
+
+Method: six A/B pairs against `mistral:7b` on the live instance, each one the
+same English answer translated twice -- once with the bare prompt production
+was running, once with the constrained prompt. Three English answers came
+from `data/demo_answer_cache.json` and two were synthesized from the live
+graph inside `p85_api`, so every input is real production text. Sixteen
+outputs in all, kept at `/mnt/data/extract/l29_probe*.json` on the instance.
+Nothing was deployed: the container served the old prompt throughout.
+
+**Option 3, the constrained prompt, does not stop the appendices.** It
+changes what the model appends, not whether it appends. With the rules in
+place:
+
+| What it appended | Where |
+|---|---|
+| A full romanised transliteration, under `(Note: ...)` | where they live, bn |
+| A full English back-translation, under `Translation:` | traditional religion, bn |
+| `Source: https://www.britannica.com/topic/Garo-people` | challenges, bn |
+| `(Source: ... published in the Journal of Ethnopharmacology.)` | medicinal plants, bn |
+
+The last two are a fault class this entry had not recorded: **invented
+provenance**. No English answer in the probe contains a URL or a journal
+name. A reader who checks a source is the one most likely to be misled by
+it, and the Bangla reader cannot see the English answer sitting next to it.
+
+A trap worth keeping: the first version of the rules ended with
+`Leave numbers, Latin-script names, and "(Source: Page N)" citations as they
+are`, and the model copied the literal `(Source: Page N)` into all four
+outputs -- which is also why the first run looked clean. The example had
+become the appendix. A rule may describe what to preserve; it may not show a
+sample of it. `test_the_rules_carry_no_example_the_model_can_copy_out` pins
+that.
+
+**What the prompt did fix:** the false geography, in the one case that
+reproduced it. The old prompt put `গোয়ালপারা, অসম, বাংলাদেশে` -- Goalpara,
+Assam, in Bangladesh. The constrained prompt put Assam in India in all three
+attempts (bn twice, hi once). n=3 in a nondeterministic path, so it is a
+signal and not a guarantee. It also stopped `(Source: Page 1)` being
+translated into `(সর্চ পেজ ১)`.
+
+**What neither fixed:** the answer bodies. The religion answer still mangles
+the quoted source sentence rather than inverting it, `ফাউন্ডেশন`
+(foundation) still stands for religion, "the seeds of" is still `তালু`
+(palate), and nose bleed became `নাসের ঘোড়া`, *horse of the nose*. One case
+got worse: `গাড়ো` (Garo) became `কারো`, *anyone's*. This is model
+capability, not prompt wording.
+
+**So the appendix is removed deterministically** --
+`strip_translation_appendix` (`rag.py:1222`), run on every answer
+translation. It drops a trailing paragraph containing no character of the
+target script, because a Bangla translation is written in Bangla, and is held
+to blocks long enough or link-like enough to be commentary. Over the sixteen
+captured outputs it removed **nine appendices and lost no translated text at
+all**. The one appendix it does not remove mixes Bangla into itself
+(`(Justicia adhatoda, ... এবং উপযোগ করা হয়নি ...)`), which the script test
+cannot see; that is a known hole, not an oversight.
+
+**A correction to the table above.** The botanical names were called
+"outside knowledge the evidence never provided". That was wrong. The English
+answer for that question reads "the seeds of T. indica and S. cumini", so
+the evidence did supply both, abbreviated; the model expanded the genus. That
+is still an addition -- expanding an abbreviation is supplying knowledge the
+evidence withheld -- but it is a smaller fault than invention, and the
+Britannica and Ethnopharmacology citations above are the real examples of
+invention.
+
+**Still open, and still Marcus's call: options 1, 4 and 5.** The judgement at
+the top of this section is unchanged by today's work -- the Bangla *body* is
+not fit to present as the primary deliverable, and no prompt wording will
+make it so. What changed is that it no longer arrives with a fabricated
+source attached.
+
+### A cheaper fault found while measuring this
+
+The three Hindi refusals that render `मujhe` are not a typo in a static
+string: `_NO_EVIDENCE_MESSAGES["hi"]` and `_ENGLISH_ONLY_NOTES["hi"]` are
+both clean, correct Devanagari. They are never sent. `answer_translations`
+(`rag.py:1673`) computes the **English** refusal and then puts it through the
+model like any other answer, so what a user sees is `mistral:7b`
+translating "I could not find enough connected evidence" -- and the clean
+localized refusals sitting in the file are reachable only through
+`answer(question, triples, "hi")`, which the query handler does not call.
+
+Serving the static string when there is no evidence would fix the spliced
+script, make refusals deterministic, and remove two LLM generations from
+every refusal -- the cheapest latency win available against §28. Not done:
+it is a behaviour change on the refusal path, which §27 is already about.
 
 
 ## 30. A failed translation threw away a good answer -- FIXED
