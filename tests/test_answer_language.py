@@ -246,9 +246,23 @@ def test_query_endpoint_returns_the_answer_in_the_requested_language(
     assert calls[0] == ("en", language)
 
 
-def test_query_endpoint_does_not_return_english_as_a_failed_translation(
+def test_a_failed_translation_falls_back_to_english_rather_than_failing(
     monkeypatch,
 ):
+    """A translation failure must not throw away a good English answer.
+
+    Until 2026-10-28 this returned 503 and the user saw nothing at all --
+    a teammate asking "what is Garo" in Hindi got "RAG request failed
+    (HTTP 503)". That error handling came from 70f5107, when the provider
+    was Google and a failure meant a real outage. Production now runs
+    TRANSLATION_PROVIDER=llm, where an empty result is routine: a slow
+    local model, a non-200 from Ollama, or an empty generation all return
+    "" from _llm_translate, and every one of them discarded a correct
+    answer the system had already computed.
+
+    The non-selected languages have always degraded this way. Only the
+    selected one raised.
+    """
     monkeypatch.setenv("TRANSLATION_PROVIDER", "online")
     monkeypatch.setattr(rag, "online_translate", lambda *args: "")
     synthesizer = _synth(cache={"Where do the Garo people live?": "English answer"})
@@ -258,10 +272,30 @@ def test_query_endpoint_does_not_return_english_as_a_failed_translation(
         {"query": "Where do the Garo people live?", "language": "bn"},
     )
 
-    assert response["status"] == 503
+    assert response["status"] == 200
     assert response["payload"]["language"] == "bn"
-    assert "Could not translate the answer into Bangla" in response["payload"]["error"]
-    assert "Please try again later or select English." in response["payload"]["error"]
+    # The English answer survives, carried after the note.
+    answer = response["payload"]["answer"]
+    assert len(answer) > len(rag._ENGLISH_ONLY_NOTES["bn"])
+
+
+def test_the_english_fallback_says_it_is_a_fallback(monkeypatch):
+    """The point of the old 503 was not to pass English off as Bangla.
+    That intent survives: the note is what carries it, in the reader's own
+    language, so nobody mistakes an untranslated answer for a translated
+    one."""
+    monkeypatch.setenv("TRANSLATION_PROVIDER", "online")
+    monkeypatch.setattr(rag, "online_translate", lambda *args: "")
+    synthesizer = _synth(cache={"Where do the Garo people live?": "English answer"})
+
+    response = _post(
+        create_query_handler(_FakeSkeleton(), synthesizer),
+        {"query": "Where do the Garo people live?", "language": "bn"},
+    )
+
+    answer = response["payload"]["answer"]
+    assert answer.startswith(rag._ENGLISH_ONLY_NOTES["bn"])
+    assert answer != "English answer"
 
 
 def test_query_endpoint_defaults_to_english_without_a_language():
@@ -842,9 +876,17 @@ def test_default_local_provider_never_uses_online_or_ollama(monkeypatch, success
 
 
 @pytest.mark.parametrize("language", ["bn", "hi"])
-def test_local_translation_failure_returns_503_without_online_fallback(
+def test_local_translation_failure_falls_back_without_an_online_call(
     monkeypatch, language
 ):
+    """The privacy guarantee is the point of this test and is unchanged:
+    a local-provider failure must NEVER reach a third-party translator
+    (`forbidden` below fails the test if it does).
+
+    What changed on 2026-10-28 is the user-visible result. This used to be
+    a 503 with no answer at all; it is now the English answer behind a
+    note. The online call is still forbidden either way.
+    """
     import local_translation
 
     monkeypatch.setenv("TRANSLATION_PROVIDER", "local")
@@ -867,8 +909,11 @@ def test_local_translation_failure_returns_503_without_online_fallback(
         {"query": "Fictional test question?", "language": language},
     )
 
-    assert response["status"] == 503
+    assert response["status"] == 200
     assert response["payload"]["language"] == language
-    assert "Please try again later or select English." in response["payload"]["error"]
-    assert "MYMEMORY_EMAIL" not in response["payload"]["error"]
-    assert "answer" not in response["payload"]
+    assert response["payload"]["answer"].startswith(
+        rag._ENGLISH_ONLY_NOTES[language]
+    )
+    assert "Fictional English answer." in response["payload"]["answer"]
+    # Nothing about the online services may leak into what a user reads.
+    assert "MYMEMORY_EMAIL" not in response["payload"]["answer"]

@@ -1655,13 +1655,22 @@ Translation:"""
             )
 
         languages = ("hi", "bn")
-        selected_translation = None
         if selected_language in languages:
             target, selected_translation = translate(selected_language)
-            if not selected_translation or selected_translation.startswith(
-                _ENGLISH_ONLY_NOTES[selected_language]
-            ):
-                raise TranslationUnavailableError(selected_language)
+            # Deliberately no raise here. translate() has already fallen
+            # back to the English answer prefixed with a note in the
+            # reader's own language, which is what the OTHER languages have
+            # always done -- only the selected one used to be fatal.
+            #
+            # Until 2026-10-28 a failure here returned 503 and the user saw
+            # nothing, despite a correct English answer having just been
+            # computed. That was written in 70f5107 when the provider was
+            # Google and a failure meant a real outage. Under
+            # TRANSLATION_PROVIDER=llm an empty result is routine -- a slow
+            # local model, a non-200 from Ollama, or an empty generation all
+            # return "" -- so the fatal path discarded good answers for a
+            # transient condition. The note keeps the original intent: an
+            # untranslated answer is never passed off as a translated one.
             translations[target] = selected_translation
             languages = tuple(language for language in languages if language != target)
 
