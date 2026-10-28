@@ -971,9 +971,12 @@ the first question asked is exactly the one that pays the reload.
 
 ## 29. The Bangla answer invents a place the English answer does not contain
 
-Observed 2026-10-28 on the live instance, verifying the P2 deployment. One
-question, `Where do the Garo people live?`, asked through
-`https://136.186.108.232.sslip.io/query` with `TRANSLATION_PROVIDER=llm`.
+First observed 2026-10-28 while verifying the P2 deployment, then measured
+across all eight benchmark questions the same day (see the table below).
+Everything here is from `https://136.186.108.232.sslip.io/query` with
+`TRANSLATION_PROVIDER=llm`.
+
+The example that found it: `Where do the Garo people live?`
 
 The English answer is faithful to the retrieved triples:
 
@@ -1016,15 +1019,68 @@ the output least able to be checked by its reader is the one most likely to
 be wrong, and the English text that would expose the drift is sitting right
 next to it in the same response.
 
-**Not fixed here.** The sample is one question, which is enough to show the
-fault exists and not enough to size it. Sizing it is cheap and deterministic:
-re-run the 8 benchmark questions from `d5dec14`, keep `translations.en`
-alongside `translations.bn`, and count answers whose Bangla names a place,
-number or date the English does not. That measurement should come before any
-fix, because the candidate fixes differ in cost by an order of magnitude --
-stripping the transliteration is a regex, constraining the translation prompt
-is a prompt change, and validating a translation against the evidence is a
-second LLM pass per language on a path that already runs three.
+### Measured 2026-10-28: it is not an edge case
+
+All eight benchmark questions from `tools/compare_retrieval_paths.py`, run
+against the live instance. Every one returned 200 (the 27 Oct run had a 504);
+five produced substantive answers and three were refusals.
+
+**Five of the five substantive Bangla answers are materially wrong** -- wrong
+in meaning, not in spelling. Two carry a flatly false factual claim:
+
+| # | Question | What the Bangla says that the English does not |
+|---|---|---|
+| 2 | traditional religion | Inside what is presented as a **verbatim quote from Page 1**, "almost abolished and practiced by very few" becomes `আরম্ভ করেছে` -- *has begun*. The meaning is inverted inside quotation marks. "Religion" renders as `ফাউন্ডেশন`, foundation |
+| 3 | where they live | `গোয়ালপারা, অসম, বাংলাদেশে` -- **Goalpara, Assam placed in Bangladesh**. The English correctly has Assam in India. "Primarily reside" becomes `পূর্বকাল`, *in the past* |
+| 4 | medicinal plants | `আস্থা` (*faith*) for asthma, `বাড়ি থেকে উঠান` (*courtyard from the house*) for vomiting, `তালু থেকে` (*from the palate*) for "the seeds of", `নাস হারা` for nose bleed. Plus an appended note supplying "Tamarindus indica" and "Syzygium cumini" -- correct botany, **but outside knowledge the evidence never provided** |
+| 1 | languages | `যুবরাজ্য` (*princely state*) for "young generation", `শিক্ষার্থী গুরু` (*student teacher*) for "educated guardians", `পরিবর্তন` (*change*) for "evidence" |
+| 7 | matrilineal inheritance | `ঠিকানা` (*address*) for "inheritance", `পরিবর্তন` (*change*) for "property", then the final paragraph repeats one clause twice |
+
+**Every one of the eight responses appends content nobody asked for**: a
+romanised transliteration block, or a full English back-translation in
+parentheses, or an explanatory `Note:`. Three of the three Hindi refusals
+render as `मujhe` -- Latin letters spliced into Devanagari mid-word.
+
+**What survives correctly:** numbers. 31 plants and 23 families carried
+through intact in both languages. An early version of the analysis flagged
+`31` as added; that was the analyser's own bug (its regex captured `31,` with
+the comma from the English), not drift. Latin-script plant names and `(Source:
+Page N)` citations also survive.
+
+**It is nondeterministic.** Question 3 was asked twice on 2026-10-28 and
+fabricated a *different* place each time -- `উত্তর বাংলাদেশ` (northern
+Bangladesh) in the first run, Assam-inside-Bangladesh in the second. So a
+single clean run proves nothing about the next one.
+
+**Caveat on this measurement.** One run, 8 questions, judged by reading the
+pairs rather than by a native speaker. The faults above are gross enough that
+the reading is not in doubt, but the *rate* deserves confirmation from someone
+who speaks Bangla before it goes in front of a client. Raw responses and the
+analysis script from this run are not committed; regenerate them by posting
+each benchmark question to `/query` and keeping `translations.en` beside
+`translations.bn`.
+
+**What this changes.** At one anecdote this was a footnote. At five of five it
+is a statement about the product: the Bangla output is **not fit to present as
+the primary deliverable**, which is what `19b3168` decided it was. Options, in
+increasing cost:
+
+1. **Stop shipping Bangla and Hindi as answers** and show the English with a
+   note, until the quality is fixed. Cheapest, honest, and contradicts the
+   19b3168 decision -- Marcus's call, not a code decision.
+2. **Strip the appended transliterations and back-translations** -- a regex on
+   the translation output. Fixes the presentation fault only. The false
+   geography stays.
+3. **Constrain the translation prompt** (translate only, no notes, no
+   transliteration, preserve quoted text verbatim). Plausibly fixes the
+   appendices and some drift; unproven against the inversions.
+4. **A bigger or translation-specific model for this step.** `mistral:7b` is
+   doing a job it is bad at. Costs RAM on a box already holding 5GB resident.
+5. **Validate each translation against the evidence** -- a second LLM pass per
+   language, on a path that already runs three serialized generations (§28).
+
+`origin/ahmed/feature-SCRUM-318-bangla-translation-quality` exists and was
+still not reviewed; check it before writing any of the above.
 
 `origin/ahmed/feature-SCRUM-318-bangla-translation-quality` exists and was
 not reviewed for this; check whether it addresses either fault before writing
