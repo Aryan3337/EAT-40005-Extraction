@@ -243,20 +243,25 @@ def dedupe_triples(triples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def reciprocal_rank_fusion(
     rankings: List[List[int]],
+    weights: Optional[List[float]] = None,
     k: int = 60,
 ) -> Dict[int, float]:
     """Fuse several ranked index lists into one score per index.
 
-        RRF_score(d) = sum over rankers of 1 / (k + rank(d))
+        RRF_score(d) = sum over rankers of weight(ranker) / (k + rank(d))
 
-    RRF only uses rank, so the two scorers' different scales (IDF-weighted
-    integers vs. cosine similarities) never need normalizing against each
-    other. k=60 is the Cormack et al. default.
+    Weights default to 1.0 each (original RRF behaviour). Callers pass
+    heavier weights for a ranker whose top results should dominate: the
+    keyword ranker, for example, should win ties on exact-match questions
+    (a question that literally says "population" must outrank a semantic
+    neighbour), while still letting semantic-only results contribute.
     """
+    if weights is None:
+        weights = [1.0] * len(rankings)
     scores: Dict[int, float] = {}
-    for ranking in rankings:
+    for ranking, weight in zip(rankings, weights):
         for rank, idx in enumerate(ranking):
-            scores[idx] = scores.get(idx, 0.0) + 1.0 / (k + rank + 1)
+            scores[idx] = scores.get(idx, 0.0) + weight / (k + rank + 1)
     return scores
 
 
@@ -610,7 +615,10 @@ class ConceptRetriever:
         if not keyword_ranking and not semantic_ranking:
             return []
 
-        fused = reciprocal_rank_fusion([keyword_ranking, semantic_ranking])
+        fused = reciprocal_rank_fusion(
+            [keyword_ranking, semantic_ranking],
+            weights=[2.0, 1.0],
+        )
         ordered = sorted(fused.keys(), key=lambda i: -fused[i])
         matches = [candidates[i] for i in ordered]
         return group_responses(dedupe_triples(matches), top_k)
@@ -902,7 +910,10 @@ class Neo4jRAGSkeleton:
         if not keyword_ranking and not semantic_ranking:
             return []
 
-        fused = reciprocal_rank_fusion([keyword_ranking, semantic_ranking])
+        fused = reciprocal_rank_fusion(
+            [keyword_ranking, semantic_ranking],
+            weights=[2.0, 1.0],
+        )
         ordered = sorted(fused.keys(), key=lambda i: -fused[i])
         matches = [self._all_triples[i] for i in ordered]
         return dedupe_triples(matches)[:top_k]
@@ -1565,6 +1576,42 @@ def google_translate(text: str, source: str, target: str) -> str:
     return "\n\n".join(part for part in translated if part)
 
 
+
+def _dedupe_by_subject_predicate(triples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Collapse (subject, predicate) groups into one entry with joined objects.
+
+    This graph has 8 MAINLYREFERS triples from LivelihoodPatterns, 5 FACES from
+    GaroCommunity, etc. In a flat prompt those are N separate JSON entries
+    competing for attention. Joined into one entry per (subject, predicate),
+    they become 1 entry -- same information, far less distractor surface.
+    """
+    grouped: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    order: List[Tuple[str, str]] = []
+    for t in triples:
+        key = (str(t.get("subject", "")), str(t.get("predicate", "")))
+        if key not in grouped:
+            entry = dict(t)
+            entry["_objects"] = [str(t.get("object", ""))]
+            entry["_sentence_refs"] = [str(t.get("sentence_ref", "") or "")]
+            grouped[key] = entry
+            order.append(key)
+        else:
+            grouped[key]["_objects"].append(str(t.get("object", "")))
+            ref = str(t.get("sentence_ref", "") or "")
+            if ref and ref not in grouped[key]["_sentence_refs"]:
+                grouped[key]["_sentence_refs"].append(ref)
+
+    result: List[Dict[str, Any]] = []
+    for key in order:
+        entry = grouped[key]
+        if len(entry["_objects"]) > 1:
+            entry["object"] = ", ".join(o for o in entry["_objects"] if o)
+        refs = [r for r in entry["_sentence_refs"] if r]
+        entry["sentence_ref"] = " | ".join(refs)
+        result.append({k: v for k, v in entry.items() if not k.startswith("_")})
+    return result
+
+
 class AnswerSynthesizer:
     SUPPORTED_LANGUAGES: Dict[str, str] = {
         "en": "English",
@@ -1861,6 +1908,10 @@ Translation:"""
     # Builds a small evidence-only prompt for the local language model.
     def _build_prompt(self, question: str, triples: List[Dict[str, Any]], language: str = DEFAULT_LANGUAGE) -> str:
         language = normalize_language(language)
+        # Collapse (subject, predicate) groups so N near-identical entries
+        # become one entry with N joined objects -- same info, far fewer
+        # distractors for the model to guess among.
+        triples = _dedupe_by_subject_predicate(triples)
         from prompt_evidence import build_prompt_evidence
         evidence = build_prompt_evidence(triples)
 
@@ -1917,6 +1968,9 @@ Do not invent facts, names, dates, or explanations that are not supported.
 
 Evidence:
 {json.dumps(evidence, ensure_ascii=False, indent=2)}
+
+Reminder -- the user's question was:
+{question}
 
 Answer:"""
 
