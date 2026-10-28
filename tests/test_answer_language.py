@@ -305,6 +305,226 @@ def test_query_endpoint_defaults_to_english_without_a_language():
     assert skeleton.queries[-1] == "Where do the Garo live?"
 
 
+# ------------------------------------------------ Translation prompt rules
+#
+# KNOWN_LIMITATIONS 29, measured 2026-10-28 against the live instance: five
+# of the five substantive Bangla answers were materially wrong, and eight of
+# eight responses appended content nobody asked for -- a romanised
+# transliteration, a full English back-translation, or an explanatory
+# "Note:". The prompt the model was given said only "Return only the
+# translation. Preserve names of people, places, and communities."
+#
+# These tests pin option 3 of that entry: the rules go on the ANSWER
+# translation, which is what a reader sees. The QUESTION translation is
+# deliberately left alone -- only its English meaning is used, to build a
+# retrieval query, and loading it with answer-shaped rules would change
+# retrieval while fixing nothing a user reads.
+
+
+def _translation_prompt(monkeypatch, text, language, question=False):
+    prompts = []
+
+    def fake_post(url, json, timeout=None, headers=None):
+        prompts.append(json["prompt"])
+        return _Response("অনুবাদ")
+
+    monkeypatch.setattr(rag.requests, "post", fake_post)
+    synth = _synth()
+    if question:
+        synth.translate_question(text, language)
+    else:
+        synth.translate_answer(text, language)
+    return prompts[-1]
+
+
+def test_answer_translation_forbids_the_appendices_that_reached_users(
+    monkeypatch,
+):
+    """All eight benchmark responses appended something unrequested."""
+    prompt = _translation_prompt(
+        monkeypatch, "The Garo live in Mymensingh.", "bn"
+    ).lower()
+
+    assert "transliteration" in prompt
+    assert "back-translation" in prompt
+    assert "note" in prompt
+
+
+def test_answer_translation_forbids_adding_facts_the_text_does_not_have(
+    monkeypatch,
+):
+    """Question 3 put Goalpara, Assam inside Bangladesh; an earlier run of
+    the same question invented "northern Bangladesh". Question 4 supplied
+    Tamarindus indica and Syzygium cumini -- correct botany the evidence
+    never provided. Every one of those is a claim added at translation
+    time, after the relevance gate and the refusal-over-bridging rule have
+    already run."""
+    prompt = _translation_prompt(
+        monkeypatch, "The Garo live in Mymensingh.", "bn"
+    ).lower()
+
+    assert "do not add" in prompt
+    assert "place" in prompt
+
+
+def test_answer_translation_requires_quoted_text_to_keep_its_meaning(
+    monkeypatch,
+):
+    """Question 2 inverted "almost abolished and practiced by very few"
+    into "has begun" -- inside what the answer presents as a verbatim
+    quote from Page 1."""
+    prompt = _translation_prompt(
+        monkeypatch,
+        'The source says "almost abolished and practiced by very few".',
+        "bn",
+    ).lower()
+
+    assert "quot" in prompt
+
+
+def test_answer_translation_rules_reach_hindi_too(monkeypatch):
+    """The appendices and the spliced-script faults were measured in both
+    languages, so the rules cannot be Bangla-only."""
+    prompt = _translation_prompt(
+        monkeypatch, "The Garo live in Mymensingh.", "hi"
+    ).lower()
+
+    assert "transliteration" in prompt
+
+
+def test_the_rules_carry_no_example_the_model_can_copy_out(monkeypatch):
+    """Measured on the live model 2026-10-28: the first version of these
+    rules ended with `Leave numbers, Latin-script names, and "(Source: Page
+    N)" citations as they are`, and mistral:7b copied the literal
+    placeholder `(Source: Page N)` into the Bangla and Hindi output -- a new
+    appendix, invented by the instruction meant to stop appendices.
+
+    A rule may describe what to preserve. It may not show a sample of it."""
+    prompt = _translation_prompt(
+        monkeypatch, "The Garo live in Mymensingh.", "bn"
+    )
+
+    assert "Page N" not in prompt
+    assert "Note:" not in prompt
+
+
+def test_question_translation_is_left_alone(monkeypatch):
+    """The retrieval path is not what limitation 29 measured. Changing it
+    here would alter which triples come back for every non-English
+    question, to fix nothing a reader sees."""
+    prompt = _translation_prompt(
+        monkeypatch, "গারোরা কোথায় থাকে?", "bn", question=True
+    ).lower()
+
+    assert "transliteration" not in prompt
+    assert "do not add" not in prompt
+
+
+# ------------------------------------------- Stripping appended commentary
+#
+# Measured on the live model 2026-10-28, twice. Constraining the prompt
+# (above) does NOT reliably stop the model appending things: of four
+# answers translated with the rules in place, one still appended a full
+# romanised transliteration and one appended `Source:
+# https://www.britannica.com/topic/Garo-people` -- a citation to an
+# external website, in a system whose entire design ties every claim to a
+# retrieved triple. No English answer in the probe contained a URL, so the
+# model invented it at translation time.
+#
+# So the appendix is removed deterministically as well. Every appendix
+# observed in twelve probe calls sat in its own paragraph after a blank
+# line and contained no character of the target script, which is what this
+# keys on -- a translation's own text is in the script it was translated
+# into.
+
+_BANGLA_ANSWER = (
+    "গাড়ো জাতি প্রথমত গাড়ো হিল্সে, মেঘালয়া, ভারত ও গোয়ালপারা, অসম, "
+    "ভারত এবং মিমেসিংহ, বাংলাদেশে থাকে।"
+)
+_HINDI_ANSWER = (
+    "गारो लोग प्राथमिकता से गारो हिल्स, मेघालय, भारत और बंगलादेश में रहते हैं।"
+)
+
+
+def test_a_trailing_transliteration_is_removed():
+    text = _BANGLA_ANSWER + (
+        "\n\n(Note: The transliteration of the Bengali text is: garo jati "
+        "prathamat garo hills-e, meghalaya, bharat o goyalpara, assam.)"
+    )
+    assert rag.strip_translation_appendix(text, "bn") == _BANGLA_ANSWER
+
+
+def test_a_trailing_english_back_translation_is_removed():
+    text = _BANGLA_ANSWER + (
+        "\n\n(Garo people, A·chik Mande or Mandi, primarily speak the Garo "
+        "language. It is mentioned that the community maintains it.)"
+    )
+    assert rag.strip_translation_appendix(text, "bn") == _BANGLA_ANSWER
+
+
+def test_a_trailing_translator_note_is_removed():
+    text = _HINDI_ANSWER + (
+        "\n\nTranslation Note: The names of the places and communities "
+        "remain the same in both English and Hindi."
+    )
+    assert rag.strip_translation_appendix(text, "hi") == _HINDI_ANSWER
+
+
+def test_a_fabricated_source_link_is_removed():
+    text = _BANGLA_ANSWER + (
+        "\n\nSource:\nhttps://www.britannica.com/topic/Garo-people"
+    )
+    assert rag.strip_translation_appendix(text, "bn") == _BANGLA_ANSWER
+
+
+def test_latin_script_inside_the_translation_is_kept():
+    """Plant names, place names and numbers are supposed to survive -- 31
+    plants and 23 families carried through intact in the measurement, and
+    the model leaves some proper nouns in Latin mid-sentence."""
+    text = (
+        "গাড়ো জাতি Mymensingh এ থাকে এবং Tamarindus indica ব্যবহার করে। "
+        "৩১টি গাছ।"
+    )
+    assert rag.strip_translation_appendix(text, "bn") == text
+
+
+def test_a_translation_with_nothing_appended_is_unchanged():
+    assert rag.strip_translation_appendix(_BANGLA_ANSWER, "bn") == _BANGLA_ANSWER
+
+
+def test_an_answer_that_is_all_english_is_left_alone():
+    """When the model returns English instead of translating, the whole
+    text would otherwise be stripped to nothing. That case belongs to the
+    caller, which puts the English behind a note in the reader's script."""
+    english = "The Garo people primarily reside in the Garo Hills."
+    assert rag.strip_translation_appendix(english, "bn") == english
+
+
+def test_a_short_citation_after_the_answer_survives():
+    """Only commentary is removed. A page citation is provenance, and the
+    rule that drops a paragraph is deliberately blind to meaning, so it is
+    held to long blocks and links rather than anything Latin."""
+    text = _BANGLA_ANSWER + "\n\n(Source: Page 1)"
+    assert rag.strip_translation_appendix(text, "bn") == text
+
+
+def test_translate_answer_removes_the_appendix_it_was_given(monkeypatch):
+    """The wiring, not just the helper: what reaches a reader is stripped."""
+    appended = _BANGLA_ANSWER + (
+        "\n\n(Note: The transliteration is: garo jati prathamat garo hills-e, "
+        "meghalaya, bharat o goyalpara, assam, bharat.)"
+    )
+
+    def fake_post(url, json, timeout=None, headers=None):
+        return _Response(appended)
+
+    monkeypatch.setattr(rag.requests, "post", fake_post)
+
+    assert _synth().translate_answer("The Garo live in Mymensingh.", "bn") == (
+        _BANGLA_ANSWER
+    )
+
+
 # ---------------------------------------------------------------- Google path
 
 def test_local_is_the_default_provider(monkeypatch):

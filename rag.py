@@ -1186,6 +1186,67 @@ def fix_bangla_spelling(text: str) -> str:
     return _BIG_NUMBER.sub(_big_number, text)
 
 
+# The Unicode block each answer language is written in. Used to tell a
+# translation's own text apart from commentary the model appended in Latin
+# script -- see strip_translation_appendix.
+_ANSWER_SCRIPTS = {
+    "bn": "ঀ-৿",
+    "hi": "ऀ-ॿ",
+}
+
+# Long enough that a stray proper noun or a page citation on its own line is
+# not mistaken for commentary. Every appended block measured on 2026-10-28
+# ran to dozens of Latin characters; the shortest thing worth keeping was
+# "(Source: Page 1)", at twelve.
+_APPENDIX_MIN_LATIN = 25
+
+_LATIN_LETTER = re.compile(r"[A-Za-z]")
+_PARAGRAPH_BREAK = re.compile(r"\n\s*\n")
+_LINK = re.compile(r"https?://|www\.", re.IGNORECASE)
+
+
+# Removes commentary the model appended after the translation it was asked
+# for. KNOWN_LIMITATIONS 29: eight of eight live responses appended
+# something unrequested -- a romanised transliteration, a full English
+# back-translation, an explanatory note, or (twice, invented) a source
+# citation, once to an external website. Constraining the prompt helps and
+# does not suffice: it was measured appending a transliteration and a
+# fabricated Britannica link with the rules in place.
+#
+# The signal is script, not meaning. A Bangla translation is written in
+# Bangla, so a trailing paragraph with no Bangla character in it is not part
+# of the translation. That is deliberately blind to what the block says,
+# which is why it is held to blocks long enough or link-like enough to be
+# commentary rather than anything that happens to be Latin: numbers, plant
+# names and place names inside the answer are supposed to survive, and do.
+def strip_translation_appendix(text: str, language: str) -> str:
+    script = _ANSWER_SCRIPTS.get(normalize_language(language))
+    if not script or not (text or "").strip():
+        return text
+
+    native = re.compile("[%s]" % script)
+    paragraphs = _PARAGRAPH_BREAK.split(text.strip())
+
+    kept = list(paragraphs)
+    while len(kept) > 1 and not native.search(kept[-1]):
+        trailing = kept[-1]
+        commentary = (
+            len(_LATIN_LETTER.findall(trailing)) >= _APPENDIX_MIN_LATIN
+            or _LINK.search(trailing)
+        )
+        if not commentary:
+            break
+        kept.pop()
+
+    # An answer with no target script anywhere is the model returning
+    # English instead of translating. That belongs to the caller, which
+    # shows it behind a note in the reader's own script, so nothing here
+    # should reduce it to nothing.
+    if not any(native.search(paragraph) for paragraph in kept):
+        return text
+    return "\n\n".join(kept).strip()
+
+
 def translation_incomplete(source: str, translated: str, target: str) -> bool:
     """True when a translation is empty, visibly shorter than its source, or
     mostly still in English -- the "skipped words" failure. Bangla and Hindi
@@ -1562,6 +1623,29 @@ class AnswerSynthesizer:
             return f"{english} {glossary}"
         return english
 
+    # Sent with answer translations only -- see KNOWN_LIMITATIONS 29. Measured
+    # 2026-10-28 against the live instance, all five substantive Bangla answers
+    # were materially wrong and all eight responses appended something nobody
+    # asked for. Two of the faults are hallucinations the rest of this file
+    # works to prevent: a translation placed Goalpara, Assam inside Bangladesh,
+    # and another supplied botanical names the evidence never provided. The
+    # relevance gate and the refusal-over-bridging rule have both already run
+    # by the time this prompt is built, so nothing downstream checks what the
+    # translation adds.
+    #
+    # The question translation deliberately does NOT get these rules: only its
+    # English meaning is used, to build a retrieval query, so loading it with
+    # answer-shaped rules would change which triples come back while fixing
+    # nothing a reader sees.
+    _ANSWER_TRANSLATION_RULES = """Translate only. Do not add anything the text does not say: no place, no
+date, no fact, no explanation, and no botanical or scientific name of your own.
+Do not append a transliteration, a romanisation, a back-translation, or a
+note of any kind -- the translation is the whole of your reply.
+Translate quoted text as exactly what it says: never reverse, soften, or
+strengthen a quotation.
+Keep numbers, Latin-script names, and source citations exactly as they appear.
+"""
+
     def _llm_translate(
         self,
         text: str,
@@ -1569,10 +1653,11 @@ class AnswerSynthesizer:
         max_tokens: int,
         timeout: Union[int, Tuple[int, int]],
         operation: str,
+        rules: str = "",
     ) -> str:
         prompt = f"""{instruction}
 Return only the translation. Preserve names of people, places, and communities.
-
+{rules}
 Text:
 {text}
 
@@ -1629,7 +1714,10 @@ Translation:"""
                     TRANSLATION_TIMEOUT_SECONDS,
                 ),
                 "Answer translation",
+                self._ANSWER_TRANSLATION_RULES,
             )
+        if translated:
+            translated = strip_translation_appendix(translated, language)
         if translated and language == "bn":
             translated = fix_bangla_spelling(translated)
         if translated:
