@@ -85,6 +85,12 @@ services:
       # UPLOADS_DIR above -- the mount alone does nothing, because the
       # default path is /app/uploads only by coincidence of the WORKDIR.
       - /mnt/data/uploads:/app/uploads
+      # main.py writes its CSVs to a RELATIVE Path("output"), which under
+      # WORKDIR /app is the container's writable layer -- so a rebuild would
+      # destroy them. That includes the raw checkpoint it writes BEFORE any
+      # filter can fail, which is the only thing standing between a crash at
+      # minute 50 and losing the whole hour of LLM time.
+      - /mnt/data/extract:/app/output
     restart: unless-stopped
 
   web:

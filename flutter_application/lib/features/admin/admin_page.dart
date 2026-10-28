@@ -31,10 +31,10 @@ typedef PdfViewer = Future<void> Function(String filename, Uint8List bytes);
 // needs to know is how many papers are waiting on them, not to scroll a
 // history. Opening a verdict shows the papers in it.
 //
-// Nothing here starts extraction. At the measured 157 seconds per chunk a
-// 22-page paper is over two hours, and the hosted container has no GPU or job
-// queue, so a human runs the CLI. The Extract button is a placeholder and says
-// so when pressed.
+// Approving a paper starts its extraction. That run is ~72 minutes on a
+// CPU-only box shared with the chatbot, so nothing here shows a spinner or a
+// percentage: the tile reports the state the server last recorded, and the
+// admin is free to close the browser and come back.
 class AdminPage extends StatefulWidget {
   const AdminPage({
     super.key,
@@ -272,22 +272,35 @@ class _AdminPageState extends State<AdminPage> {
     );
   }
 
-  void _notYetWired(String paper) {
-    // Honest about being a placeholder. A button that looks real and silently
-    // does nothing would have the admin believe extraction had started.
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        duration: const Duration(seconds: 6),
-        content: Text(
-          'Extraction is not wired up yet. $paper is queued ready for it; '
-          'run it from the CLI for now.',
-        ),
-      ),
-    );
+  /// Start extraction on an already-approved paper.
+  ///
+  /// Returns as soon as the server accepts the job. The outcome arrives
+  /// through the queue poll, which is the only honest way to report an hour
+  /// of work to a browser that may not be open when it finishes.
+  Future<void> _startExtraction(IngestEntry entry) async {
+    try {
+      await widget.service.startExtraction(entry.paper);
+      if (!mounted) return;
+      _say(
+        'Extraction started on ${entry.paper}. It takes about an hour and '
+        'the chatbot will be slow while it runs.',
+      );
+      await _refreshQueue(quietly: true);
+    } on AdminException catch (error) {
+      if (!mounted) return;
+      _say(error.message);
+    }
   }
 
   List<IngestEntry> _entriesIn(IngestDecision decision) =>
       _queue.where((entry) => entry.decision == decision).toList();
+
+  /// True for the four admission verdicts, which are always shown.
+  static bool _isVerdictCategory(IngestDecision decision) =>
+      decision == IngestDecision.readyToExtract ||
+      decision == IngestDecision.heldForReview ||
+      decision == IngestDecision.rejected ||
+      decision == IngestDecision.scoringFailed;
 
   @override
   Widget build(BuildContext context) {
@@ -448,17 +461,26 @@ class _AdminPageState extends State<AdminPage> {
               subtitle: const Text('Scoring — this takes a few minutes'),
             ),
           ),
+        // The four verdicts are the standing taxonomy: an admin should see
+        // "Rejected: 0" and know it means none, not that the card is
+        // missing. The three extraction states are transient, so they
+        // appear only once there is something in them -- otherwise every
+        // screen carries three empty cards for a job nobody has started.
         for (final decision in const [
           IngestDecision.readyToExtract,
           IngestDecision.heldForReview,
           IngestDecision.rejected,
           IngestDecision.scoringFailed,
+          IngestDecision.extracting,
+          IngestDecision.extracted,
+          IngestDecision.extractionFailed,
         ])
-          _CategoryCard(
-            category: _categoryFor(decision),
-            count: _entriesIn(decision).length,
-            onTap: () => setState(() => _openCategory = decision),
-          ),
+          if (_isVerdictCategory(decision) || _entriesIn(decision).isNotEmpty)
+            _CategoryCard(
+              category: _categoryFor(decision),
+              count: _entriesIn(decision).length,
+              onTap: () => setState(() => _openCategory = decision),
+            ),
       ],
     );
   }
@@ -482,8 +504,12 @@ class _AdminPageState extends State<AdminPage> {
         return _PaperTile(
           entry: entry,
           category: _categoryFor(decision),
-          onExtract: decision == IngestDecision.readyToExtract
-              ? () => _notYetWired(entry.paper)
+          // Offered on an approved paper that has not started, and on one
+          // whose run failed -- a retry is the obvious next move there.
+          onExtract:
+              decision == IngestDecision.readyToExtract ||
+                  decision == IngestDecision.extractionFailed
+              ? () => _startExtraction(entry)
               : null,
           // Only where the file is still on the server to be read.
           onView: widget.viewPdf != null && entry.isStored
@@ -519,6 +545,7 @@ const _approvedColour = Color(0xFF2CB67D);
 const _reviewColour = Color(0xFFB7791F);
 const _rejectedColour = Color(0xFFC53030);
 const _unscoredColour = Color(0xFF718096);
+const _runningColour = Color(0xFF3182CE);
 
 _Category _categoryFor(IngestDecision decision) {
   switch (decision) {
@@ -555,6 +582,34 @@ _Category _categoryFor(IngestDecision decision) {
         emptyPhrase: 'waiting to be scored again',
         icon: Icons.cloud_off,
         colour: _unscoredColour,
+      );
+    case IngestDecision.extracting:
+      return const _Category(
+        label: 'Extracting',
+        meaning:
+            'Running now. About an hour per paper, and the chatbot is slow '
+            'while it runs.',
+        emptyPhrase: 'being extracted',
+        icon: Icons.hourglass_top,
+        colour: _runningColour,
+      );
+    case IngestDecision.extracted:
+      return const _Category(
+        label: 'Extracted',
+        meaning: 'Finished. Its triples are in the graph.',
+        emptyPhrase: 'extracted',
+        icon: Icons.account_tree_outlined,
+        colour: _approvedColour,
+      );
+    case IngestDecision.extractionFailed:
+      return const _Category(
+        label: "Extraction didn't finish",
+        meaning:
+            'Not a verdict on the paper — the run stopped. It can be '
+            'started again.',
+        emptyPhrase: 'failed to extract',
+        icon: Icons.error_outline,
+        colour: _rejectedColour,
       );
     case IngestDecision.unknown:
       return const _Category(
@@ -662,6 +717,35 @@ class _PaperTile extends StatelessWidget {
                   'scored again.',
                   style: TextStyle(fontStyle: FontStyle.italic),
                 ),
+              ),
+            // The outcome of an extraction run. No spinner and no
+            // percentage: a 72-minute job that claims to be nearly done is
+            // worse than one that just says when it started.
+            if (entry.decision == IngestDecision.extracting)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  entry.at == null
+                      ? 'Running now.'
+                      : 'Running since ${entry.at}.',
+                  style: small,
+                ),
+              ),
+            if (entry.decision == IngestDecision.extracted)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  entry.triplesLoaded == 0
+                      ? 'Finished, but no triple survived the verification '
+                            'gates. Nothing was added to the graph.'
+                      : '${entry.triplesLoaded} triples loaded into the graph.',
+                ),
+              ),
+            if (entry.decision == IngestDecision.extractionFailed &&
+                entry.error != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(entry.error!, style: small),
               ),
             for (final reason in entry.reasons)
               Padding(
@@ -877,7 +961,12 @@ class _ReviewDialogState extends State<_ReviewDialog> {
         children: [
           Text(
             widget.approve
-                ? 'It moves to Approved and is queued for extraction.'
+                // Approval is not a filing decision any more -- it starts an
+                // hour of work on the box that serves the chatbot. An admin
+                // who is not told that will start one mid-demonstration.
+                ? 'Extraction starts immediately. It takes about an hour, '
+                      'the chatbot will be slow while it runs, and its '
+                      'triples go into the graph without a further review.'
                 : 'It moves to Rejected. The file is kept, so this can be '
                       'revisited.',
           ),

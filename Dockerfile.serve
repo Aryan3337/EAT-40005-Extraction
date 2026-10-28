@@ -1,7 +1,9 @@
 # Serves rag.py's HTTP API for the hosted demo. Separate from the existing
 # Dockerfile (which drops a team member into a shell for extraction work,
-# CMD ["bash"]) -- this one has a fixed entrypoint and a much smaller
-# dependency set, since the served API never extracts or runs spaCy.
+# CMD ["bash"]) -- this one has a fixed entrypoint and a smaller dependency
+# set. It DOES now run extraction: POST /admin/extract launches main.py as a
+# subprocess in this container, so spaCy and the extraction modules are here
+# on purpose (see the COPY block below).
 #
 # Build and run locally to sanity-check before deploying:
 #   docker build -f Dockerfile.serve -t mandi-kg-api .
@@ -25,6 +27,11 @@ WORKDIR /app
 COPY requirements-serve.txt .
 RUN pip install --no-cache-dir -r requirements-serve.txt
 
+# subject_specificity.py sys.exit(1)s without this, and main.py imports it,
+# so extraction cannot run unless the model is in the image. Pinned to the
+# same spaCy major the wheel above resolves to.
+RUN python -m spacy download en_core_web_sm
+
 # Every local module rag.py imports, directly or transitively. This list was
 # five files until 2026-10-26 and the image had been broken since 13 Oct:
 # auth_store, local_tts, source_provenance, community_time,
@@ -37,8 +44,17 @@ RUN pip install --no-cache-dir -r requirements-serve.txt
 COPY rag.py admin_ingest.py confidence_framework.py llm_endpoint.py config.py ./
 COPY auth_store.py source_provenance.py prompt_evidence.py ./
 COPY community_time.py community_attribution.py ./
-COPY local_tts.py local_translation.py ./
+COPY local_tts.py local_translation.py extract_jobs.py ./
 COPY data/ ./data/
+
+# The extraction pipeline, reachable from POST /admin/extract. main.py is run
+# as a subprocess rather than imported: it builds its ArgumentParser and
+# parses sys.argv at module level, so importing it would try to extract using
+# the API's own argv.
+COPY main.py kg_extractor.py Extraction_Check.py subject_specificity.py ./
+COPY eval/ ./eval/
+COPY verification/ ./verification/
+COPY neo4j_loader/ ./neo4j_loader/
 
 EXPOSE 8000
 

@@ -6,6 +6,12 @@ enum IngestDecision {
   heldForReview,
   rejected,
   scoringFailed,
+  // What happened AFTER approval. The server appends these to the same
+  // append-only queue as the verdicts above and later entries win, so an
+  // approved paper that is now extracting shows one row, not two.
+  extracting,
+  extracted,
+  extractionFailed,
   unknown,
 }
 
@@ -19,6 +25,8 @@ class IngestEntry {
     this.reasons = const [],
     this.storedPath,
     this.at,
+    this.triplesLoaded,
+    this.error,
   });
 
   final String paper;
@@ -29,6 +37,12 @@ class IngestEntry {
   final List<String> reasons;
   final String? storedPath;
   final String? at;
+
+  // Set once an extraction finishes. 0 is a real answer -- it means nothing
+  // survived the three verification gates -- so this is nullable to keep
+  // "no extraction yet" distinct from "extracted nothing".
+  final int? triplesLoaded;
+  final String? error;
 
   // A rejected paper is discarded; everything else is kept on the server.
   bool get isStored => storedPath != null && storedPath!.isNotEmpty;
@@ -52,6 +66,12 @@ class IngestEntry {
         return IngestDecision.rejected;
       case 'scoring_failed':
         return IngestDecision.scoringFailed;
+      case 'extracting':
+        return IngestDecision.extracting;
+      case 'extracted':
+        return IngestDecision.extracted;
+      case 'extraction_failed':
+        return IngestDecision.extractionFailed;
       default:
         return IngestDecision.unknown;
     }
@@ -72,6 +92,10 @@ class IngestEntry {
           : const [],
       storedPath: json['stored_path']?.toString(),
       at: json['at']?.toString(),
+      triplesLoaded: json['triples_loaded'] is num
+          ? (json['triples_loaded'] as num).toInt()
+          : null,
+      error: json['error']?.toString(),
     );
   }
 }

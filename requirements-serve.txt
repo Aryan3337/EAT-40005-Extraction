@@ -19,3 +19,6 @@ neo4j
 python-dotenv
 pdfplumber
 wordninja
+# Required by subject_specificity.py, via main.py. Needs the
+# en_core_web_sm model too -- Dockerfile.serve downloads it.
+spacy

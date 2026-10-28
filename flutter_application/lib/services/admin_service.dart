@@ -294,6 +294,33 @@ class AdminService {
     }
   }
 
+  // Starts extraction on a paper that has already been approved.
+  //
+  // Returns as soon as the server has accepted the job (202), not when the
+  // extraction finishes -- that takes about an hour, and the result arrives
+  // through fetchQueue like every other state.
+  Future<void> startExtraction(String paper) async {
+    http.Response response;
+    try {
+      response = await _client.post(
+        Uri.parse('${endpoint.replaceAll(RegExp(r'/$'), '')}/admin/extract'),
+        headers: {..._authHeaders, 'Content-Type': 'application/json'},
+        body: jsonEncode({'paper': paper}),
+      );
+    } catch (_) {
+      throw AdminException(
+        'Cannot reach the API at $endpoint. Start it with '
+        '"python rag.py --serve" and try again.',
+      );
+    }
+
+    // 409 is the server refusing on purpose -- another extraction is running,
+    // or this paper never cleared admission. Both are worth reading.
+    if (response.statusCode != 202) {
+      throw AdminException(_errorFor(response));
+    }
+  }
+
   Map<String, dynamic> _decode(String body) {
     try {
       final decoded = jsonDecode(body);

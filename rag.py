@@ -36,9 +36,10 @@ from collections import defaultdict
 from dotenv import load_dotenv
 import requests
 
-from admin_ingest import (check_admin_secret, current_queue, ingest_pdf,
-                          read_paper_bytes, record_manual_decision,
-                          validate_upload)
+from admin_ingest import (IngestDecision, check_admin_secret, current_queue,
+                          ingest_pdf, read_paper_bytes, record_manual_decision,
+                          stored_paper_path, validate_upload)
+import extract_jobs
 from auth_store import AuthStore
 from llm_endpoint import ollama_tunnel_headers, resolve_llm_endpoint
 import local_tts
@@ -2205,6 +2206,26 @@ class RAGQuerySkeleton(Protocol):
 # Where admin uploads and the decision queue live.
 UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", "uploads"))
 
+
+def start_extraction_if_ready(paper: str) -> bool:
+    """Begin extraction for a paper that has just cleared admission.
+
+    There are exactly two ways a paper becomes ready -- the confidence
+    framework approving it outright, and a human approving one it held --
+    and both come here, so there is one place extraction can begin.
+
+    False means nothing was started, which is routine rather than an error:
+    an automatically rejected paper was never stored, and a run already in
+    progress holds the only slot.
+    """
+    try:
+        pdf_path = stored_paper_path(paper, UPLOADS_DIR)
+    except ValueError:
+        return False
+    if not pdf_path.exists():
+        return False
+    return extract_jobs.begin(paper, pdf_path=pdf_path, uploads_dir=UPLOADS_DIR)
+
 # Papers in this corpus run well under 10 MB; the cap stops a single request
 # pulling an arbitrary amount into memory.
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
@@ -2385,6 +2406,9 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 return
             if self.path == "/admin/review":
                 self._handle_manual_review()
+                return
+            if self.path == "/admin/extract":
+                self._handle_admin_extract()
                 return
             if self.path.startswith("/admin/feedback/") and self.path.endswith("/review"):
                 self._handle_feedback_review()
@@ -2740,8 +2764,10 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
             # The admin polls /admin/queue for the verdict.
             def score_in_background():
                 try:
-                    ingest_pdf(data, name, scorer=_confidence_scorer,
-                               uploads_dir=UPLOADS_DIR)
+                    outcome = ingest_pdf(data, name, scorer=_confidence_scorer,
+                                         uploads_dir=UPLOADS_DIR)
+                    if outcome.decision is IngestDecision.READY_TO_EXTRACT:
+                        start_extraction_if_ready(outcome.paper)
                 except Exception as error:
                     print(f"Admin upload scoring failed for {name}: {error}")
 
@@ -2805,7 +2831,70 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 self._send_json(400, {"error": str(error)})
                 return
 
+            # Approval is what starts extraction. Asking the admin to press
+            # a second button would leave papers approved-but-forgotten,
+            # which is the state this whole change exists to remove.
+            if approve:
+                start_extraction_if_ready(paper)
+
             self._send_json(200, outcome.to_json())
+
+        # Starts extraction on a paper that has already cleared admission.
+        #
+        # Refusing is most of this method's job. The only human gate in the
+        # system is at paper admission -- an approved paper's gated triples
+        # go straight into the production graph with no triple-level review
+        # -- so a paper that was rejected, or is still waiting for a human,
+        # must not become extractable by naming it directly here.
+        def _handle_admin_extract(self) -> None:
+            if not self._admin_authorised():
+                return
+
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                paper = str(payload.get("paper", "")).strip()
+                if not paper:
+                    raise ValueError("paper is required")
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                self._send_json(400, {"error": f"Invalid request: {error}"})
+                return
+
+            try:
+                pdf_path = stored_paper_path(paper, UPLOADS_DIR)
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+                return
+            if not pdf_path.exists():
+                self._send_json(404, {"error":
+                    f"{paper!r} is not stored, so there is nothing to extract."})
+                return
+
+            state = extract_jobs.state_for(paper, uploads_dir=UPLOADS_DIR)
+            decision = (state or {}).get("decision")
+            if decision != IngestDecision.READY_TO_EXTRACT.value:
+                self._send_json(409, {"error":
+                    f"{paper!r} is {decision or 'unknown'}, not "
+                    f"{IngestDecision.READY_TO_EXTRACT.value}. Only an "
+                    f"approved paper can be extracted."})
+                return
+
+            # One at a time: two ~72-minute runs against one CPU-only Ollama
+            # would make both crawl and starve the chatbot sharing it.
+            if not extract_jobs.begin(paper, pdf_path=pdf_path,
+                                      uploads_dir=UPLOADS_DIR):
+                self._send_json(409, {"error":
+                    "An extraction is already running. Only one runs at a "
+                    "time; try again when it has finished."})
+                return
+
+            self._send_json(202, {
+                "status": extract_jobs.EXTRACTING,
+                "paper": paper,
+                "message": "Extraction started. It takes about an hour per "
+                           "paper and the chatbot will be slow while it runs; "
+                           "poll /admin/queue for the result.",
+            })
 
         # Writes a JSON response with CORS enabled for local Flutter clients.
         def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
@@ -2834,8 +2923,26 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
     return QueryHandler
 
 
+def reap_stale_extractions() -> None:
+    """Clear extractions that were running when the process last stopped.
+
+    An extraction is a thread in THIS process, so a restart kills it without
+    ever recording an outcome. The paper's latest state stays "extracting"
+    with nothing behind it, and because only one extraction may run at a
+    time, that stuck state would refuse every later paper too.
+    """
+    try:
+        reaped = extract_jobs.reap_stale(uploads_dir=UPLOADS_DIR)
+    except OSError as error:  # an unreadable queue must not stop the server
+        print(f"Could not check for abandoned extractions: {error}")
+        return
+    for paper in reaped:
+        print(f"Marked abandoned extraction as failed: {paper}")
+
+
 # Starts the local HTTP bridge used by the Flutter frontend.
 def serve_api(kg_path: str, host: str, port: int, approach: str, use_neo4j: bool) -> None:
+    reap_stale_extractions()
     skeleton: RAGQuerySkeleton = Neo4jRAGSkeleton() if use_neo4j else RAGSkeleton(kg_path, approach=approach)
     server = ThreadingHTTPServer(
         (host, port),
