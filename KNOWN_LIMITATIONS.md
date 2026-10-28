@@ -418,18 +418,67 @@ run deliberately left this read-only (uploading a real PDF triggers a real
 cost that day — it was last exercised for real on 2026-10-05, before this
 week's later retrieval and synthesis changes.
 
-## 18. Auto-extraction from the admin upload is designed, not built
+## 18. Auto-extraction is built and proven -- and yields almost nothing
 
-The admin upload screen runs the confidence check and stores or queues the
-paper. It does not start extraction.
+**Built 2026-10-28** (`marcus/admin-extraction`). Approving a paper now
+starts extraction: `POST /admin/extract`, plus an automatic trigger on both
+paths a paper can become approved. State lives in the existing append-only
+`queue.jsonl`, one run at a time with a 409 on overlap, a startup reaper for
+runs a restart abandoned, and `--no-gates` absent by construction with a
+test asserting it.
 
-Extraction is 157.3 seconds per chunk, measured on two mid-document chunks
-of garo_2 (183.4 s and 131.2 s). That makes a 22-page paper 2.2 hours, and
-all seven papers in `papers/` 10.8 hours. Free hosting has no GPU.
+**Proven end to end on the live instance**, not just in tests. Uploaded
+`Uptake of antepartum care services ... Garo indigenous women in
+Bangladesh.pdf` through the real admin endpoint:
 
-Auto-extraction needs a worker process, a job queue, progress reporting the
-admin can watch, and an inference budget. That is a subsystem, not a
-feature.
+| Step | Result |
+|---|---|
+| Confidence framework | **APPROVED, 83/100** (chunk 7 of 8 hit a parse error and was skipped; the framework carried on) |
+| Extraction trigger | **Automatic on approval** -- no second button |
+| Run time | **73 minutes**, 04:03 -> 05:16 UTC |
+| Raw triples | 98 |
+| Survived the three gates | **1** (well-formedness flagged 24, grounding 81, quote-genuineness 81; a triple can be flagged more than once) |
+| Loaded to Neo4j | 1, `run_id=20261028T051609Z-0674f1b8` |
+
+**The wiring works. The pipeline behind it does not.** A 1-in-98 survival
+rate is not the gates being harsh -- the rejected triples were visibly
+broken (`MyFirstAndSecond -[HAD_SYMPATHETIC Symptom]-> Vomiting`,
+`OnlyMotorbikes -[HAS_INACCESSIBLE_TRANSMISSION]-> Healthcare`, predicates
+containing spaces). The gates did exactly their job.
+
+**The one survivor was also wrong**, which is the part that matters:
+
+```
+(SubanKumarChowdhury)-[AUTHOR]->(OptimalHealth)
+  "Suban Kumar Chowdhury skc_ruir@ru.ac.bd optimal health during pregnancy [1]."
+```
+
+That is the author's byline and email address scraped off the title page --
+the same class of defect as §24. It was rolled back the same day.
+
+**What this changes.** `NECTAR_BACKLOG.md`'s Track E constraint -- "once a
+paper is approved, its gated triples load straight to Neo4j with no
+triple-level review" -- assumed the gates' survivors could be trusted
+unattended. One run is not a rate, but on the only evidence there is, that
+assumption does not hold: the survivor needed a human and did not get one.
+Until the extraction step improves, **approving a paper costs 73 minutes of
+a CPU-only box shared with the chatbot and returns roughly one triple that
+still needs checking.** Do not run it unattended against production, and
+treat the per-paper yield -- not the per-chunk speed -- as the number worth
+improving.
+
+**Measured speed, for planning.** ~91 s/chunk warm on the Nectar m3.xlarge
+(samples 70 s, 112 s, 92 s), and 178 s for the first chunk of a run because
+it loads the 5 GB model. `garo_2.pdf` is 50 chunks, so ~76 minutes. That is
+*faster* than the 157.3 s/chunk this entry used to quote from a dev
+machine. The older "~1.2 hours per paper" in `load_production_graph.py` and
+the "2.2 hours" here were never in conflict -- they are different papers.
+
+**Known gap in what was built:** `extract_jobs.run_extraction` captures the
+subprocess output and writes `uploads/logs/<paper>.log` only once it exits,
+so there is no progress visible during the run. The UI's "running since
+HH:MM" is honest but coarse. Streaming the log instead is the obvious next
+improvement.
 
 ## 19. Hosted answers read poorly, and worse than first assumed
 
