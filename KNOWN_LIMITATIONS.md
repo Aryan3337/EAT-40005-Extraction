@@ -827,7 +827,7 @@ Registration and email changes are the only callers; `login` normalises via
 `_normalise_identifier`, which stays loose by design, so no existing account
 can be locked out by the change.
 
-## 26. A Hindi question is answered as though it were English, and finds nothing
+## 26. A non-English question finds nothing -- when the caller sends no language
 
 **Observed on the live Nectar deployment, 2026-10-27**, against
 `https://136.186.108.232.sslip.io/query` with `TRANSLATION_PROVIDER=llm`.
@@ -894,6 +894,56 @@ slip.
 in English. A Bangla or Hindi question does not error, it politely says it
 found nothing, which reads like an empty knowledge base rather than a
 language fault.
+
+### Narrowed 2026-10-28: the app's own path works, and this was never a user-facing block
+
+Measured live at `b0e22e2`, authenticated, asking **in Bangla with
+`language=bn`** -- which is what the Flutter client actually sends
+(`chat_service.dart:85` posts `{'query': question, 'language': language}`
+with `language: widget.strings.languageCode`, the picker's value):
+
+```
+query: গারোরা কোন ভাষায় কথা বলে?   language: bn
+-> HTTP 200 in ~114s, "language": "bn", 10 triples,
+   sources: Page 1, 3, 5, 7, 13, 15, 17
+```
+
+So the question was translated to English, keyword retrieval matched the
+graph, and the answer came back in Bangla with page citations. **The defect
+above is specific to a caller that sends no `language` field** -- `curl`, an
+older app build, the CLI -- where the request defaults to `en`, the
+Devanagari or Bangla string is matched against an English graph, and the
+gate correctly refuses.
+
+**This corrects the interim guidance that came out of the 2026-10-27 run**
+("teammates must ask in English and read the Bangla answer"). Through the
+app, asking in Bangla retrieves evidence normally. The guidance was right
+about `curl` and wrong about users, and it was repeated in the handover
+notes -- fix it there too.
+
+What the same response shows about quality, which is unchanged:
+
+- **The Hindi answer turns Bengali into Hindi.** The English reads "bilingual
+  as they need to communicate in both **Bengali** and their native Garo
+  language"; the Hindi reads `उन्हें **हिंदी** और अपनी गारो भाषा में संवाद
+  करना होता है`. The sentence carries a page citation, so a reader has every
+  reason to trust it. This is the §29 fault class, on a fresh example.
+- **Citations survive in Bangla and are destroyed in Hindi.** `(Source: Page
+  5)` comes through verbatim in `bn` -- the 40 Latin characters in that answer
+  are all citations, which is `strip_translation_appendix` keeping provenance
+  exactly as intended -- while `hi` renders them `(सर्टस: पेज 5)`, where
+  `सर्टस` is not a word.
+- Bodies remain garbled: "Garo community members" becomes `ছেলে-মহিলা গোষ্ঠী`
+  (*boy-woman group*), "their native Garo language" becomes `ছেলে ঘরের ভাষা`
+  (*boy's house language*), and "parents" becomes `পার্টনার গোঠর ফব্বরাশন`.
+
+**Priority, revised.** This was listed as a priority because eager
+translations made the Bangla answer the deliverable (`19b3168`) while a
+Bangla *question* appeared to return nothing. The question path works, so
+what is left here is a defaulting bug for non-app callers, which is worth
+one line of language detection and is no longer urgent. The urgent item is
+§29's body quality.
+
 
 ## 27. The relevance gate refuses a question whose answer is the top-ranked triple
 
@@ -1014,11 +1064,13 @@ than reaching for the language feature.
 - **Backlog G1 matters more.** Fewer off-topic triples means a shorter
   evidence block, a shorter prompt, and less to translate.
 - **Limitation 26 becomes a priority rather than a curiosity.** A Bangla
-  *question* currently returns nothing. Pre-translating every answer into
-  Bangla, for an audience that cannot yet ask in Bangla, only pays off
-  once 26 is fixed. Today the Bangla audience must ask in English and read
-  the translated answer -- which does work, and is presumably the interim
-  path.
+  *question* appeared to return nothing, so pre-translating every answer for
+  an audience that could not yet ask in Bangla would only pay off once 26 was
+  fixed. **Superseded 2026-10-28:** measured live, a Bangla question sent the
+  way the app sends it -- with `language=bn` -- retrieves ten triples and
+  answers normally. 26 is a defaulting bug for callers that send no language,
+  not a block on the Bangla audience, so this consideration no longer argues
+  against `19b3168`.
 
 **Unrelated but adjacent:** the 504 was the first question after an idle
 period, and `OLLAMA_KEEP_ALIVE` is unset, so Ollama evicts the model after
@@ -1071,7 +1123,7 @@ Nothing checks a translation against the evidence.
 **Why it matters more than it looks.** Per the 2026-10-27 decision to keep
 eager translations (`19b3168`), the Bangla answer is the deliverable for the
 primary audience, not an optional extra: users will be in Bangladesh, and
-limitation 26 means they must ask in English and read the Bangla answer. So
+and -- per the 2026-10-28 measurement in 26 -- they can ask in Bangla too. So
 the output least able to be checked by its reader is the one most likely to
 be wrong, and the English text that would expose the drift is sitting right
 next to it in the same response.
