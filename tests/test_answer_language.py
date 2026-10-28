@@ -525,6 +525,113 @@ def test_translate_answer_removes_the_appendix_it_was_given(monkeypatch):
     )
 
 
+# ------------------------------- Ahmed's SCRUM-318 guards, on the llm path
+#
+# `translation_incomplete` and `restore_numbers` were written for SCRUM-318
+# (`fe11814`) and are called from `online_translate`, `google_translate` and
+# `mymemory_translate`. Production runs `TRANSLATION_PROVIDER=llm` for the
+# privacy constraint, and `translate_answer` reads
+# `elif provider != "llm"`, so none of them ever ran against the model that
+# actually serves users. Both are pure string comparisons with no
+# third-party call, so they port as they are.
+#
+# Measured over twenty real captured translations before porting: the
+# detector flagged none of them and `restore_numbers` changed none of them.
+# It is insurance against failures that sample did not contain, not a fix
+# for anything observed -- which is why these tests pin the failures it DOES
+# catch, and one that it must not.
+
+_ENGLISH_ANSWER = (
+    "The Garo people primarily reside in the Garo Hills, Meghalaya, India, "
+    "and in neighbouring parts of Goalpara, Assam, as well as in "
+    "Mymensingh, Bangladesh."
+)
+
+
+def _llm_returns(monkeypatch, text):
+    def fake_post(url, json, timeout=None, headers=None):
+        return _Response(text)
+
+    monkeypatch.setattr(rag.requests, "post", fake_post)
+
+
+def test_an_untranslated_english_answer_is_not_passed_off_as_bangla(
+    monkeypatch,
+):
+    """The model sometimes returns its input. Until this guard reached the
+    llm path, `translate_answer` saw a non-empty string, called it a
+    translation, and the reader got English labelled as Bangla -- the exact
+    thing `_ENGLISH_ONLY_NOTES` exists to prevent. Returning "" hands the
+    decision back to the caller, which prefixes the note."""
+    _llm_returns(monkeypatch, _ENGLISH_ANSWER)
+
+    assert _synth().translate_answer(_ENGLISH_ANSWER, "bn") == ""
+
+
+def test_a_translation_missing_half_its_content_is_rejected(monkeypatch):
+    """TRANSLATED_ANSWER_MAX_TOKENS caps generation at 1500 tokens, and
+    Bangla costs several tokens per character, so a long answer can be cut
+    off mid-way. Half an answer is not an answer."""
+    _llm_returns(monkeypatch, "গাড়ো জাতি।")
+
+    assert _synth().translate_answer(_ENGLISH_ANSWER, "bn") == ""
+
+
+def test_the_appendix_is_removed_before_the_completeness_check(monkeypatch):
+    """Order matters, and the margin is thin. This pair is real: the Bangla
+    is a captured translation of the answer below, the appendix is what the
+    model actually appended, and together they score a Latin-word ratio of
+    0.405 against the detector's 0.4 threshold -- so with the checks in the
+    wrong order a sound translation is discarded for being "mostly
+    English". The appendix is not part of the translation, so it has to be
+    gone before anything measures it."""
+    body = (
+        "গাড়ো জাতি প্রথমত গাড়ো হিল্সে, মেঘালয়া, ভারত ও সম্মুখে থাকা "
+        "গোয়ালপারা, অসম, ভারত এবং মিমেসিংহ, বাংলাদেশে থাকে।"
+    )
+    _llm_returns(monkeypatch, body + (
+        "\n\n(Note: The transliteration of the Bengali text is: garo jati "
+        "prathamat garo hills-e, meghalaya, bharat o sammukhe thaka "
+        "goyalpara, assam, bharat e mimesingh, bangladesh-e thake.)"
+    ))
+
+    assert _synth().translate_answer(_ENGLISH_ANSWER, "bn") == body
+
+
+def test_a_wrong_amount_is_replaced_by_the_english_one(monkeypatch):
+    """Numbers are the one thing that survived the measurement in
+    KNOWN_LIMITATIONS 29 intact, and this keeps it that way: the English
+    answer's amount wins."""
+    _llm_returns(monkeypatch, "গাড়ো জনসংখ্যা ৩০০, ০০০, ০০০ জন।")
+
+    translated = _synth().translate_answer(
+        "The Garo population is 3 million people.", "bn"
+    )
+
+    assert "৩০ লাখ" in translated
+    assert "৩০০, ০০০, ০০০" not in translated
+
+
+def test_a_real_production_translation_survives_both_guards(monkeypatch):
+    """The live Bangla answer from 2026-10-28, kept verbatim. Its page
+    citations are Latin and are supposed to stay, so this pins the
+    measurement that the guards reject nothing that reaches users today."""
+    real = (
+        "বাংলাদেশে গাডো সমুহের ছেলে-মহিলা গোষ্ঠী গাডো ভাষাকে বলা হয়। "
+        "(Source: Page 5)\nগাড়ো জাতির মাঝে বেশকে দুইভাষা বলা হয়, কারণ তারা "
+        "বাংলা ও ছেলে ঘরের ভাষা দুই ভাষায় সম্বাদন করতে হয়। (Source: Page 1)"
+    )
+    _llm_returns(monkeypatch, real)
+
+    assert _synth().translate_answer(
+        "The Garo language is spoken among the Garo community members in "
+        "Bangladesh. (Source: Page 5) The majority of Garo people are "
+        "bilingual as they need to communicate in both Bengali and their "
+        "native Garo language. (Source: Page 1)",
+        "bn",
+    ) == real
+
+
 # ---------------------------------------------------------------- Google path
 
 def test_local_is_the_default_provider(monkeypatch):
@@ -654,6 +761,13 @@ def test_auto_never_lets_the_local_model_write_a_bangla_answer(monkeypatch):
 
 def test_llm_mode_still_uses_the_local_model_and_fixes_names(monkeypatch):
     monkeypatch.setenv("TRANSLATION_PROVIDER", "llm")
+    # Same reason as the auto test above: the fake English synthesis
+    # response carries no "RELEVANT:" marker, so with the gate on it is
+    # read as a refusal and this ends up testing the translation of a
+    # refusal message rather than of an answer. That went unnoticed until
+    # the SCRUM-318 completeness guard reached this path and measured the
+    # canned five-word Bangla against the twenty-word refusal.
+    monkeypatch.setenv("SYNTHESIS_RELEVANCE_GATE", "0")
 
     def fake_post(url, json, timeout, headers=None):
         if json["prompt"].startswith("Translate the following text"):
@@ -664,6 +778,19 @@ def test_llm_mode_still_uses_the_local_model_and_fixes_names(monkeypatch):
     synth = _synth()
     assert synth.answer("x", [_triple()], "bn", "Where do the Mandi live?") \
         == "মান্দি মানুষ ময়মনসিংহে বাস করে।"
+
+
+def test_a_translated_refusal_is_not_mistaken_for_an_incomplete_answer():
+    """The no-evidence message is 20 English words and its Bangla and Hindi
+    forms are 22 and 25, so a faithful refusal clears the completeness
+    guard. Worth pinning: refusals are short, and a lower threshold would
+    start replacing them with English behind a note."""
+    english = rag._NO_EVIDENCE_MESSAGES["en"]
+
+    for language in ("bn", "hi"):
+        assert not rag.translation_incomplete(
+            english, rag._NO_EVIDENCE_MESSAGES[language], language
+        )
 
 
 def test_auto_uses_google_and_skips_the_model_when_google_works(monkeypatch):

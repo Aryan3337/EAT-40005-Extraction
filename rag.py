@@ -1718,6 +1718,35 @@ Translation:"""
             )
         if translated:
             translated = strip_translation_appendix(translated, language)
+        # SCRUM-318's guards, ported to the llm path. They are called from
+        # online_translate for the online providers, which production never
+        # uses, so until now nothing checked whether the local model had
+        # actually translated. Both are pure string comparisons, so they
+        # port unchanged; gated on llm because the online path already ran
+        # them and the local (NLLB) path is unmeasured here.
+        #
+        # The order is load-bearing. strip_translation_appendix MUST run
+        # first: one real captured output -- sound Bangla followed by a
+        # 66-word English back-translation -- scored a Latin-word ratio of
+        # 0.3952 against this detector's 0.4 threshold, so a slightly
+        # longer appendix would have had a good translation discarded for
+        # being "mostly English".
+        if (
+            translated
+            and provider == "llm"
+            and translation_incomplete(answer, translated, language)
+        ):
+            # Empty, half-missing, or still mostly English. Returning ""
+            # is not a loss of information: the caller shows the English
+            # answer behind a note in the reader's own script, which is
+            # honest, where passing this off as a translation is not.
+            print(
+                f"Answer translation into {language} discarded: "
+                "incomplete or untranslated"
+            )
+            translated = ""
+        if translated and provider == "llm":
+            translated = restore_numbers(answer, translated, language)
         if translated and language == "bn":
             translated = fix_bangla_spelling(translated)
         if translated:
