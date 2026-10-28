@@ -27,6 +27,81 @@ Sizes are rough person-days for someone who knows this repo.
 
 # Track E — Extraction hosted and wired to the admin UI
 
+**DONE 2026-10-28**, on branch `marcus/admin-extraction` (5 commits, pushed,
+**not merged to dev**). The live instance is running it. The blocks below are
+kept as written because they are still the right design for a *durable*
+version; what was actually built is the cheaper in-process variant described
+under "What was built instead".
+
+**Do not start E1-E5 as written.** Read this section first.
+
+## What was built instead, and why
+
+The 4.5-day estimate was driven almost entirely by one constraint: the API
+image had no spaCy, so `main.py` could not run there, which forced a separate
+container, which forced a cross-container job queue with atomic claims. That
+constraint died with Render -- `requirements-serve.txt` excluded spaCy because
+"a free-tier host's build minutes should not pay for it", and Nectar builds on
+our own box. spaCy turned out to be the *only* missing dependency; rapidfuzz
+and openpyxl are named in the same comment but are not in `main.py`'s import
+closure.
+
+So the API image gained spaCy and the extraction modules, and runs `main.py`
+as a **subprocess** -- not an import, because `main.py` builds its
+ArgumentParser and parses `sys.argv` at module level, so importing it would
+extract using the API's own argv.
+
+What exists now:
+
+- `extract_jobs.py` -- `start/finish/fail/state_for/reap_stale/run_extraction/
+  begin`. State goes in the **existing append-only `queue.jsonl`**, because
+  `current_queue` already collapses it to one row per paper with later entries
+  winning and `/admin/queue` is already polled by the admin page. No new store,
+  no new route.
+- `POST /admin/extract`, gated on `_admin_authorised()`, refusing anything not
+  `ready_to_extract`.
+- An automatic trigger on **both** paths a paper can become approved, through
+  one shared function.
+- One run at a time, second caller refused with **409** rather than queued.
+- A **startup reaper** failing runs a restart abandoned (3h), without which one
+  restart wedges a paper forever and the one-at-a-time rule then refuses every
+  later paper.
+- `neo4j_loader/rollback.py`, so a load can be undone by the `run_id`
+  `add_triples` has always stamped on it.
+
+Borrowed from E2/E3 below: the stale-job reaping and the one-at-a-time rule.
+Deliberately **not** borrowed: the separate image, atomic `os.rename` claims
+and the multi-worker test matrix, which solve a multi-worker problem that does
+not exist with one process.
+
+## The result that matters more than the wiring
+
+One real run (see `KNOWN_LIMITATIONS.md` §18 for the full measurement):
+approved 83/100, auto-extracted, **73 minutes, 98 raw triples, 1 survived the
+gates** -- and that survivor was the author's byline scraped off the title
+page. Rolled back the same day.
+
+**This invalidates the constraint stated below** that "once a paper is
+approved, its gated triples load straight to Neo4j with no triple-level review
+step". That assumed the gates' survivors could be trusted unattended. On the
+only evidence there is, they cannot. Until the extraction step improves,
+approving a paper costs 73 minutes of a box shared with the chatbot and
+returns roughly one triple that still needs a human.
+
+**The number worth improving is per-paper yield, not per-chunk speed.**
+Measured speed is fine: ~91 s/chunk warm (70/112/92), 178 s for the first
+chunk because it loads the 5 GB model, so `garo_2.pdf`'s 50 chunks are ~76
+minutes. That is *faster* than the 157.3 s/chunk quoted from a dev machine.
+
+**Known gap in what was built:** `run_extraction` captures the subprocess
+output and writes `uploads/logs/<paper>.log` only once it exits, so there is
+no progress visible during a 73-minute run. Streaming it is the obvious next
+improvement.
+
+---
+
+## Original design, retained for reference
+
 **~4.5 days.** Blocked on a running instance (`NECTAR_IMPLEMENTATION_PLAN.md`
 M2).
 

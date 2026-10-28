@@ -882,6 +882,14 @@ So this defect has **no failing test covering it**. A regression test
 belongs with the fix -- assert that a Devanagari question reaches
 `translate_question` at all, which is the step that is being skipped.
 
+**DECIDED 2026-10-28: do not fix this yet, on purpose.** Fixing detection
+would route Bangla and Hindi questions into the translation path that §29
+measured as materially wrong five times out of five. That trades an honest
+"I found nothing" for a confident falsehood in the reader's own language,
+which is strictly worse under the precision-over-recall stance. This stays
+broken until §29 is addressed. It is a sequencing decision, not a backlog
+slip.
+
 **Practical consequence today:** tell anyone trying the deployment to ask
 in English. A Bangla or Hindi question does not error, it politely says it
 found nothing, which reads like an empty knowledge base rather than a
@@ -1128,9 +1136,80 @@ increasing cost:
 5. **Validate each translation against the evidence** -- a second LLM pass per
    language, on a path that already runs three serialized generations (§28).
 
-`origin/ahmed/feature-SCRUM-318-bangla-translation-quality` exists and was
-still not reviewed; check it before writing any of the above.
+**`origin/ahmed/feature-SCRUM-318-bangla-translation-quality` was reviewed
+on 2026-10-28, and it cannot fix any of this.** Its tip `6da1a76` is an
+ancestor of `dev` -- merged in `bb0bdae`, so it was already running when the
+five faults above were measured. Every guard it added
+(`retranslate_mixed_sentences`, `fill_leftover_english`, `restore_numbers`,
+and the `translation_incomplete` retry) lives inside `online_translate`
+(`rag.py:1421-1435`), and the `llm` provider never calls it:
+`rag.py:1613` reads `elif provider != "llm": online_translate(...)`, then
+`llm` goes straight to `_llm_translate`. Production is pinned to `llm`
+because Google and MyMemory are third-party services.
 
-`origin/ahmed/feature-SCRUM-318-bangla-translation-quality` exists and was
-not reviewed for this; check whether it addresses either fault before writing
-anything new.
+The only guard that reaches `llm` output is `fix_bangla_spelling`
+(`rag.py:1181`) -- a literal replacement table plus number formatting. That
+is an exact match for what was measured: numbers survived, meaning did not.
+
+Two things follow. **Option 3 is smaller than it looked**: the `llm`
+translation prompt (`rag.py:1622`) is bare -- "Translate the following text
+from English into Bengali" -- with nothing forbidding notes or
+transliteration, so the appended blocks on 8 of 8 responses are an
+unconstrained prompt rather than a model limit. And **part of Ahmed's work is
+portable for free**: `translation_incomplete` and `restore_numbers` are pure
+local string comparisons and could gate `llm` output today.
+`fill_leftover_english` is not portable -- it falls back to
+`google_translate` for unknown words (`rag.py:1305`) -- though its known-word
+dictionary is.
+
+
+## 30. A failed translation threw away a good answer -- FIXED
+
+**Fixed 2026-10-28** (`749530d`, deployed). Reported from the live instance:
+a teammate asked *"what is Garo"* with Hindi selected and got
+
+```
+RAG request failed (HTTP 503): Could not translate the answer into Hindi.
+Please try again later or select English.
+```
+
+**What was happening.** The system computed a correct English answer and then
+discarded the entire response because one translation call returned `""`.
+`answer_translations` raised `TranslationUnavailableError` for the
+**selected** language only; the other languages have always degraded to the
+English answer behind a note in the reader's own script. The user got nothing
+at all, despite a good answer existing a function call away.
+
+That fatal path came from `70f5107`, written when `TRANSLATION_PROVIDER` was
+Google and an empty result meant a real outage. Production runs `llm`, where
+empty is routine: `_llm_translate` returns `""` on a timeout, on a non-200
+from Ollama, and on an empty generation. Trading a whole answer for a
+transient condition is the wrong bargain.
+
+**The fix** makes the selected language degrade like the others -- HTTP 200,
+English answer behind the note. The original intent survives: the note is
+what stops an untranslated answer being passed off as a translated one.
+Verified by forcing the condition inside the production container, plus a
+live regression query (200, real Hindi, all three translations, 127 s).
+
+**Deliberately not done: raising `TRANSLATION_TIMEOUT_SECONDS`.** It is 240 s
+per call and there are two translation calls, so the app's worst case is
+240x2 + ~130 s synthesis = 610 s, which is exactly why `4f8a6b6` set nginx to
+620 s (§28). Raising it to 400 would give a ~930 s worst case and put nginx
+back as the binding timeout, undoing a deliberate decision. With graceful
+degradation a timeout is survivable, so the headroom is no longer needed.
+
+**What was NOT established.** The exact trigger was never reproduced. The
+teammate's request predates the 03:28 UTC container swap and those logs were
+destroyed by the recreate. Latency is close to the ceiling -- a Hindi answer
+measured **156 s idle, 201 s with one concurrent query, 127 s later**, against
+the 240 s per-call budget -- but two concurrent queries both succeeded, so
+concurrency alone is not the proven cause. The failure *mode* is fixed
+regardless of which transient condition fired.
+
+**Ruled out along the way, and worth knowing:** this did not come from
+Render. Render is still live, and its `/query` answers with **no
+authentication at all**, but its response carries no `language` and no
+`translations` keys -- it serves a build from before answer translation
+existed and cannot emit that error string. See
+`NECTAR_IMPLEMENTATION_PLAN.md` M3.
