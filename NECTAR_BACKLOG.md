@@ -15,17 +15,98 @@ tracks, independent of each other and of the deployment:
 E1 ──> E2 ──> E3 ──> E4 ──> E5     needs a running instance (M2)
 G1 ──> G2                           needs nothing
 G3 ──> G4                           needs nothing
+T1..T5                              translation; T1 needs only a Bangla speaker
 ```
 
-**G1 is the highest-value item here** and the best thing to hand to anyone with
-spare capacity: it is the only item that improves answer quality for users
-today, it needs no instance access, and it is about a day and a half.
+**G1 is the highest-value code item here** and the best thing to hand to anyone
+with spare capacity: it needs no instance access and is about a day and a half.
+**T1 is higher value still and is not code at all** -- half a day of a Bangla
+speaker's time, reviewing output nobody has yet confirmed is good.
+
+Track T was added on 2026-10-28 and breaks the "none of it has ever worked"
+rule above: most of it shipped that day and is live. It is listed here so the
+remainder is findable and so nobody repeats the engine measurements.
 
 Sizes are rough person-days for someone who knows this repo.
 
 ---
 
 # Track E — Extraction hosted and wired to the admin UI
+
+**DONE 2026-10-28**, on branch `marcus/admin-extraction` (5 commits, pushed,
+**not merged to dev**). The live instance is running it. The blocks below are
+kept as written because they are still the right design for a *durable*
+version; what was actually built is the cheaper in-process variant described
+under "What was built instead".
+
+**Do not start E1-E5 as written.** Read this section first.
+
+## What was built instead, and why
+
+The 4.5-day estimate was driven almost entirely by one constraint: the API
+image had no spaCy, so `main.py` could not run there, which forced a separate
+container, which forced a cross-container job queue with atomic claims. That
+constraint died with Render -- `requirements-serve.txt` excluded spaCy because
+"a free-tier host's build minutes should not pay for it", and Nectar builds on
+our own box. spaCy turned out to be the *only* missing dependency; rapidfuzz
+and openpyxl are named in the same comment but are not in `main.py`'s import
+closure.
+
+So the API image gained spaCy and the extraction modules, and runs `main.py`
+as a **subprocess** -- not an import, because `main.py` builds its
+ArgumentParser and parses `sys.argv` at module level, so importing it would
+extract using the API's own argv.
+
+What exists now:
+
+- `extract_jobs.py` -- `start/finish/fail/state_for/reap_stale/run_extraction/
+  begin`. State goes in the **existing append-only `queue.jsonl`**, because
+  `current_queue` already collapses it to one row per paper with later entries
+  winning and `/admin/queue` is already polled by the admin page. No new store,
+  no new route.
+- `POST /admin/extract`, gated on `_admin_authorised()`, refusing anything not
+  `ready_to_extract`.
+- An automatic trigger on **both** paths a paper can become approved, through
+  one shared function.
+- One run at a time, second caller refused with **409** rather than queued.
+- A **startup reaper** failing runs a restart abandoned (3h), without which one
+  restart wedges a paper forever and the one-at-a-time rule then refuses every
+  later paper.
+- `neo4j_loader/rollback.py`, so a load can be undone by the `run_id`
+  `add_triples` has always stamped on it.
+
+Borrowed from E2/E3 below: the stale-job reaping and the one-at-a-time rule.
+Deliberately **not** borrowed: the separate image, atomic `os.rename` claims
+and the multi-worker test matrix, which solve a multi-worker problem that does
+not exist with one process.
+
+## The result that matters more than the wiring
+
+One real run (see `KNOWN_LIMITATIONS.md` §18 for the full measurement):
+approved 83/100, auto-extracted, **73 minutes, 98 raw triples, 1 survived the
+gates** -- and that survivor was the author's byline scraped off the title
+page. Rolled back the same day.
+
+**This invalidates the constraint stated below** that "once a paper is
+approved, its gated triples load straight to Neo4j with no triple-level review
+step". That assumed the gates' survivors could be trusted unattended. On the
+only evidence there is, they cannot. Until the extraction step improves,
+approving a paper costs 73 minutes of a box shared with the chatbot and
+returns roughly one triple that still needs a human.
+
+**The number worth improving is per-paper yield, not per-chunk speed.**
+Measured speed is fine: ~91 s/chunk warm (70/112/92), 178 s for the first
+chunk because it loads the 5 GB model, so `garo_2.pdf`'s 50 chunks are ~76
+minutes. That is *faster* than the 157.3 s/chunk quoted from a dev machine.
+
+**Known gap in what was built:** `run_extraction` captures the subprocess
+output and writes `uploads/logs/<paper>.log` only once it exits, so there is
+no progress visible during a 73-minute run. Streaming it is the obvious next
+improvement.
+
+---
+
+## Original design, retained for reference
 
 **~4.5 days.** Blocked on a running instance (`NECTAR_IMPLEMENTATION_PLAN.md`
 M2).
@@ -433,3 +514,71 @@ entity count, and a before/after triple count proves nothing was lost.
   Ollama serialises at ~40s each, so the fourth simultaneous question exceeds
   `rag.py`'s 130s timeout and reads as a failure rather than a wait. Accepted
   for now; an explicit limit returning an honest "busy" would be more truthful.
+
+---
+
+# Track T — Translation quality
+
+Added 2026-10-28, and unlike the rest of this file **most of it is already
+done and live**. It is here so the remaining items are findable, and so
+nobody repeats the measurements. The detail, including every raw example,
+is KNOWN_LIMITATIONS 29.
+
+**What changed on 2026-10-28, all deployed:**
+
+| | |
+|---|---|
+| `5b626e7` | Appended commentary is stripped from every translation, and the prompt tells the model not to produce it. The strip is what works; the prompt alone was measured and does not. |
+| `7a251fe` | SCRUM-318's `translation_incomplete` and `restore_numbers`, which only ever ran on the online providers, now run on the deployed one. |
+| `998a5eb` | Refusals are served from `_NO_EVIDENCE_MESSAGES` instead of being put through the model. Fixes `मujhe`, and a refusal costs zero generations where it cost two. |
+| `07badae` | `translate_local` decodes with beam search, and the sentence splitter stops breaking "T. indica" in half. |
+| `2454429` | **The translator is NLLB-200-600M, not `mistral:7b`.** A grounded Bangla answer went from 70-120s to ~22s. |
+
+**T1 — Native-speaker review of the Bangla and Hindi.** *Size: half a day.
+Needs no code, no instance access, and it is the highest-value item in this
+file.* Every engine judgement on this page, including the decision to deploy
+NLLB, was made by reading translations against their English source without
+a Bangla speaker. The faults found were gross enough that the reading is not
+in doubt; **the rate is not established, and no one has confirmed the current
+output is good rather than merely better.** Sit someone who reads Bangla in
+front of https://136.186.108.232.sslip.io/ with the eight benchmark
+questions. Until this happens, the honest claim is "fit to review", not
+"correct".
+
+**T2 — Keep scientific names in Latin script.** *Size: half a day.* NLLB
+renders `Justicia adhatoda` as `জাস্টিসিয়া অ্যাড্যাটোডা`, which a reader
+cannot look up. `T. indica` and `S. cumini` survive because they are short
+and capitalised, so the behaviour is inconsistent as well as lossy. The shape
+of the fix is the one already in `local_translation.py`: `_prepare_names`
+protects `Garo` and `Mandi` by substitution, and a binomial is a more regular
+pattern than either.
+
+**T3 — Spell a proper noun the same way twice.** *Size: unclear, possibly not
+worth it.* One answer called the Garo religion `সঙ্গশেরক` in its first
+sentence and `স্যাংশারেক` in its second. Per-sentence translation is the
+cause: each sentence is a separate generation with no memory of the last.
+T2's substitution approach would fix it for known names, which may be all
+that matters.
+
+**T4 — The English answer expands abbreviations the evidence did not.**
+*Size: half a day to confirm, unknown to fix.* Seen once: synthesis turned
+`T. indica` into "Terminalia indica", a different genus from the tamarind the
+source means. This is upstream of translation and survives any engine swap,
+and it is more serious than the translation faults because the English answer
+is what everything else is checked against. Confirm the rate before fixing.
+
+**T5 — One refusal message, not two tables.** *Size: an hour, with G-track
+tidying.* `_NO_EVIDENCE_MESSAGES` holds `bn`/`en`/`hi`; the dict inside
+`_no_evidence_message` holds `en`/`es`/`fr`/`hi`/`zh`, has **no `bn`**, and
+gives Hindi different wording. Nothing reaches the divergence today, but
+`_no_evidence_message("bn")` would raise `KeyError`. The nine failing tests
+in `tests/test_rag_languages.py` assert against the second table, so retiring
+them and collapsing the tables is one job rather than two.
+
+**Not worth doing, and why, so nobody re-runs it:** `m2m100-418M` and
+`Helsinki-NLP/opus-mt` were both measured against the same five answers and
+are both worse than what is deployed -- opus-mt dangerously so, because it
+reads fluently while inverting the source. IndicTrans2 is MIT and
+purpose-built for these languages and would be the natural next engine, but
+every HuggingFace repo is gated behind an access request.
+

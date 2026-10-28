@@ -418,18 +418,67 @@ run deliberately left this read-only (uploading a real PDF triggers a real
 cost that day — it was last exercised for real on 2026-10-05, before this
 week's later retrieval and synthesis changes.
 
-## 18. Auto-extraction from the admin upload is designed, not built
+## 18. Auto-extraction is built and proven -- and yields almost nothing
 
-The admin upload screen runs the confidence check and stores or queues the
-paper. It does not start extraction.
+**Built 2026-10-28** (`marcus/admin-extraction`). Approving a paper now
+starts extraction: `POST /admin/extract`, plus an automatic trigger on both
+paths a paper can become approved. State lives in the existing append-only
+`queue.jsonl`, one run at a time with a 409 on overlap, a startup reaper for
+runs a restart abandoned, and `--no-gates` absent by construction with a
+test asserting it.
 
-Extraction is 157.3 seconds per chunk, measured on two mid-document chunks
-of garo_2 (183.4 s and 131.2 s). That makes a 22-page paper 2.2 hours, and
-all seven papers in `papers/` 10.8 hours. Free hosting has no GPU.
+**Proven end to end on the live instance**, not just in tests. Uploaded
+`Uptake of antepartum care services ... Garo indigenous women in
+Bangladesh.pdf` through the real admin endpoint:
 
-Auto-extraction needs a worker process, a job queue, progress reporting the
-admin can watch, and an inference budget. That is a subsystem, not a
-feature.
+| Step | Result |
+|---|---|
+| Confidence framework | **APPROVED, 83/100** (chunk 7 of 8 hit a parse error and was skipped; the framework carried on) |
+| Extraction trigger | **Automatic on approval** -- no second button |
+| Run time | **73 minutes**, 04:03 -> 05:16 UTC |
+| Raw triples | 98 |
+| Survived the three gates | **1** (well-formedness flagged 24, grounding 81, quote-genuineness 81; a triple can be flagged more than once) |
+| Loaded to Neo4j | 1, `run_id=20261028T051609Z-0674f1b8` |
+
+**The wiring works. The pipeline behind it does not.** A 1-in-98 survival
+rate is not the gates being harsh -- the rejected triples were visibly
+broken (`MyFirstAndSecond -[HAD_SYMPATHETIC Symptom]-> Vomiting`,
+`OnlyMotorbikes -[HAS_INACCESSIBLE_TRANSMISSION]-> Healthcare`, predicates
+containing spaces). The gates did exactly their job.
+
+**The one survivor was also wrong**, which is the part that matters:
+
+```
+(SubanKumarChowdhury)-[AUTHOR]->(OptimalHealth)
+  "Suban Kumar Chowdhury skc_ruir@ru.ac.bd optimal health during pregnancy [1]."
+```
+
+That is the author's byline and email address scraped off the title page --
+the same class of defect as §24. It was rolled back the same day.
+
+**What this changes.** `NECTAR_BACKLOG.md`'s Track E constraint -- "once a
+paper is approved, its gated triples load straight to Neo4j with no
+triple-level review" -- assumed the gates' survivors could be trusted
+unattended. One run is not a rate, but on the only evidence there is, that
+assumption does not hold: the survivor needed a human and did not get one.
+Until the extraction step improves, **approving a paper costs 73 minutes of
+a CPU-only box shared with the chatbot and returns roughly one triple that
+still needs checking.** Do not run it unattended against production, and
+treat the per-paper yield -- not the per-chunk speed -- as the number worth
+improving.
+
+**Measured speed, for planning.** ~91 s/chunk warm on the Nectar m3.xlarge
+(samples 70 s, 112 s, 92 s), and 178 s for the first chunk of a run because
+it loads the 5 GB model. `garo_2.pdf` is 50 chunks, so ~76 minutes. That is
+*faster* than the 157.3 s/chunk this entry used to quote from a dev
+machine. The older "~1.2 hours per paper" in `load_production_graph.py` and
+the "2.2 hours" here were never in conflict -- they are different papers.
+
+**Known gap in what was built:** `extract_jobs.run_extraction` captures the
+subprocess output and writes `uploads/logs/<paper>.log` only once it exits,
+so there is no progress visible during the run. The UI's "running since
+HH:MM" is honest but coarse. Streaming the log instead is the obvious next
+improvement.
 
 ## 19. Hosted answers read poorly, and worse than first assumed
 
@@ -778,7 +827,7 @@ Registration and email changes are the only callers; `login` normalises via
 `_normalise_identifier`, which stays loose by design, so no existing account
 can be locked out by the change.
 
-## 26. A Hindi question is answered as though it were English, and finds nothing
+## 26. A non-English question finds nothing -- when the caller sends no language
 
 **Observed on the live Nectar deployment, 2026-10-27**, against
 `https://136.186.108.232.sslip.io/query` with `TRANSLATION_PROVIDER=llm`.
@@ -833,10 +882,68 @@ So this defect has **no failing test covering it**. A regression test
 belongs with the fix -- assert that a Devanagari question reaches
 `translate_question` at all, which is the step that is being skipped.
 
+**DECIDED 2026-10-28: do not fix this yet, on purpose.** Fixing detection
+would route Bangla and Hindi questions into the translation path that §29
+measured as materially wrong five times out of five. That trades an honest
+"I found nothing" for a confident falsehood in the reader's own language,
+which is strictly worse under the precision-over-recall stance. This stays
+broken until §29 is addressed. It is a sequencing decision, not a backlog
+slip.
+
 **Practical consequence today:** tell anyone trying the deployment to ask
 in English. A Bangla or Hindi question does not error, it politely says it
 found nothing, which reads like an empty knowledge base rather than a
 language fault.
+
+### Narrowed 2026-10-28: the app's own path works, and this was never a user-facing block
+
+Measured live at `b0e22e2`, authenticated, asking **in Bangla with
+`language=bn`** -- which is what the Flutter client actually sends
+(`chat_service.dart:85` posts `{'query': question, 'language': language}`
+with `language: widget.strings.languageCode`, the picker's value):
+
+```
+query: গারোরা কোন ভাষায় কথা বলে?   language: bn
+-> HTTP 200 in ~114s, "language": "bn", 10 triples,
+   sources: Page 1, 3, 5, 7, 13, 15, 17
+```
+
+So the question was translated to English, keyword retrieval matched the
+graph, and the answer came back in Bangla with page citations. **The defect
+above is specific to a caller that sends no `language` field** -- `curl`, an
+older app build, the CLI -- where the request defaults to `en`, the
+Devanagari or Bangla string is matched against an English graph, and the
+gate correctly refuses.
+
+**This corrects the interim guidance that came out of the 2026-10-27 run**
+("teammates must ask in English and read the Bangla answer"). Through the
+app, asking in Bangla retrieves evidence normally. The guidance was right
+about `curl` and wrong about users, and it was repeated in the handover
+notes -- fix it there too.
+
+What the same response shows about quality, which is unchanged:
+
+- **The Hindi answer turns Bengali into Hindi.** The English reads "bilingual
+  as they need to communicate in both **Bengali** and their native Garo
+  language"; the Hindi reads `उन्हें **हिंदी** और अपनी गारो भाषा में संवाद
+  करना होता है`. The sentence carries a page citation, so a reader has every
+  reason to trust it. This is the §29 fault class, on a fresh example.
+- **Citations survive in Bangla and are destroyed in Hindi.** `(Source: Page
+  5)` comes through verbatim in `bn` -- the 40 Latin characters in that answer
+  are all citations, which is `strip_translation_appendix` keeping provenance
+  exactly as intended -- while `hi` renders them `(सर्टस: पेज 5)`, where
+  `सर्टस` is not a word.
+- Bodies remain garbled: "Garo community members" becomes `ছেলে-মহিলা গোষ্ঠী`
+  (*boy-woman group*), "their native Garo language" becomes `ছেলে ঘরের ভাষা`
+  (*boy's house language*), and "parents" becomes `পার্টনার গোঠর ফব্বরাশন`.
+
+**Priority, revised.** This was listed as a priority because eager
+translations made the Bangla answer the deliverable (`19b3168`) while a
+Bangla *question* appeared to return nothing. The question path works, so
+what is left here is a defaulting bug for non-app callers, which is worth
+one line of language detection and is no longer urgent. The urgent item is
+§29's body quality.
+
 
 ## 27. The relevance gate refuses a question whose answer is the top-ranked triple
 
@@ -957,11 +1064,13 @@ than reaching for the language feature.
 - **Backlog G1 matters more.** Fewer off-topic triples means a shorter
   evidence block, a shorter prompt, and less to translate.
 - **Limitation 26 becomes a priority rather than a curiosity.** A Bangla
-  *question* currently returns nothing. Pre-translating every answer into
-  Bangla, for an audience that cannot yet ask in Bangla, only pays off
-  once 26 is fixed. Today the Bangla audience must ask in English and read
-  the translated answer -- which does work, and is presumably the interim
-  path.
+  *question* appeared to return nothing, so pre-translating every answer for
+  an audience that could not yet ask in Bangla would only pay off once 26 was
+  fixed. **Superseded 2026-10-28:** measured live, a Bangla question sent the
+  way the app sends it -- with `language=bn` -- retrieves ten triples and
+  answers normally. 26 is a defaulting bug for callers that send no language,
+  not a block on the Bangla audience, so this consideration no longer argues
+  against `19b3168`.
 
 **Unrelated but adjacent:** the 504 was the first question after an idle
 period, and `OLLAMA_KEEP_ALIVE` is unset, so Ollama evicts the model after
@@ -1014,7 +1123,7 @@ Nothing checks a translation against the evidence.
 **Why it matters more than it looks.** Per the 2026-10-27 decision to keep
 eager translations (`19b3168`), the Bangla answer is the deliverable for the
 primary audience, not an optional extra: users will be in Bangladesh, and
-limitation 26 means they must ask in English and read the Bangla answer. So
+and -- per the 2026-10-28 measurement in 26 -- they can ask in Bangla too. So
 the output least able to be checked by its reader is the one most likely to
 be wrong, and the English text that would expose the drift is sitting right
 next to it in the same response.
@@ -1070,18 +1179,479 @@ increasing cost:
    19b3168 decision -- Marcus's call, not a code decision.
 2. **Strip the appended transliterations and back-translations** -- a regex on
    the translation output. Fixes the presentation fault only. The false
-   geography stays.
+   geography stays. **DONE `5b626e7`, and it turned out to be the one that
+   works** -- see the second measurement below.
 3. **Constrain the translation prompt** (translate only, no notes, no
    transliteration, preserve quoted text verbatim). Plausibly fixes the
-   appendices and some drift; unproven against the inversions.
+   appendices and some drift; unproven against the inversions. **DONE
+   `5b626e7`, and measured: it does NOT fix the appendices.** It changes what
+   the model appends, twice to invented provenance. Kept because it did fix
+   the false geography in the case that reproduced it.
 4. **A bigger or translation-specific model for this step.** `mistral:7b` is
    doing a job it is bad at. Costs RAM on a box already holding 5GB resident.
 5. **Validate each translation against the evidence** -- a second LLM pass per
    language, on a path that already runs three serialized generations (§28).
 
-`origin/ahmed/feature-SCRUM-318-bangla-translation-quality` exists and was
-still not reviewed; check it before writing any of the above.
+**`origin/ahmed/feature-SCRUM-318-bangla-translation-quality` was reviewed
+on 2026-10-28, and it cannot fix any of this.** Its tip `6da1a76` is an
+ancestor of `dev` -- merged in `bb0bdae`, so it was already running when the
+five faults above were measured. Every guard it added
+(`retranslate_mixed_sentences`, `fill_leftover_english`, `restore_numbers`,
+and the `translation_incomplete` retry) lives inside `online_translate`
+(`rag.py:1421-1435`), and the `llm` provider never calls it:
+`rag.py:1613` reads `elif provider != "llm": online_translate(...)`, then
+`llm` goes straight to `_llm_translate`. Production is pinned to `llm`
+because Google and MyMemory are third-party services.
 
-`origin/ahmed/feature-SCRUM-318-bangla-translation-quality` exists and was
-not reviewed for this; check whether it addresses either fault before writing
-anything new.
+The only guard that reaches `llm` output is `fix_bangla_spelling`
+(`rag.py:1181`) -- a literal replacement table plus number formatting. That
+is an exact match for what was measured: numbers survived, meaning did not.
+
+Two things follow. **Option 3 is smaller than it looked**: the `llm`
+translation prompt (`rag.py:1622`) is bare -- "Translate the following text
+from English into Bengali" -- with nothing forbidding notes or
+transliteration, so the appended blocks on 8 of 8 responses are an
+unconstrained prompt rather than a model limit. And **part of Ahmed's work is
+portable for free**: `translation_incomplete` and `restore_numbers` are pure
+local string comparisons and could gate `llm` output today.
+`fill_leftover_english` is not portable -- it falls back to
+`google_translate` for unknown words (`rag.py:1305`) -- though its known-word
+dictionary is.
+
+**Both portable guards are now PORTED (`7a251fe`), and the honest accounting
+is that they caught nothing in the sample that motivated them.** Replayed
+over the twenty real captured translations, including two from production:
+nine appendices stripped, **zero translations rejected, zero amounts
+corrected**. They are insurance, not a fix. What they do catch is a failure
+the sample lacked and the path allows: the model returning its input, which
+until now came back non-empty, was accepted as a translation, and reached the
+reader labelled as Bangla -- precisely what `_ENGLISH_ONLY_NOTES` exists to
+prevent -- and a generation truncated by `TRANSLATED_ANSWER_MAX_TOKENS`,
+where half an answer was served as the whole of one.
+
+**One ordering constraint came out of it, with a thin margin.**
+`strip_translation_appendix` has to run before the completeness check: the
+captured bn/old answer for "where do the Garo live" -- sound Bangla followed
+by a 66-word English back-translation -- scores a Latin-word ratio of
+**0.3952** against the detector's 0.4 threshold. A slightly longer appendix
+would have had a good translation thrown away for being "mostly English".
+A test fails if the two are swapped.
+
+Porting it also exposed a test that had been passing for the wrong reason:
+`test_llm_mode_still_uses_the_local_model_and_fixes_names` gave the gate a
+synthesis response with no `RELEVANT:` marker, so the English answer was the
+refusal message and the test was translating *that*. Refusals themselves are
+safe -- 20 English words against 22 Bangla and 25 Hindi clears the guard --
+and that is pinned now, because a lower threshold would start replacing
+refusals with English behind a note.
+
+
+### Measured again 2026-10-28, later: the prompt is not the fix, the strip is
+
+Options 2 and 3 are both **DONE** (`5b626e7`), and the measurement that
+proved them is the reason both were needed.
+
+Method: six A/B pairs against `mistral:7b` on the live instance, each one the
+same English answer translated twice -- once with the bare prompt production
+was running, once with the constrained prompt. Three English answers came
+from `data/demo_answer_cache.json` and two were synthesized from the live
+graph inside `p85_api`, so every input is real production text. Sixteen
+outputs in all, kept at `/mnt/data/extract/l29_probe*.json` on the instance.
+Nothing was deployed: the container served the old prompt throughout.
+
+**Option 3, the constrained prompt, does not stop the appendices.** It
+changes what the model appends, not whether it appends. With the rules in
+place:
+
+| What it appended | Where |
+|---|---|
+| A full romanised transliteration, under `(Note: ...)` | where they live, bn |
+| A full English back-translation, under `Translation:` | traditional religion, bn |
+| `Source: https://www.britannica.com/topic/Garo-people` | challenges, bn |
+| `(Source: ... published in the Journal of Ethnopharmacology.)` | medicinal plants, bn |
+
+The last two are a fault class this entry had not recorded: **invented
+provenance**. No English answer in the probe contains a URL or a journal
+name. A reader who checks a source is the one most likely to be misled by
+it, and the Bangla reader cannot see the English answer sitting next to it.
+
+A trap worth keeping: the first version of the rules ended with
+`Leave numbers, Latin-script names, and "(Source: Page N)" citations as they
+are`, and the model copied the literal `(Source: Page N)` into all four
+outputs -- which is also why the first run looked clean. The example had
+become the appendix. A rule may describe what to preserve; it may not show a
+sample of it. `test_the_rules_carry_no_example_the_model_can_copy_out` pins
+that.
+
+**What the prompt did fix:** the false geography, in the one case that
+reproduced it. The old prompt put `গোয়ালপারা, অসম, বাংলাদেশে` -- Goalpara,
+Assam, in Bangladesh. The constrained prompt put Assam in India in all three
+attempts (bn twice, hi once). n=3 in a nondeterministic path, so it is a
+signal and not a guarantee. It also stopped `(Source: Page 1)` being
+translated into `(সর্চ পেজ ১)`.
+
+**What neither fixed:** the answer bodies. The religion answer still mangles
+the quoted source sentence rather than inverting it, `ফাউন্ডেশন`
+(foundation) still stands for religion, "the seeds of" is still `তালু`
+(palate), and nose bleed became `নাসের ঘোড়া`, *horse of the nose*. One case
+got worse: `গাড়ো` (Garo) became `কারো`, *anyone's*. This is model
+capability, not prompt wording.
+
+**So the appendix is removed deterministically** --
+`strip_translation_appendix` (`rag.py:1222`), run on every answer
+translation. It drops a trailing paragraph containing no character of the
+target script, because a Bangla translation is written in Bangla, and is held
+to blocks long enough or link-like enough to be commentary. Over the sixteen
+captured outputs it removed **nine appendices and lost no translated text at
+all**. The one appendix it does not remove mixes Bangla into itself
+(`(Justicia adhatoda, ... এবং উপযোগ করা হয়নি ...)`), which the script test
+cannot see; that is a known hole, not an oversight.
+
+**A correction to the table above.** The botanical names were called
+"outside knowledge the evidence never provided". That was wrong. The English
+answer for that question reads "the seeds of T. indica and S. cumini", so
+the evidence did supply both, abbreviated; the model expanded the genus. That
+is still an addition -- expanding an abbreviation is supplying knowledge the
+evidence withheld -- but it is a smaller fault than invention, and the
+Britannica and Ethnopharmacology citations above are the real examples of
+invention.
+
+**And the expansion is not only the translator's.** One observation, from the
+post-deploy check on 2026-10-28: asked the same question again, the
+**English** answer itself read "Justicia adhatoda, Plumbago zeylanica,
+Evolvulus nummularius, and **Terminalia** indica" and "the seeds of
+**Terminalia** indica and Syzygium cumini". The evidence supplies `T.
+indica`; in this context that is Tamarindus indica, the tamarind, and
+Terminalia is a different genus. So the synthesis step expands the
+abbreviation too, nondeterministically -- the earlier run of the same
+question left it as `T. indica` -- and picked a genus the evidence never
+named. That is worse than the translation doing it, because the English
+answer is the grounded deliverable everything else is checked against. One
+observation, not a measurement; it wants its own look rather than being
+folded into this entry.
+
+**Still open, and still Marcus's call: options 1, 4 and 5.** The judgement at
+the top of this section is unchanged by today's work -- the Bangla *body* is
+not fit to present as the primary deliverable, and no prompt wording will
+make it so. What changed is that it no longer arrives with a fabricated
+source attached.
+
+### Measured 2026-10-28: NLLB against mistral:7b, same inputs, same box
+
+Option 4, measured rather than argued. NLLB-200-distilled-600M, run through
+this project's own `local_translation.py` so the result reflects what
+`TRANSLATION_PROVIDER=local` would actually do, in a throwaway container on
+the live instance (16 vCPU, no GPU). Ten answer translations across the five
+benchmark answers, plus three question translations. Weights at
+`/mnt/data/nllb/nllb-600m`; raw output at `/mnt/data/nllb/nllb_results.json`.
+
+**Nothing here was deployed.** Running the comparison is research use, which
+CC-BY-NC-4.0 permits; deploying is the licence question, and it is unanswered.
+
+**What NLLB fixes.**
+
+| Fault, from the table above | mistral:7b | NLLB |
+|---|---|---|
+| Appended transliteration / back-translation / note | present in most | **0 of 10**, and zero Latin characters in any output |
+| Invented provenance (Britannica URL, Journal of Ethnopharmacology) | twice | none |
+| Goalpara, Assam placed in Bangladesh | wrong | **correct** -- `আসামের গোলপারা`, `असम के गोलपरा`, India and Bangladesh distinct |
+| The quoted Page 1 sentence, "almost abolished" | inverted to *has begun* | **faithful** -- `প্রায় বিলুপ্ত হয়ে গেছে এবং কিছু এলাকায় খুব কম গারো মানুষই অনুশীলন করে` |
+| "communicate in both Bengali and Garo" | Hindi answer said *Hindi* | **correct**, `बंगाली और अपनी मातृभाषा गारो` |
+| 31 plants / 23 families | survived | survived (`৩১টি`, `২৩টি`) |
+| Prose | `একটা বিশেষ রক্ত ধরে`, `উত্তম রক্তান্তর সিস্টেম`, `নাসের ঘোড়া` (*horse of the nose*) | fluent and idiomatic throughout |
+
+**Latency, which was not the point but is the largest single number.** 2.6-7.8s
+per answer translation against 30-80s measured for `mistral:7b`, and 0.4-0.5s
+per question translation once the model is warm (12.4s on the first call, which
+is the lazy load). Two translations per query stop being the thing that puts
+the worst case at 610s against nginx's 620s (§28).
+
+**What NLLB gets wrong, which is the part that matters for a decision.**
+
+1. **It drops negations in a list.** "high levels of unemployment, illiteracy,
+   **insufficient** communication, **poor** sanitation, and **inadequate**
+   transportation systems" came back as `পর্যাপ্ত যোগাযোগ` -- *adequate*
+   communication -- and `খারাপ স্বাস্থ্যসেবা`, *poor healthcare*, where the
+   source says sanitation. Two of five list items wrong, one of them inverted.
+   This is the most serious fault found and it is the same class as §29's
+   complaint, smaller in blast radius: it mistranslates what is there rather
+   than adding what is not.
+2. **The Hindi version of the quoted sentence mangles the passive**: `जिसे कुछ
+   क्षेत्रों में बहुत कम गारो लोग ही समाप्त कर देते हैं और उसका अभ्यास करते
+   हैं` reads as *few people abolish it and practise it*. The Bangla of the
+   same sentence is right, so this is not symmetric across languages.
+3. **`asthma` became `হাঁস`, a duck**, in Bangla. Hindi got `अस्थमा` right.
+4. **Proper nouns are spelled two ways inside one answer** -- `সঙ্গশারক` then
+   `সানশারেক` for Sangsharek; `মেইমেন্সিংহ` then `মাইমেনসিং` for Mymensingh.
+5. **Scientific binomials lose their Latin script.** `Justicia adhatoda`
+   becomes `জাস্টিসিয়া অ্যাডাহোডা`, which no reader can look up. `mistral:7b`
+   transliterated them too, so this is not a regression, but a medicinal-plant
+   answer is exactly where it hurts. Worth protecting explicitly.
+6. **A bug in our own chunker, not in NLLB.** `_chunks` splits sentences on
+   `(?<=[.!?।])\s+`, so "the seeds of T. indica and S. cumini" splits after
+   `T.` and `S.`. The output is shredded: `টি-এর বীজও ব্যবহার করা হয়। ইন্ডিকা
+   এবং এস। ... কমিনি।`, and the same in Hindi. Any deployment of this path
+   needs the splitter taught about single-letter abbreviations first. It is
+   cheap to fix and it is in `local_translation.py`, so it is ours.
+
+**The honest summary.** This is not a clean win, it is a change of error class:
+from *invents places, URLs and journal citations, in prose a Bangla reader
+cannot follow* to *fluent prose that sometimes drops a negation or picks the
+wrong word*. Both still need the native-speaker review this entry has always
+asked for. Only one of them is safe to put in front of a client, because only
+one of them fails in ways a reader can see.
+
+**What it does not touch:** the English synthesis (the `Terminalia indica`
+note above survives the swap), retrieval, and §27.
+
+**If it is deployed, four things go with it**, none of them optional:
+`Dockerfile.serve` needs torch, transformers and sentencepiece; the weights
+need to be on `/mnt/data` with `LOCAL_TRANSLATION_MODEL` pointing at them
+(`local_files_only=True` refuses to download at runtime); the abbreviation
+bug in `_chunks` needs fixing; and the two guards ported in `7a251fe` are
+gated on `provider == "llm"`, so they would silently stop running -- that gate
+has to widen in the same commit.
+
+
+### Corrected, same day: three of those faults were ours, not NLLB's
+
+The run above went through `translate_local`, and `translate_local` decodes
+**greedily** -- `model.generate(..., do_sample=False)` with no `num_beams`
+(`local_translation.py:103`) -- and splits sentences with the `_chunks`
+regex that breaks after `T.`. Re-run with `num_beams=5` and an
+abbreviation-safe splitter, same model, same weights, same box:
+
+| fault blamed on NLLB above | under beam search |
+|---|---|
+| "insufficient communication" -> *adequate*, "poor sanitation" -> *healthcare* | **correct**: `অপর্যাপ্ত যোগাযোগ, দুর্বল স্যানিটেশন এবং অপর্যাপ্ত পরিবহন ব্যবস্থা` |
+| `asthma` -> `হাঁস`, a duck | **correct**: `হাঁপানি` |
+| Hindi quoted sentence read as *few people abolish it* | **correct**: `बहुत कम गारो लोगों द्वारा लगभग समाप्त और अभ्यास किया जाता है` |
+| "the seeds of T. indica and S. cumini" shredded | **intact, and left in Latin**: `T. indica এবং S. cumini এর বীজ` |
+
+So **the entry above overstated NLLB's faults.** What survives as genuinely
+the model's: scientific binomials are transliterated out of Latin script
+(`জাস্টিসিয়া অ্যাড্যাটোডা`), and a proper noun can be spelled two ways inside
+one answer (`সঙ্গশেরক` then `স্যাংশারেক`). Everything else on that list was
+our decoding configuration. Numbers, citations (`উৎসঃ পৃষ্ঠা 1`), `T. indica`
+and `Mandai TMPs` all survive, and the quoted Page 1 sentence keeps
+"almost abolished".
+
+**Two one-line changes carry all of that**, and neither affects production
+today because `local` is not the deployed provider: pass `num_beams=5` in
+`local_translation.py`'s `generate`, and change `_chunks`'s split from
+`(?<=[.!?।])\s+` to `(?<!\b[A-Z]\.)(?<=[.!?।])\s+`. Beam search was not
+slower here -- 4-7s per answer against 2.6-26s greedy.
+
+### The licence-clean alternatives, measured 2026-10-28
+
+**IndicTrans2 is MIT and unavailable.** The model card for
+`ai4bharat/indictrans2-en-indic-dist-200M` states `license: mit`, and every
+IndicTrans2 repo tried -- `en-indic-dist-200M`, `en-indic-1B` -- returns
+`GatedRepoError` (HTTP 401): *"Access to model ... is restricted. You must
+have access to it and be authenticated."* Gating is an access control
+separate from the licence, and lifting it is a human action: a HuggingFace
+account, an access request, and a token. Two further integration costs if it
+is chosen: it is **direction-specific**, so en->indic and indic->en are
+separate checkpoints and both must be held, and it needs
+`IndicTransToolkit`'s `IndicProcessor` plus `trust_remote_code=True`, so it
+will not load through the current `local_translation.py` without work.
+
+**`facebook/m2m100_418M` is MIT, ungated, and not good enough.** Tested on
+the same five answers with the same splitter and beams. It is worse than
+NLLB on exactly what matters:
+
+- `plant species` and `formulations` both became `ফাংশন`, *function*
+- `chronic fever` -> `ক্রোনিক ত্বক`, *chronic skin*
+- `vomiting` -> `ভ্রমণ`, *travel*; `nose bleed` -> `নাসা রক্ত`, *NASA blood*
+- `illiteracy`, `insufficient`, `poor` and `inadequate` all collapsed into
+  one word, `অস্বাভাবিক` (*abnormal*)
+- `land ownership` -> `ভূমিকা মালিকত্ব`, *role ownership*
+- `औषधीय formulationsতে` -- **Devanagari spliced into a Bangla sentence**,
+  the same mixed-script fault as `मujhe`
+- the `(Source: Page 1)` citation is dropped entirely
+
+So the ranking on this evidence is **NLLB (beams) > mistral:7b > m2m100**, and
+the one candidate that is both MIT and purpose-built for Bengali and Hindi
+cannot be evaluated without someone requesting access.
+
+**One thing both raw models get wrong and the existing wrapper fixes.**
+Translating the questions without `_prepare_names`, NLLB produced "Where do
+the **Garours** live?" and "the traditional religion of the **Garoths**",
+and m2m100 produced "Which language does **Gary** speak?" and "Where are the
+**Garros** living?". Through `translate_local`, which applies the
+Garo/Mandi name table, all three questions came back correct ("What language
+do the Garo people speak?"). That table is load-bearing for retrieval --
+`Garo` is the single most important keyword in this graph -- and any engine
+swap keeps it.
+
+
+### opus-mt, the Apache-2.0 option, measured 2026-10-28 -- fast, clean, and wrong
+
+`Helsinki-NLP/opus-mt-en-inc` and `opus-mt-inc-en`, **Apache-2.0 and
+ungated**, so no licence question and nothing to approve. 295 MB each
+against NLLB's 2.4 GB, and **0.7-1.9s per answer** against NLLB's 4-7s and
+`mistral:7b`'s 30-80s. Same five answers, same splitter, same beams.
+
+It is not accurate enough, and it fails on the faults this entry exists for:
+
+| | opus-mt | NLLB (beams) |
+|---|---|---|
+| "insufficient communication, poor sanitation, inadequate transportation" | `পর্যাপ্ত যোগাযোগ` (*adequate*), "unemployment" twice, and **sanitation replaced by a second transportation** | all three correct |
+| "worth noting that the health status is currently in good shape" | `এটা ঠিক না যে...` -- ***it is not right that*** the health is good | correct |
+| the quoted Page 1 sentence | "almost abolished" **gone**, "very few" became `বেশ কয়েকজন` (*quite a few*) | faithful |
+| `T. indica` / `S. cumini` | `টিডিকা`, `এস জিরির` | intact and in Latin |
+| chronic fever / asthma / vomiting | `দীর্ঘস্থায়ী জ্বালানী` (*chronic fuel*), `দামা`, `কাপড়` (*cloth*) | `দীর্ঘস্থায়ী জ্বর`, `হাঁপানি`, `বমি` |
+| "Garo" | `গেরিও`, `গারিও`, and **"Guerrero"** in question translation | correct |
+| `(Source: Page 1)` | dropped | kept |
+| "Sangsharek" | spelled three ways in one short answer | twice |
+
+**Why this is worse than it scores.** opus-mt reads fluently and states
+things the evidence does not. `mistral:7b` fails visibly -- a Bangla reader
+can see that `উত্তম রক্তান্তর সিস্টেম` is broken and distrust it. "It is not
+right that the community's health is good" reads perfectly well and inverts
+the source. For a project whose whole retrieval design prefers an honest
+refusal to a confident wrong answer, fluent-and-wrong is the worse failure.
+
+**Final ranking, all four engines measured on the same five answers:**
+**NLLB-600M (beam search) > `mistral:7b` > opus-mt > m2m100-418M.** NLLB is
+the only one that keeps negations, quoted text, provenance and species
+names. Its own residual faults are transliterated binomials and a proper
+noun spelled two ways.
+
+
+### DEPLOYED 2026-10-28: the translation engine is NLLB, not a chat model
+
+Marcus settled the licence question -- CC-BY-NC-4.0 grants non-commercial
+use to anyone, there is no application and nobody to ask, and this project
+is non-commercial. `2454429`, live on the instance.
+
+What went with it, because none of it is optional: torch, transformers and
+sentencepiece in `Dockerfile.serve` (torch from the CPU wheel index -- the
+default PyPI build carries CUDA libraries for a GPU this box does not
+have); the 2.4GB of weights mounted read-only from `/mnt/data/nllb` at
+`/app/models` with `LOCAL_TRANSLATION_MODEL` set; `TRANSLATION_PROVIDER=local`;
+and `_GUARD_LOCALLY = {"llm", "local"}` so the two guards ported in
+`7a251fe` keep running -- gated on `provider == "llm"` they would have
+stopped silently at exactly this moment.
+
+**Measured on the live site after deploying:**
+
+| | before (`mistral:7b`) | after (NLLB) |
+|---|---|---|
+| grounded answer, `language=bn` | 70-120s | **22.5s** (first call, including the model load) and **24.9s** |
+| refusal | 1.1-1.8s | **1.1s**, unchanged |
+| the negation sentence | `উত্তম সংবাদ` and worse | `অপর্যাপ্ত যোগাযোগ, দুর্বল স্যানিটেশন এবং অপর্যাপ্ত পরিবহন ব্যবস্থা` -- **all three correct** |
+| Goalpara, Assam | placed in Bangladesh | `আসামের গোলপারা`, correctly in India |
+| appended commentary | transliterations, notes, a fabricated Britannica link | zero Latin characters in any answer |
+| `Local translation unavailable` in the log | n/a | **0** |
+| `discarded: incomplete` in the log | n/a | **0** |
+
+`p85_api` holds 740MB resident with the model loaded, against 11GB free, so
+the box is comfortable. The build also needed room: `/` was at 82% with
+5.2GB free, and `docker builder prune -af` reclaimed **8.98GB** of build
+cache first, which is the only reason this fit. Watch that before any
+future image work.
+
+**Rolling back takes seconds and no rebuild.** The image still carries the
+`llm` path: set `TRANSLATION_PROVIDER=llm` in `deploy/nectar/.env` and
+restart `api`. The pre-switch file is kept at `.env.backup-pre-nllb` on the
+instance.
+
+**What is still true after all of this.** The bodies are better, not
+verified: NLLB transliterates scientific binomials out of Latin script and
+spells a proper noun two ways inside one answer, and the native-speaker
+review this entry has asked for from the start has still not happened. What
+has changed is that the output no longer invents places, URLs or journal
+citations, and no longer reads as broken Bangla. That is the difference
+between "not fit to present" and "fit to review".
+
+
+### A cheaper fault found while measuring this
+
+The three Hindi refusals that render `मujhe` are not a typo in a static
+string: `_NO_EVIDENCE_MESSAGES["hi"]` and `_ENGLISH_ONLY_NOTES["hi"]` are
+both clean, correct Devanagari. They are never sent. `answer_translations`
+(`rag.py:1673`) computes the **English** refusal and then puts it through the
+model like any other answer, so what a user sees is `mistral:7b`
+translating "I could not find enough connected evidence" -- and the clean
+localized refusals sitting in the file are reachable only through
+`answer(question, triples, "hi")`, which the query handler does not call.
+
+Serving the static string when there is no evidence would fix the spliced
+script, make refusals deterministic, and remove two LLM generations from
+every refusal -- the cheapest latency win available against §28.
+
+**DONE 2026-10-28.** `answer_translations` now compares the English answer
+with `_NO_EVIDENCE_MESSAGES["en"]` and, on a match, serves the project's own
+Bangla and Hindi refusals instead of generating anything. All three refusal
+paths return that one English string -- no triples, the relevance gate
+declining (`NO_GROUNDED_ANSWER_MESSAGE`), and a fallback with nothing
+formattable -- so one comparison covers them all, which a test for the gate
+case pins separately from the no-evidence case. A refusal now costs **zero**
+model calls where it cost two, and is deterministic: the same question
+cannot refuse in three different wordings on three different days.
+
+**A trap found next door, not fixed.** There are two refusal tables.
+`_NO_EVIDENCE_MESSAGES` (module level) holds `bn`, `en`, `hi` -- the
+languages actually answered in. `_no_evidence_message`'s own dict
+(`rag.py:2069`) holds `en`, `es`, `fr`, `hi`, `zh`: it still carries the
+three dropped languages, it has **no `bn` at all**, and its Hindi wording
+*differs* from the module table's. Nothing reaches the divergence today --
+`_no_evidence_message` is only ever called with `en`, because
+`_fallback_answer` is only called with `DEFAULT_LANGUAGE` -- but
+`_no_evidence_message("bn")` would raise `KeyError`, and an editor who fixes
+the wording in one table will not change the other. Worth collapsing into
+one table, together with the stale `es`/`fr`/`zh` tests that still assert
+against it.
+
+
+## 30. A failed translation threw away a good answer -- FIXED
+
+**Fixed 2026-10-28** (`749530d`, deployed). Reported from the live instance:
+a teammate asked *"what is Garo"* with Hindi selected and got
+
+```
+RAG request failed (HTTP 503): Could not translate the answer into Hindi.
+Please try again later or select English.
+```
+
+**What was happening.** The system computed a correct English answer and then
+discarded the entire response because one translation call returned `""`.
+`answer_translations` raised `TranslationUnavailableError` for the
+**selected** language only; the other languages have always degraded to the
+English answer behind a note in the reader's own script. The user got nothing
+at all, despite a good answer existing a function call away.
+
+That fatal path came from `70f5107`, written when `TRANSLATION_PROVIDER` was
+Google and an empty result meant a real outage. Production runs `llm`, where
+empty is routine: `_llm_translate` returns `""` on a timeout, on a non-200
+from Ollama, and on an empty generation. Trading a whole answer for a
+transient condition is the wrong bargain.
+
+**The fix** makes the selected language degrade like the others -- HTTP 200,
+English answer behind the note. The original intent survives: the note is
+what stops an untranslated answer being passed off as a translated one.
+Verified by forcing the condition inside the production container, plus a
+live regression query (200, real Hindi, all three translations, 127 s).
+
+**Deliberately not done: raising `TRANSLATION_TIMEOUT_SECONDS`.** It is 240 s
+per call and there are two translation calls, so the app's worst case is
+240x2 + ~130 s synthesis = 610 s, which is exactly why `4f8a6b6` set nginx to
+620 s (§28). Raising it to 400 would give a ~930 s worst case and put nginx
+back as the binding timeout, undoing a deliberate decision. With graceful
+degradation a timeout is survivable, so the headroom is no longer needed.
+
+**What was NOT established.** The exact trigger was never reproduced. The
+teammate's request predates the 03:28 UTC container swap and those logs were
+destroyed by the recreate. Latency is close to the ceiling -- a Hindi answer
+measured **156 s idle, 201 s with one concurrent query, 127 s later**, against
+the 240 s per-call budget -- but two concurrent queries both succeeded, so
+concurrency alone is not the proven cause. The failure *mode* is fixed
+regardless of which transient condition fired.
+
+**Ruled out along the way, and worth knowing:** this did not come from
+Render. Render is still live, and its `/query` answers with **no
+authentication at all**, but its response carries no `language` and no
+`translations` keys -- it serves a build from before answer translation
+existed and cannot emit that error string. See
+`NECTAR_IMPLEMENTATION_PLAN.md` M3.

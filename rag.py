@@ -36,9 +36,10 @@ from collections import defaultdict
 from dotenv import load_dotenv
 import requests
 
-from admin_ingest import (check_admin_secret, current_queue, ingest_pdf,
-                          read_paper_bytes, record_manual_decision,
-                          validate_upload)
+from admin_ingest import (IngestDecision, check_admin_secret, current_queue,
+                          ingest_pdf, read_paper_bytes, record_manual_decision,
+                          stored_paper_path, validate_upload)
+import extract_jobs
 from auth_store import AuthStore
 from llm_endpoint import ollama_tunnel_headers, resolve_llm_endpoint
 import local_tts
@@ -1052,6 +1053,15 @@ def _is_plain_english(text: str) -> bool:
 # answered a single request with 429 Too Many Requests on a team laptop on
 # 2026-10-08, which is why MyMemory backs it up.
 TRANSLATION_PROVIDERS = {"local", "auto", "online", "google", "llm"}
+
+# Providers whose output this file has to guard itself. `online` and
+# `auto` are absent on purpose: online_translate runs
+# translation_incomplete and restore_numbers inside itself, so guarding
+# them again here would be doing the work twice. Written as a set rather
+# than `== "llm"` because the guards were ported while llm happened to be
+# deployed, and a switch to local would otherwise have silently dropped
+# them.
+_GUARD_LOCALLY = {"llm", "local"}
 _GOOGLE_MAX_CHARS = 4500  # Google's per-request limit is 5000.
 # After Google refuses with 429, skip it for this long instead of paying a
 # failed round trip on every question.
@@ -1183,6 +1193,67 @@ def fix_bangla_spelling(text: str) -> str:
         text = text.replace(wrong, right)
     text = _SPACED_THOUSANDS.sub(",", text)
     return _BIG_NUMBER.sub(_big_number, text)
+
+
+# The Unicode block each answer language is written in. Used to tell a
+# translation's own text apart from commentary the model appended in Latin
+# script -- see strip_translation_appendix.
+_ANSWER_SCRIPTS = {
+    "bn": "ঀ-৿",
+    "hi": "ऀ-ॿ",
+}
+
+# Long enough that a stray proper noun or a page citation on its own line is
+# not mistaken for commentary. Every appended block measured on 2026-10-28
+# ran to dozens of Latin characters; the shortest thing worth keeping was
+# "(Source: Page 1)", at twelve.
+_APPENDIX_MIN_LATIN = 25
+
+_LATIN_LETTER = re.compile(r"[A-Za-z]")
+_PARAGRAPH_BREAK = re.compile(r"\n\s*\n")
+_LINK = re.compile(r"https?://|www\.", re.IGNORECASE)
+
+
+# Removes commentary the model appended after the translation it was asked
+# for. KNOWN_LIMITATIONS 29: eight of eight live responses appended
+# something unrequested -- a romanised transliteration, a full English
+# back-translation, an explanatory note, or (twice, invented) a source
+# citation, once to an external website. Constraining the prompt helps and
+# does not suffice: it was measured appending a transliteration and a
+# fabricated Britannica link with the rules in place.
+#
+# The signal is script, not meaning. A Bangla translation is written in
+# Bangla, so a trailing paragraph with no Bangla character in it is not part
+# of the translation. That is deliberately blind to what the block says,
+# which is why it is held to blocks long enough or link-like enough to be
+# commentary rather than anything that happens to be Latin: numbers, plant
+# names and place names inside the answer are supposed to survive, and do.
+def strip_translation_appendix(text: str, language: str) -> str:
+    script = _ANSWER_SCRIPTS.get(normalize_language(language))
+    if not script or not (text or "").strip():
+        return text
+
+    native = re.compile("[%s]" % script)
+    paragraphs = _PARAGRAPH_BREAK.split(text.strip())
+
+    kept = list(paragraphs)
+    while len(kept) > 1 and not native.search(kept[-1]):
+        trailing = kept[-1]
+        commentary = (
+            len(_LATIN_LETTER.findall(trailing)) >= _APPENDIX_MIN_LATIN
+            or _LINK.search(trailing)
+        )
+        if not commentary:
+            break
+        kept.pop()
+
+    # An answer with no target script anywhere is the model returning
+    # English instead of translating. That belongs to the caller, which
+    # shows it behind a note in the reader's own script, so nothing here
+    # should reduce it to nothing.
+    if not any(native.search(paragraph) for paragraph in kept):
+        return text
+    return "\n\n".join(kept).strip()
 
 
 def translation_incomplete(source: str, translated: str, target: str) -> bool:
@@ -1561,6 +1632,29 @@ class AnswerSynthesizer:
             return f"{english} {glossary}"
         return english
 
+    # Sent with answer translations only -- see KNOWN_LIMITATIONS 29. Measured
+    # 2026-10-28 against the live instance, all five substantive Bangla answers
+    # were materially wrong and all eight responses appended something nobody
+    # asked for. Two of the faults are hallucinations the rest of this file
+    # works to prevent: a translation placed Goalpara, Assam inside Bangladesh,
+    # and another supplied botanical names the evidence never provided. The
+    # relevance gate and the refusal-over-bridging rule have both already run
+    # by the time this prompt is built, so nothing downstream checks what the
+    # translation adds.
+    #
+    # The question translation deliberately does NOT get these rules: only its
+    # English meaning is used, to build a retrieval query, so loading it with
+    # answer-shaped rules would change which triples come back while fixing
+    # nothing a reader sees.
+    _ANSWER_TRANSLATION_RULES = """Translate only. Do not add anything the text does not say: no place, no
+date, no fact, no explanation, and no botanical or scientific name of your own.
+Do not append a transliteration, a romanisation, a back-translation, or a
+note of any kind -- the translation is the whole of your reply.
+Translate quoted text as exactly what it says: never reverse, soften, or
+strengthen a quotation.
+Keep numbers, Latin-script names, and source citations exactly as they appear.
+"""
+
     def _llm_translate(
         self,
         text: str,
@@ -1568,10 +1662,11 @@ class AnswerSynthesizer:
         max_tokens: int,
         timeout: Union[int, Tuple[int, int]],
         operation: str,
+        rules: str = "",
     ) -> str:
         prompt = f"""{instruction}
 Return only the translation. Preserve names of people, places, and communities.
-
+{rules}
 Text:
 {text}
 
@@ -1628,7 +1723,39 @@ Translation:"""
                     TRANSLATION_TIMEOUT_SECONDS,
                 ),
                 "Answer translation",
+                self._ANSWER_TRANSLATION_RULES,
             )
+        if translated:
+            translated = strip_translation_appendix(translated, language)
+        # SCRUM-318's guards, ported to the llm path. They are called from
+        # online_translate for the online providers, which production never
+        # uses, so until now nothing checked whether the local model had
+        # actually translated. Both are pure string comparisons, so they
+        # port unchanged; gated on llm because the online path already ran
+        # them and the local (NLLB) path is unmeasured here.
+        #
+        # The order is load-bearing. strip_translation_appendix MUST run
+        # first: one real captured output -- sound Bangla followed by a
+        # 66-word English back-translation -- scored a Latin-word ratio of
+        # 0.3952 against this detector's 0.4 threshold, so a slightly
+        # longer appendix would have had a good translation discarded for
+        # being "mostly English".
+        if (
+            translated
+            and provider in _GUARD_LOCALLY
+            and translation_incomplete(answer, translated, language)
+        ):
+            # Empty, half-missing, or still mostly English. Returning ""
+            # is not a loss of information: the caller shows the English
+            # answer behind a note in the reader's own script, which is
+            # honest, where passing this off as a translation is not.
+            print(
+                f"Answer translation into {language} discarded: "
+                "incomplete or untranslated"
+            )
+            translated = ""
+        if translated and provider in _GUARD_LOCALLY:
+            translated = restore_numbers(answer, translated, language)
         if translated and language == "bn":
             translated = fix_bangla_spelling(translated)
         if translated:
@@ -1647,6 +1774,31 @@ Translation:"""
         english_answer = self.answer(english_question, triples, "en")
         translations = {"en": english_answer}
 
+        # A refusal already knows its own wording in every language this
+        # project answers in, so it is served rather than generated.
+        #
+        # KNOWN_LIMITATIONS 29 recorded all three Hindi refusals rendering
+        # `मujhe`, Latin letters spliced into Devanagari mid-word. That was
+        # never a typo in the file: _NO_EVIDENCE_MESSAGES["hi"] is clean, and
+        # was never sent. This method computed the ENGLISH refusal and put it
+        # through the model like any other answer, so a reader got mistral:7b
+        # translating "I could not find enough connected evidence" -- the one
+        # sentence whose translation the project already owns.
+        #
+        # Every refusal path returns this exact English string: no triples
+        # (`_no_evidence_message`), the relevance gate declining
+        # (NO_GROUNDED_ANSWER_MESSAGE), and a fallback with nothing
+        # formattable. One comparison covers all three.
+        #
+        # It also takes two generations off every refusal, which is the
+        # cheapest thing available against the latency in §28, and makes a
+        # refusal deterministic -- the same question cannot refuse in three
+        # different wordings on three different days.
+        if english_answer == _NO_EVIDENCE_MESSAGES[DEFAULT_LANGUAGE]:
+            for language in _NO_EVIDENCE_MESSAGES:
+                translations[language] = _NO_EVIDENCE_MESSAGES[language]
+            return translations
+
         def translate(language: str) -> Tuple[str, str]:
             result = self.translate_answer(english_answer, language)
             return language, result or (
@@ -1654,13 +1806,22 @@ Translation:"""
             )
 
         languages = ("hi", "bn")
-        selected_translation = None
         if selected_language in languages:
             target, selected_translation = translate(selected_language)
-            if not selected_translation or selected_translation.startswith(
-                _ENGLISH_ONLY_NOTES[selected_language]
-            ):
-                raise TranslationUnavailableError(selected_language)
+            # Deliberately no raise here. translate() has already fallen
+            # back to the English answer prefixed with a note in the
+            # reader's own language, which is what the OTHER languages have
+            # always done -- only the selected one used to be fatal.
+            #
+            # Until 2026-10-28 a failure here returned 503 and the user saw
+            # nothing, despite a correct English answer having just been
+            # computed. That was written in 70f5107 when the provider was
+            # Google and a failure meant a real outage. Under
+            # TRANSLATION_PROVIDER=llm an empty result is routine -- a slow
+            # local model, a non-200 from Ollama, or an empty generation all
+            # return "" -- so the fatal path discarded good answers for a
+            # transient condition. The note keeps the original intent: an
+            # untranslated answer is never passed off as a translated one.
             translations[target] = selected_translation
             languages = tuple(language for language in languages if language != target)
 
@@ -2205,6 +2366,26 @@ class RAGQuerySkeleton(Protocol):
 # Where admin uploads and the decision queue live.
 UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", "uploads"))
 
+
+def start_extraction_if_ready(paper: str) -> bool:
+    """Begin extraction for a paper that has just cleared admission.
+
+    There are exactly two ways a paper becomes ready -- the confidence
+    framework approving it outright, and a human approving one it held --
+    and both come here, so there is one place extraction can begin.
+
+    False means nothing was started, which is routine rather than an error:
+    an automatically rejected paper was never stored, and a run already in
+    progress holds the only slot.
+    """
+    try:
+        pdf_path = stored_paper_path(paper, UPLOADS_DIR)
+    except ValueError:
+        return False
+    if not pdf_path.exists():
+        return False
+    return extract_jobs.begin(paper, pdf_path=pdf_path, uploads_dir=UPLOADS_DIR)
+
 # Papers in this corpus run well under 10 MB; the cap stops a single request
 # pulling an arbitrary amount into memory.
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
@@ -2385,6 +2566,9 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 return
             if self.path == "/admin/review":
                 self._handle_manual_review()
+                return
+            if self.path == "/admin/extract":
+                self._handle_admin_extract()
                 return
             if self.path.startswith("/admin/feedback/") and self.path.endswith("/review"):
                 self._handle_feedback_review()
@@ -2740,8 +2924,10 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
             # The admin polls /admin/queue for the verdict.
             def score_in_background():
                 try:
-                    ingest_pdf(data, name, scorer=_confidence_scorer,
-                               uploads_dir=UPLOADS_DIR)
+                    outcome = ingest_pdf(data, name, scorer=_confidence_scorer,
+                                         uploads_dir=UPLOADS_DIR)
+                    if outcome.decision is IngestDecision.READY_TO_EXTRACT:
+                        start_extraction_if_ready(outcome.paper)
                 except Exception as error:
                     print(f"Admin upload scoring failed for {name}: {error}")
 
@@ -2805,7 +2991,70 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
                 self._send_json(400, {"error": str(error)})
                 return
 
+            # Approval is what starts extraction. Asking the admin to press
+            # a second button would leave papers approved-but-forgotten,
+            # which is the state this whole change exists to remove.
+            if approve:
+                start_extraction_if_ready(paper)
+
             self._send_json(200, outcome.to_json())
+
+        # Starts extraction on a paper that has already cleared admission.
+        #
+        # Refusing is most of this method's job. The only human gate in the
+        # system is at paper admission -- an approved paper's gated triples
+        # go straight into the production graph with no triple-level review
+        # -- so a paper that was rejected, or is still waiting for a human,
+        # must not become extractable by naming it directly here.
+        def _handle_admin_extract(self) -> None:
+            if not self._admin_authorised():
+                return
+
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                paper = str(payload.get("paper", "")).strip()
+                if not paper:
+                    raise ValueError("paper is required")
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                self._send_json(400, {"error": f"Invalid request: {error}"})
+                return
+
+            try:
+                pdf_path = stored_paper_path(paper, UPLOADS_DIR)
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+                return
+            if not pdf_path.exists():
+                self._send_json(404, {"error":
+                    f"{paper!r} is not stored, so there is nothing to extract."})
+                return
+
+            state = extract_jobs.state_for(paper, uploads_dir=UPLOADS_DIR)
+            decision = (state or {}).get("decision")
+            if decision != IngestDecision.READY_TO_EXTRACT.value:
+                self._send_json(409, {"error":
+                    f"{paper!r} is {decision or 'unknown'}, not "
+                    f"{IngestDecision.READY_TO_EXTRACT.value}. Only an "
+                    f"approved paper can be extracted."})
+                return
+
+            # One at a time: two ~72-minute runs against one CPU-only Ollama
+            # would make both crawl and starve the chatbot sharing it.
+            if not extract_jobs.begin(paper, pdf_path=pdf_path,
+                                      uploads_dir=UPLOADS_DIR):
+                self._send_json(409, {"error":
+                    "An extraction is already running. Only one runs at a "
+                    "time; try again when it has finished."})
+                return
+
+            self._send_json(202, {
+                "status": extract_jobs.EXTRACTING,
+                "paper": paper,
+                "message": "Extraction started. It takes about an hour per "
+                           "paper and the chatbot will be slow while it runs; "
+                           "poll /admin/queue for the result.",
+            })
 
         # Writes a JSON response with CORS enabled for local Flutter clients.
         def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
@@ -2834,8 +3083,26 @@ def create_query_handler(skeleton: RAGQuerySkeleton, synthesizer: AnswerSynthesi
     return QueryHandler
 
 
+def reap_stale_extractions() -> None:
+    """Clear extractions that were running when the process last stopped.
+
+    An extraction is a thread in THIS process, so a restart kills it without
+    ever recording an outcome. The paper's latest state stays "extracting"
+    with nothing behind it, and because only one extraction may run at a
+    time, that stuck state would refuse every later paper too.
+    """
+    try:
+        reaped = extract_jobs.reap_stale(uploads_dir=UPLOADS_DIR)
+    except OSError as error:  # an unreadable queue must not stop the server
+        print(f"Could not check for abandoned extractions: {error}")
+        return
+    for paper in reaped:
+        print(f"Marked abandoned extraction as failed: {paper}")
+
+
 # Starts the local HTTP bridge used by the Flutter frontend.
 def serve_api(kg_path: str, host: str, port: int, approach: str, use_neo4j: bool) -> None:
+    reap_stale_extractions()
     skeleton: RAGQuerySkeleton = Neo4jRAGSkeleton() if use_neo4j else RAGSkeleton(kg_path, approach=approach)
     server = ThreadingHTTPServer(
         (host, port),

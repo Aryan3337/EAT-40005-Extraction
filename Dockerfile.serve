@@ -1,7 +1,9 @@
 # Serves rag.py's HTTP API for the hosted demo. Separate from the existing
 # Dockerfile (which drops a team member into a shell for extraction work,
-# CMD ["bash"]) -- this one has a fixed entrypoint and a much smaller
-# dependency set, since the served API never extracts or runs spaCy.
+# CMD ["bash"]) -- this one has a fixed entrypoint and a smaller dependency
+# set. It DOES now run extraction: POST /admin/extract launches main.py as a
+# subprocess in this container, so spaCy and the extraction modules are here
+# on purpose (see the COPY block below).
 #
 # Build and run locally to sanity-check before deploying:
 #   docker build -f Dockerfile.serve -t mandi-kg-api .
@@ -11,19 +13,38 @@
 # never baked into the image -- set them as environment variables in the
 # hosting platform's dashboard, the same as --env-file does locally.
 #
-# torch and transformers are deliberately absent. local_tts.py and
-# local_translation.py import them lazily inside functions, so the image
-# starts and English retrieval works without them. The cost is that backend
-# TTS (needs TTS_ENABLED=1) and TRANSLATION_PROVIDER=local are unavailable
-# here; both also want multi-GB model files that local_files_only=True
-# refuses to download at runtime anyway. Set TRANSLATION_PROVIDER to llm so
-# the default "local" path is never taken.
+# torch and transformers ARE here as of 2026-10-28, and the reason they were
+# not is worth keeping: they were excluded for a free-tier host's build
+# minutes and image size. This runs on Nectar now, and the measurement in
+# KNOWN_LIMITATIONS 29 made the case -- mistral:7b, a chat model, was doing
+# the translating and all five substantive Bangla answers were materially
+# wrong, where NLLB-200-600M keeps negations, quoted text, provenance and
+# species names and runs in 4-7s rather than 30-80s.
+#
+# Only the weights are absent from the image: 2.4GB of them live on the
+# volume and compose mounts them read-only at /app/models. local_tts.py
+# still needs TTS_ENABLED=1 and its own model files, which are not here.
 FROM python:3.11-slim
 
 WORKDIR /app
 
 COPY requirements-serve.txt .
 RUN pip install --no-cache-dir -r requirements-serve.txt
+
+# Translation dependencies. torch comes from the CPU wheel index on
+# purpose: the default PyPI build carries CUDA libraries that are several
+# gigabytes, and this instance has no GPU. The second install then finds
+# torch already satisfied and adds only transformers and sentencepiece,
+# which keeps requirements-translation.txt the single source of versions.
+COPY requirements-translation.txt .
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+        "torch>=2.6,<3" \
+ && pip install --no-cache-dir -r requirements-translation.txt
+
+# subject_specificity.py sys.exit(1)s without this, and main.py imports it,
+# so extraction cannot run unless the model is in the image. Pinned to the
+# same spaCy major the wheel above resolves to.
+RUN python -m spacy download en_core_web_sm
 
 # Every local module rag.py imports, directly or transitively. This list was
 # five files until 2026-10-26 and the image had been broken since 13 Oct:
@@ -37,8 +58,17 @@ RUN pip install --no-cache-dir -r requirements-serve.txt
 COPY rag.py admin_ingest.py confidence_framework.py llm_endpoint.py config.py ./
 COPY auth_store.py source_provenance.py prompt_evidence.py ./
 COPY community_time.py community_attribution.py ./
-COPY local_tts.py local_translation.py ./
+COPY local_tts.py local_translation.py extract_jobs.py ./
 COPY data/ ./data/
+
+# The extraction pipeline, reachable from POST /admin/extract. main.py is run
+# as a subprocess rather than imported: it builds its ArgumentParser and
+# parses sys.argv at module level, so importing it would try to extract using
+# the API's own argv.
+COPY main.py kg_extractor.py Extraction_Check.py subject_specificity.py ./
+COPY eval/ ./eval/
+COPY verification/ ./verification/
+COPY neo4j_loader/ ./neo4j_loader/
 
 EXPOSE 8000
 

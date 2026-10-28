@@ -246,9 +246,23 @@ def test_query_endpoint_returns_the_answer_in_the_requested_language(
     assert calls[0] == ("en", language)
 
 
-def test_query_endpoint_does_not_return_english_as_a_failed_translation(
+def test_a_failed_translation_falls_back_to_english_rather_than_failing(
     monkeypatch,
 ):
+    """A translation failure must not throw away a good English answer.
+
+    Until 2026-10-28 this returned 503 and the user saw nothing at all --
+    a teammate asking "what is Garo" in Hindi got "RAG request failed
+    (HTTP 503)". That error handling came from 70f5107, when the provider
+    was Google and a failure meant a real outage. Production now runs
+    TRANSLATION_PROVIDER=llm, where an empty result is routine: a slow
+    local model, a non-200 from Ollama, or an empty generation all return
+    "" from _llm_translate, and every one of them discarded a correct
+    answer the system had already computed.
+
+    The non-selected languages have always degraded this way. Only the
+    selected one raised.
+    """
     monkeypatch.setenv("TRANSLATION_PROVIDER", "online")
     monkeypatch.setattr(rag, "online_translate", lambda *args: "")
     synthesizer = _synth(cache={"Where do the Garo people live?": "English answer"})
@@ -258,10 +272,30 @@ def test_query_endpoint_does_not_return_english_as_a_failed_translation(
         {"query": "Where do the Garo people live?", "language": "bn"},
     )
 
-    assert response["status"] == 503
+    assert response["status"] == 200
     assert response["payload"]["language"] == "bn"
-    assert "Could not translate the answer into Bangla" in response["payload"]["error"]
-    assert "Please try again later or select English." in response["payload"]["error"]
+    # The English answer survives, carried after the note.
+    answer = response["payload"]["answer"]
+    assert len(answer) > len(rag._ENGLISH_ONLY_NOTES["bn"])
+
+
+def test_the_english_fallback_says_it_is_a_fallback(monkeypatch):
+    """The point of the old 503 was not to pass English off as Bangla.
+    That intent survives: the note is what carries it, in the reader's own
+    language, so nobody mistakes an untranslated answer for a translated
+    one."""
+    monkeypatch.setenv("TRANSLATION_PROVIDER", "online")
+    monkeypatch.setattr(rag, "online_translate", lambda *args: "")
+    synthesizer = _synth(cache={"Where do the Garo people live?": "English answer"})
+
+    response = _post(
+        create_query_handler(_FakeSkeleton(), synthesizer),
+        {"query": "Where do the Garo people live?", "language": "bn"},
+    )
+
+    answer = response["payload"]["answer"]
+    assert answer.startswith(rag._ENGLISH_ONLY_NOTES["bn"])
+    assert answer != "English answer"
 
 
 def test_query_endpoint_defaults_to_english_without_a_language():
@@ -269,6 +303,456 @@ def test_query_endpoint_defaults_to_english_without_a_language():
     sent = _post(create_query_handler(skeleton, synth), {"query": "Where do the Garo live?"})
     assert sent["payload"]["answer"] == "answer in en"
     assert skeleton.queries[-1] == "Where do the Garo live?"
+
+
+# ------------------------------------------------ Translation prompt rules
+#
+# KNOWN_LIMITATIONS 29, measured 2026-10-28 against the live instance: five
+# of the five substantive Bangla answers were materially wrong, and eight of
+# eight responses appended content nobody asked for -- a romanised
+# transliteration, a full English back-translation, or an explanatory
+# "Note:". The prompt the model was given said only "Return only the
+# translation. Preserve names of people, places, and communities."
+#
+# These tests pin option 3 of that entry: the rules go on the ANSWER
+# translation, which is what a reader sees. The QUESTION translation is
+# deliberately left alone -- only its English meaning is used, to build a
+# retrieval query, and loading it with answer-shaped rules would change
+# retrieval while fixing nothing a user reads.
+
+
+def _translation_prompt(monkeypatch, text, language, question=False):
+    prompts = []
+
+    def fake_post(url, json, timeout=None, headers=None):
+        prompts.append(json["prompt"])
+        return _Response("অনুবাদ")
+
+    monkeypatch.setattr(rag.requests, "post", fake_post)
+    synth = _synth()
+    if question:
+        synth.translate_question(text, language)
+    else:
+        synth.translate_answer(text, language)
+    return prompts[-1]
+
+
+def test_answer_translation_forbids_the_appendices_that_reached_users(
+    monkeypatch,
+):
+    """All eight benchmark responses appended something unrequested."""
+    prompt = _translation_prompt(
+        monkeypatch, "The Garo live in Mymensingh.", "bn"
+    ).lower()
+
+    assert "transliteration" in prompt
+    assert "back-translation" in prompt
+    assert "note" in prompt
+
+
+def test_answer_translation_forbids_adding_facts_the_text_does_not_have(
+    monkeypatch,
+):
+    """Question 3 put Goalpara, Assam inside Bangladesh; an earlier run of
+    the same question invented "northern Bangladesh". Question 4 supplied
+    Tamarindus indica and Syzygium cumini -- correct botany the evidence
+    never provided. Every one of those is a claim added at translation
+    time, after the relevance gate and the refusal-over-bridging rule have
+    already run."""
+    prompt = _translation_prompt(
+        monkeypatch, "The Garo live in Mymensingh.", "bn"
+    ).lower()
+
+    assert "do not add" in prompt
+    assert "place" in prompt
+
+
+def test_answer_translation_requires_quoted_text_to_keep_its_meaning(
+    monkeypatch,
+):
+    """Question 2 inverted "almost abolished and practiced by very few"
+    into "has begun" -- inside what the answer presents as a verbatim
+    quote from Page 1."""
+    prompt = _translation_prompt(
+        monkeypatch,
+        'The source says "almost abolished and practiced by very few".',
+        "bn",
+    ).lower()
+
+    assert "quot" in prompt
+
+
+def test_answer_translation_rules_reach_hindi_too(monkeypatch):
+    """The appendices and the spliced-script faults were measured in both
+    languages, so the rules cannot be Bangla-only."""
+    prompt = _translation_prompt(
+        monkeypatch, "The Garo live in Mymensingh.", "hi"
+    ).lower()
+
+    assert "transliteration" in prompt
+
+
+def test_the_rules_carry_no_example_the_model_can_copy_out(monkeypatch):
+    """Measured on the live model 2026-10-28: the first version of these
+    rules ended with `Leave numbers, Latin-script names, and "(Source: Page
+    N)" citations as they are`, and mistral:7b copied the literal
+    placeholder `(Source: Page N)` into the Bangla and Hindi output -- a new
+    appendix, invented by the instruction meant to stop appendices.
+
+    A rule may describe what to preserve. It may not show a sample of it."""
+    prompt = _translation_prompt(
+        monkeypatch, "The Garo live in Mymensingh.", "bn"
+    )
+
+    assert "Page N" not in prompt
+    assert "Note:" not in prompt
+
+
+def test_question_translation_is_left_alone(monkeypatch):
+    """The retrieval path is not what limitation 29 measured. Changing it
+    here would alter which triples come back for every non-English
+    question, to fix nothing a reader sees."""
+    prompt = _translation_prompt(
+        monkeypatch, "গারোরা কোথায় থাকে?", "bn", question=True
+    ).lower()
+
+    assert "transliteration" not in prompt
+    assert "do not add" not in prompt
+
+
+# ------------------------------------------- Stripping appended commentary
+#
+# Measured on the live model 2026-10-28, twice. Constraining the prompt
+# (above) does NOT reliably stop the model appending things: of four
+# answers translated with the rules in place, one still appended a full
+# romanised transliteration and one appended `Source:
+# https://www.britannica.com/topic/Garo-people` -- a citation to an
+# external website, in a system whose entire design ties every claim to a
+# retrieved triple. No English answer in the probe contained a URL, so the
+# model invented it at translation time.
+#
+# So the appendix is removed deterministically as well. Every appendix
+# observed in twelve probe calls sat in its own paragraph after a blank
+# line and contained no character of the target script, which is what this
+# keys on -- a translation's own text is in the script it was translated
+# into.
+
+_BANGLA_ANSWER = (
+    "গাড়ো জাতি প্রথমত গাড়ো হিল্সে, মেঘালয়া, ভারত ও গোয়ালপারা, অসম, "
+    "ভারত এবং মিমেসিংহ, বাংলাদেশে থাকে।"
+)
+_HINDI_ANSWER = (
+    "गारो लोग प्राथमिकता से गारो हिल्स, मेघालय, भारत और बंगलादेश में रहते हैं।"
+)
+
+
+def test_a_trailing_transliteration_is_removed():
+    text = _BANGLA_ANSWER + (
+        "\n\n(Note: The transliteration of the Bengali text is: garo jati "
+        "prathamat garo hills-e, meghalaya, bharat o goyalpara, assam.)"
+    )
+    assert rag.strip_translation_appendix(text, "bn") == _BANGLA_ANSWER
+
+
+def test_a_trailing_english_back_translation_is_removed():
+    text = _BANGLA_ANSWER + (
+        "\n\n(Garo people, A·chik Mande or Mandi, primarily speak the Garo "
+        "language. It is mentioned that the community maintains it.)"
+    )
+    assert rag.strip_translation_appendix(text, "bn") == _BANGLA_ANSWER
+
+
+def test_a_trailing_translator_note_is_removed():
+    text = _HINDI_ANSWER + (
+        "\n\nTranslation Note: The names of the places and communities "
+        "remain the same in both English and Hindi."
+    )
+    assert rag.strip_translation_appendix(text, "hi") == _HINDI_ANSWER
+
+
+def test_a_fabricated_source_link_is_removed():
+    text = _BANGLA_ANSWER + (
+        "\n\nSource:\nhttps://www.britannica.com/topic/Garo-people"
+    )
+    assert rag.strip_translation_appendix(text, "bn") == _BANGLA_ANSWER
+
+
+def test_latin_script_inside_the_translation_is_kept():
+    """Plant names, place names and numbers are supposed to survive -- 31
+    plants and 23 families carried through intact in the measurement, and
+    the model leaves some proper nouns in Latin mid-sentence."""
+    text = (
+        "গাড়ো জাতি Mymensingh এ থাকে এবং Tamarindus indica ব্যবহার করে। "
+        "৩১টি গাছ।"
+    )
+    assert rag.strip_translation_appendix(text, "bn") == text
+
+
+def test_a_translation_with_nothing_appended_is_unchanged():
+    assert rag.strip_translation_appendix(_BANGLA_ANSWER, "bn") == _BANGLA_ANSWER
+
+
+def test_an_answer_that_is_all_english_is_left_alone():
+    """When the model returns English instead of translating, the whole
+    text would otherwise be stripped to nothing. That case belongs to the
+    caller, which puts the English behind a note in the reader's script."""
+    english = "The Garo people primarily reside in the Garo Hills."
+    assert rag.strip_translation_appendix(english, "bn") == english
+
+
+def test_a_short_citation_after_the_answer_survives():
+    """Only commentary is removed. A page citation is provenance, and the
+    rule that drops a paragraph is deliberately blind to meaning, so it is
+    held to long blocks and links rather than anything Latin."""
+    text = _BANGLA_ANSWER + "\n\n(Source: Page 1)"
+    assert rag.strip_translation_appendix(text, "bn") == text
+
+
+def test_translate_answer_removes_the_appendix_it_was_given(monkeypatch):
+    """The wiring, not just the helper: what reaches a reader is stripped."""
+    appended = _BANGLA_ANSWER + (
+        "\n\n(Note: The transliteration is: garo jati prathamat garo hills-e, "
+        "meghalaya, bharat o goyalpara, assam, bharat.)"
+    )
+
+    def fake_post(url, json, timeout=None, headers=None):
+        return _Response(appended)
+
+    monkeypatch.setattr(rag.requests, "post", fake_post)
+
+    assert _synth().translate_answer("The Garo live in Mymensingh.", "bn") == (
+        _BANGLA_ANSWER
+    )
+
+
+# ------------------------------- Ahmed's SCRUM-318 guards, on the llm path
+#
+# `translation_incomplete` and `restore_numbers` were written for SCRUM-318
+# (`fe11814`) and are called from `online_translate`, `google_translate` and
+# `mymemory_translate`. Production runs `TRANSLATION_PROVIDER=llm` for the
+# privacy constraint, and `translate_answer` reads
+# `elif provider != "llm"`, so none of them ever ran against the model that
+# actually serves users. Both are pure string comparisons with no
+# third-party call, so they port as they are.
+#
+# Measured over twenty real captured translations before porting: the
+# detector flagged none of them and `restore_numbers` changed none of them.
+# It is insurance against failures that sample did not contain, not a fix
+# for anything observed -- which is why these tests pin the failures it DOES
+# catch, and one that it must not.
+
+_ENGLISH_ANSWER = (
+    "The Garo people primarily reside in the Garo Hills, Meghalaya, India, "
+    "and in neighbouring parts of Goalpara, Assam, as well as in "
+    "Mymensingh, Bangladesh."
+)
+
+
+def _llm_returns(monkeypatch, text):
+    def fake_post(url, json, timeout=None, headers=None):
+        return _Response(text)
+
+    monkeypatch.setattr(rag.requests, "post", fake_post)
+
+
+def test_an_untranslated_english_answer_is_not_passed_off_as_bangla(
+    monkeypatch,
+):
+    """The model sometimes returns its input. Until this guard reached the
+    llm path, `translate_answer` saw a non-empty string, called it a
+    translation, and the reader got English labelled as Bangla -- the exact
+    thing `_ENGLISH_ONLY_NOTES` exists to prevent. Returning "" hands the
+    decision back to the caller, which prefixes the note."""
+    _llm_returns(monkeypatch, _ENGLISH_ANSWER)
+
+    assert _synth().translate_answer(_ENGLISH_ANSWER, "bn") == ""
+
+
+def test_a_translation_missing_half_its_content_is_rejected(monkeypatch):
+    """TRANSLATED_ANSWER_MAX_TOKENS caps generation at 1500 tokens, and
+    Bangla costs several tokens per character, so a long answer can be cut
+    off mid-way. Half an answer is not an answer."""
+    _llm_returns(monkeypatch, "গাড়ো জাতি।")
+
+    assert _synth().translate_answer(_ENGLISH_ANSWER, "bn") == ""
+
+
+def test_the_appendix_is_removed_before_the_completeness_check(monkeypatch):
+    """Order matters, and the margin is thin. This pair is real: the Bangla
+    is a captured translation of the answer below, the appendix is what the
+    model actually appended, and together they score a Latin-word ratio of
+    0.405 against the detector's 0.4 threshold -- so with the checks in the
+    wrong order a sound translation is discarded for being "mostly
+    English". The appendix is not part of the translation, so it has to be
+    gone before anything measures it."""
+    body = (
+        "গাড়ো জাতি প্রথমত গাড়ো হিল্সে, মেঘালয়া, ভারত ও সম্মুখে থাকা "
+        "গোয়ালপারা, অসম, ভারত এবং মিমেসিংহ, বাংলাদেশে থাকে।"
+    )
+    _llm_returns(monkeypatch, body + (
+        "\n\n(Note: The transliteration of the Bengali text is: garo jati "
+        "prathamat garo hills-e, meghalaya, bharat o sammukhe thaka "
+        "goyalpara, assam, bharat e mimesingh, bangladesh-e thake.)"
+    ))
+
+    assert _synth().translate_answer(_ENGLISH_ANSWER, "bn") == body
+
+
+def test_a_wrong_amount_is_replaced_by_the_english_one(monkeypatch):
+    """Numbers are the one thing that survived the measurement in
+    KNOWN_LIMITATIONS 29 intact, and this keeps it that way: the English
+    answer's amount wins."""
+    _llm_returns(monkeypatch, "গাড়ো জনসংখ্যা ৩০০, ০০০, ০০০ জন।")
+
+    translated = _synth().translate_answer(
+        "The Garo population is 3 million people.", "bn"
+    )
+
+    assert "৩০ লাখ" in translated
+    assert "৩০০, ০০০, ০০০" not in translated
+
+
+def test_a_real_production_translation_survives_both_guards(monkeypatch):
+    """The live Bangla answer from 2026-10-28, kept verbatim. Its page
+    citations are Latin and are supposed to stay, so this pins the
+    measurement that the guards reject nothing that reaches users today."""
+    real = (
+        "বাংলাদেশে গাডো সমুহের ছেলে-মহিলা গোষ্ঠী গাডো ভাষাকে বলা হয়। "
+        "(Source: Page 5)\nগাড়ো জাতির মাঝে বেশকে দুইভাষা বলা হয়, কারণ তারা "
+        "বাংলা ও ছেলে ঘরের ভাষা দুই ভাষায় সম্বাদন করতে হয়। (Source: Page 1)"
+    )
+    _llm_returns(monkeypatch, real)
+
+    assert _synth().translate_answer(
+        "The Garo language is spoken among the Garo community members in "
+        "Bangladesh. (Source: Page 5) The majority of Garo people are "
+        "bilingual as they need to communicate in both Bengali and their "
+        "native Garo language. (Source: Page 1)",
+        "bn",
+    ) == real
+
+
+# --------------------------------------------- Refusals are not translated
+#
+# KNOWN_LIMITATIONS 29 recorded all three Hindi refusals rendering `मujhe`
+# -- Latin letters spliced into Devanagari mid-word. That is not a typo in
+# the file: `_NO_EVIDENCE_MESSAGES["hi"]` is clean Devanagari and was never
+# being sent. `answer_translations` computed the ENGLISH refusal and put it
+# through the model like any other answer, so what a reader saw was
+# mistral:7b translating "I could not find enough connected evidence".
+#
+# Every refusal path returns the same English string -- no triples at all
+# (`rag.py:1825`), the relevance gate refusing (`NO_GROUNDED_ANSWER_MESSAGE`,
+# `rag.py:1902`), and a fallback with nothing formattable (`rag.py:2058`) --
+# so one comparison catches all three.
+
+
+def _count_llm_calls(monkeypatch, response="RELEVANT: yes\nAn answer."):
+    prompts = []
+
+    def fake_post(url, json, timeout=None, headers=None):
+        prompts.append(json["prompt"])
+        return _Response(response)
+
+    monkeypatch.setattr(rag.requests, "post", fake_post)
+    return prompts
+
+
+def test_a_refusal_reaches_the_reader_in_their_own_script(monkeypatch):
+    """The project's own Bangla and Hindi refusals, served as written."""
+    _count_llm_calls(monkeypatch)
+
+    translations = _synth().answer_translations(
+        "Where do the Garo live?", [], selected_language="bn"
+    )
+
+    assert translations["bn"] == rag._NO_EVIDENCE_MESSAGES["bn"]
+    assert translations["hi"] == rag._NO_EVIDENCE_MESSAGES["hi"]
+    assert translations["en"] == rag._NO_EVIDENCE_MESSAGES["en"]
+
+
+def test_a_refusal_costs_no_model_calls(monkeypatch):
+    """The cheapest win against limitation 28: a refusal that already knows
+    its own wording in all three languages has nothing to generate."""
+    prompts = _count_llm_calls(monkeypatch)
+
+    _synth().answer_translations(
+        "Where do the Garo live?", [], selected_language="bn"
+    )
+
+    assert prompts == []
+
+
+def test_a_gate_refusal_is_served_statically_too(monkeypatch):
+    """Evidence was retrieved and the gate judged it irrelevant. The answer
+    is still a refusal, so it is still not translated -- only the one
+    synthesis call should happen."""
+    prompts = _count_llm_calls(monkeypatch, response="RELEVANT: no")
+
+    translations = _synth().answer_translations(
+        "What is the Garo population?", [_triple()], selected_language="hi"
+    )
+
+    assert translations["hi"] == rag._NO_EVIDENCE_MESSAGES["hi"]
+    assert len(prompts) == 1
+
+
+def test_a_real_answer_is_still_translated(monkeypatch):
+    """The guard that keeps the one above honest: a grounded answer must
+    still go through the model for each language."""
+    prompts = _count_llm_calls(monkeypatch)
+
+    translations = _synth().answer_translations(
+        "Where do the Garo live?", [_triple()], selected_language="bn"
+    )
+
+    assert translations["bn"] != rag._NO_EVIDENCE_MESSAGES["bn"]
+    # one synthesis, plus one translation per language
+    assert len(prompts) == 3
+
+
+def test_the_completeness_guard_runs_on_the_local_provider(monkeypatch):
+    """The guards were ported gated on `provider == "llm"`. Switching the
+    deployment to the local NLLB path would have silently stopped them, so
+    the gate names every provider that needs them rather than the one that
+    happened to be deployed when they were written. `online` and `auto` are
+    excluded on purpose: online_translate applies them internally."""
+    monkeypatch.setenv("TRANSLATION_PROVIDER", "local")
+    english = (
+        "The Garo people primarily reside in the Garo Hills, Meghalaya, "
+        "India, and in Mymensingh, Bangladesh."
+    )
+    monkeypatch.setattr("local_translation.translate_local",
+                        lambda text, source, target: english)
+
+    assert _synth().translate_answer(english, "bn") == ""
+
+
+def test_numbers_are_restored_on_the_local_provider(monkeypatch):
+    monkeypatch.setenv("TRANSLATION_PROVIDER", "local")
+    monkeypatch.setattr("local_translation.translate_local",
+                        lambda text, source, target: "গাড়ো জনসংখ্যা ৩০০, ০০০, ০০০ জন।")
+
+    translated = _synth().translate_answer(
+        "The Garo population is 3 million people.", "bn"
+    )
+
+    assert "৩০ লাখ" in translated
+
+
+def test_the_online_path_is_not_guarded_twice(monkeypatch):
+    """online_translate already runs both guards inside itself, so the
+    provider check must leave that path alone."""
+    monkeypatch.setenv("TRANSLATION_PROVIDER", "online")
+    monkeypatch.setattr(rag, "online_translate",
+                        lambda text, source, target: "গারো জাতি।")
+
+    # A five-word source against a two-word translation: the completeness
+    # guard would reject this if it ran here.
+    assert _synth().translate_answer(
+        "The Garo people live in Mymensingh, Bangladesh, and in Meghalaya.",
+        "bn",
+    ) == "গারো জাতি।"
 
 
 # ---------------------------------------------------------------- Google path
@@ -400,6 +884,13 @@ def test_auto_never_lets_the_local_model_write_a_bangla_answer(monkeypatch):
 
 def test_llm_mode_still_uses_the_local_model_and_fixes_names(monkeypatch):
     monkeypatch.setenv("TRANSLATION_PROVIDER", "llm")
+    # Same reason as the auto test above: the fake English synthesis
+    # response carries no "RELEVANT:" marker, so with the gate on it is
+    # read as a refusal and this ends up testing the translation of a
+    # refusal message rather than of an answer. That went unnoticed until
+    # the SCRUM-318 completeness guard reached this path and measured the
+    # canned five-word Bangla against the twenty-word refusal.
+    monkeypatch.setenv("SYNTHESIS_RELEVANCE_GATE", "0")
 
     def fake_post(url, json, timeout, headers=None):
         if json["prompt"].startswith("Translate the following text"):
@@ -410,6 +901,19 @@ def test_llm_mode_still_uses_the_local_model_and_fixes_names(monkeypatch):
     synth = _synth()
     assert synth.answer("x", [_triple()], "bn", "Where do the Mandi live?") \
         == "মান্দি মানুষ ময়মনসিংহে বাস করে।"
+
+
+def test_a_translated_refusal_is_not_mistaken_for_an_incomplete_answer():
+    """The no-evidence message is 20 English words and its Bangla and Hindi
+    forms are 22 and 25, so a faithful refusal clears the completeness
+    guard. Worth pinning: refusals are short, and a lower threshold would
+    start replacing them with English behind a note."""
+    english = rag._NO_EVIDENCE_MESSAGES["en"]
+
+    for language in ("bn", "hi"):
+        assert not rag.translation_incomplete(
+            english, rag._NO_EVIDENCE_MESSAGES[language], language
+        )
 
 
 def test_auto_uses_google_and_skips_the_model_when_google_works(monkeypatch):
@@ -825,8 +1329,14 @@ def test_default_local_provider_never_uses_online_or_ollama(monkeypatch, success
     calls = []
 
     def local(text, source, target):
+        # Language-aware since 2026-10-28: the completeness guard now runs on
+        # the local provider too, and it is right to reject an all-English
+        # string offered as a Hindi answer. The question direction still
+        # returns English, because that is what bn->en produces.
         calls.append((source, target))
-        return "translated test" if success else ""
+        if not success:
+            return ""
+        return "translated test" if target == "en" else "अनूदित उत्तर"
 
     def forbidden(*args, **kwargs):
         pytest.fail("Local translation must not call an online or Ollama translator")
@@ -837,14 +1347,22 @@ def test_default_local_provider_never_uses_online_or_ollama(monkeypatch, success
     monkeypatch.setattr(synth, "_llm_translate", forbidden)
     question = "পরীক্ষার প্রশ্ন"
     assert synth.translate_question(question, "bn") == ("translated test" if success else question)
-    assert synth.translate_answer("Fictional answer.", "hi") == ("translated test" if success else "")
+    assert synth.translate_answer("Fictional answer.", "hi") == ("अनूदित उत्तर" if success else "")
     assert calls == [("bn", "en"), ("en", "hi")]
 
 
 @pytest.mark.parametrize("language", ["bn", "hi"])
-def test_local_translation_failure_returns_503_without_online_fallback(
+def test_local_translation_failure_falls_back_without_an_online_call(
     monkeypatch, language
 ):
+    """The privacy guarantee is the point of this test and is unchanged:
+    a local-provider failure must NEVER reach a third-party translator
+    (`forbidden` below fails the test if it does).
+
+    What changed on 2026-10-28 is the user-visible result. This used to be
+    a 503 with no answer at all; it is now the English answer behind a
+    note. The online call is still forbidden either way.
+    """
     import local_translation
 
     monkeypatch.setenv("TRANSLATION_PROVIDER", "local")
@@ -867,8 +1385,11 @@ def test_local_translation_failure_returns_503_without_online_fallback(
         {"query": "Fictional test question?", "language": language},
     )
 
-    assert response["status"] == 503
+    assert response["status"] == 200
     assert response["payload"]["language"] == language
-    assert "Please try again later or select English." in response["payload"]["error"]
-    assert "MYMEMORY_EMAIL" not in response["payload"]["error"]
-    assert "answer" not in response["payload"]
+    assert response["payload"]["answer"].startswith(
+        rag._ENGLISH_ONLY_NOTES[language]
+    )
+    assert "Fictional English answer." in response["payload"]["answer"]
+    # Nothing about the online services may leak into what a user reads.
+    assert "MYMEMORY_EMAIL" not in response["payload"]["answer"]

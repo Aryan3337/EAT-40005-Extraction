@@ -1,5 +1,5 @@
 // Tests for the AdminPage screen: the verdict categories, drilling into one,
-// the extraction placeholder, and live updates.
+// starting an extraction, and live updates.
 //
 // None of these import file_picker. AdminPage takes its picker as an injected
 // callback so the screen is testable without a file dialog.
@@ -77,7 +77,15 @@ void main() {
   }
 
   Future<void> openCategory(WidgetTester tester, String label) async {
-    await tester.tap(find.text(label));
+    final finder = find.text(label);
+    // The extraction categories sit below the four verdicts, which puts them
+    // past the bottom of the 800x600 test viewport -- and a lazily built
+    // list does not create what it has not scrolled to.
+    if (finder.evaluate().isEmpty) {
+      await tester.scrollUntilVisible(finder, 150);
+      await tester.pumpAndSettle();
+    }
+    await tester.tap(finder);
     await tester.pumpAndSettle();
   }
 
@@ -217,7 +225,7 @@ void main() {
     });
   });
 
-  group('the extraction placeholder', () {
+  group('starting an extraction', () {
     testWidgets('only an approved paper offers extraction', (tester) async {
       await pumpPage(
         tester,
@@ -265,22 +273,90 @@ void main() {
       expect(find.widgetWithText(FilledButton, 'Extract'), findsNothing);
     });
 
-    testWidgets('it says plainly that it is not wired up', (tester) async {
-      // A button that looks real but silently does nothing is worse than no
-      // button: an admin would believe extraction had started.
-      await pumpPage(
-        tester,
-        AdminService(
-          client: queueOf([_entry(paper: 'approved.pdf')]),
-          secret: 's',
-        ),
-      );
+    testWidgets('pressing Extract asks the server to start it', (
+      tester,
+    ) async {
+      // Was a placeholder until 2026-10-28: it popped a snackbar saying so
+      // rather than starting anything, because nothing server-side read the
+      // ready_to_extract state.
+      final asked = <String>[];
+      final client = _FakeClient((request) {
+        if (request.url.path == '/admin/extract') {
+          asked.add(request.url.path);
+          return _json(202, {'paper': 'approved.pdf', 'status': 'extracting'});
+        }
+        return _json(200, {
+          'queue': [_entry(paper: 'approved.pdf')],
+        });
+      });
+      await pumpPage(tester, AdminService(client: client, secret: 's'));
       await openCategory(tester, 'Approved');
 
       await tester.tap(find.widgetWithText(FilledButton, 'Extract'));
       await tester.pumpAndSettle();
 
-      expect(find.textContaining('not wired up'), findsOneWidget);
+      expect(asked, ['/admin/extract']);
+    });
+
+    testWidgets('it warns that the run takes an hour', (tester) async {
+      // The box that extracts is the box that serves the chatbot. An admin
+      // who is not told will start one in the middle of a demonstration.
+      final client = _FakeClient((request) {
+        if (request.url.path == '/admin/extract') {
+          return _json(202, {'paper': 'approved.pdf', 'status': 'extracting'});
+        }
+        return _json(200, {
+          'queue': [_entry(paper: 'approved.pdf')],
+        });
+      });
+      await pumpPage(tester, AdminService(client: client, secret: 's'));
+      await openCategory(tester, 'Approved');
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Extract'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('about an hour'), findsOneWidget);
+    });
+
+    testWidgets('a refusal from the server is shown, not swallowed', (
+      tester,
+    ) async {
+      final client = _FakeClient((request) {
+        if (request.url.path == '/admin/extract') {
+          return _json(409, {'error': 'An extraction is already running.'});
+        }
+        return _json(200, {
+          'queue': [_entry(paper: 'approved.pdf')],
+        });
+      });
+      await pumpPage(tester, AdminService(client: client, secret: 's'));
+      await openCategory(tester, 'Approved');
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Extract'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('already running'), findsOneWidget);
+    });
+
+    testWidgets('a finished extraction reports its triple count', (
+      tester,
+    ) async {
+      await pumpPage(
+        tester,
+        AdminService(
+          client: queueOf([
+            {
+              ..._entry(paper: 'done.pdf', decision: 'extracted'),
+              'triples_loaded': 212,
+            },
+          ]),
+          secret: 's',
+        ),
+      );
+
+      await openCategory(tester, 'Extracted');
+
+      expect(find.textContaining('212 triples'), findsOneWidget);
     });
   });
 

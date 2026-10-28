@@ -132,6 +132,33 @@ budget. Every finding below is already written into
 | **Accounts live in AuraDB; sessions live in API memory** | Accounts survive `docker compose down` and an instance rebuild with no volume involved. Tokens do not -- a rebuild signs everyone out. A test account is also a write to the production graph, so delete it afterwards |
 | **`nginx.conf` works as written** | This was the plan's single largest untested item. It proxies `/health`, `/query` and the static bundle correctly on first run. No change needed |
 | **An empty `web/` presents as a 403**, `directory index ... is forbidden` | Reads like an nginx permissions fault; it is only the missing frontend upload |
+| **Rebuilding the API does not rebuild the frontend, and nothing says so** | Found 2026-10-28 by auditing rather than by a symptom. `p85_api` had been rebuilt 62s after its code commit, so the API was current -- while `nectar-web` was three hours older than the commit that added the admin extraction button. `POST /admin/extract` was live with no UI able to reach it. A frontend commit deploys only if someone rebuilds `web` too, and the only evidence is an image timestamp |
+
+**Checking what is actually deployed, rather than what is checked out.** The
+instance checkout can be current while a container is not: images are built
+from a build context, so the question is what is inside the container.
+These three answer it, and all three were wrong-footed at least once:
+
+```bash
+# 1. the running container's code against the checkout it should have come from
+for f in rag.py extract_jobs.py main.py; do
+  w=$(sha256sum $f | cut -c1-8)
+  c=$(docker exec p85_api sha256sum /app/$f | cut -c1-8)
+  [ "$w" = "$c" ] && echo "$f match" || echo "$f MISMATCH $w $c"
+done
+
+# 2. the container is on the CURRENT image, not an orphan holding the same tag
+docker inspect p85_api --format '{{.Image}}'; docker inspect nectar-api:latest --format '{{.Id}}'
+
+# 3. the frontend: grep the compiled bundle for a string only the new code has
+docker exec p85_web grep -c 'admin/extract' /usr/share/nginx/html/main.dart.js
+curl -s https://136.186.108.232.sslip.io/main.dart.js | sha256sum  # same as above?
+```
+
+A compiled Flutter bundle cannot be hashed against source, so (3) greps for a
+string the new code introduces and compares what nginx serves with what the
+container holds. Deployed 2026-10-28 at `07bbae1`: both images rebuilt, all
+three checks pass, and the extraction button is reachable for the first time.
 
 ```bash
 git clone -b dev https://github.com/Aryan3337/EAT-40005-Extraction.git
@@ -171,6 +198,34 @@ also loads the model into RAM. **All verified 2026-10-27, at 63s.**
 ## M3 — Decommission Render
 
 **Blocked by:** M2 (ideally P1) · **Size:** 0.5 day
+
+**DROPPED 2026-10-28 on Marcus's instruction** — "Render doesn't need to be
+touched, it's void already, nothing relies on it." The deliberate redeploy
+described below is therefore moot; nobody is going to watch a build of a
+deployment that is being abandoned.
+
+**But it is still live, and that is now a finding rather than a plan.**
+Checked 2026-10-28 while tracing a bug:
+
+- `https://eat-40005-extraction-1.onrender.com` returns **200**. The site is
+  reachable by anyone with the link.
+- `https://eat-40005-extraction.onrender.com/query` accepts a question and
+  answers it with **no authentication at all**. The Nectar deployment returns
+  401 on the same request.
+- Its response carries no `language` and no `translations` keys, so it is
+  serving a build from before answer translation existed. A teammate using an
+  old bookmark gets materially different behaviour and no sign that they are
+  on the wrong system.
+
+That is worse than void: it is a reachable, unauthenticated, stale copy. The
+recommendation is now to **take it down rather than ignore it**, which is less
+work than the 0.5 day below, not more. Marcus has not decided.
+
+Ruling Render out is also how the Hindi 503 was traced — that build cannot
+emit the error string the teammate saw, which is what proved the fault was on
+Nectar.
+
+### Original plan, retained
 
 **Redeploy Render once before killing it.** `3bd363c` fixed
 `Dockerfile.serve`, which Render builds from — it had been copying 5 of 12
@@ -409,6 +464,14 @@ the difference between a document that reads correctly and one that works.
   **Decided 2026-10-27, not yet done:** that shared account is
   `s2026_eat40006_p85@outlook.com`. It serves two separate purposes that are
   easy to conflate, so name both in the inventory:
+
+  **Half done, 2026-10-28:** `s2026_eat40006_p85@outlook.com` now exists as a
+  `role: 'admin'` `:User` node, created with `AuthStore.create_admin`, which
+  MERGEs on email and so left `mandiadmin` untouched. Its password was
+  generated on the instance and written to `/mnt/data/admin_pw.txt` (mode
+  600) rather than into a chat log; Marcus should replace it with one he
+  chooses. **Still outstanding:** retiring `mandiadmin`, and the AuraDB
+  console login.
 
   1. **The site's admin account** — the `:User` node with `role: 'admin'`.
      Today that node's `email` property is the literal string `mandiadmin`,

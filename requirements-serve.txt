@@ -9,9 +9,11 @@
 # Keep in sync with requirements.txt by hand -- there is no tooling that
 # enforces this split, so if the API gains a new import, add it here too.
 #
-# torch and transformers are excluded on purpose: only local_tts.py and
-# local_translation.py use them, both lazily inside functions, and both are
-# off in the Nectar deployment. See Dockerfile.serve.
+# torch and transformers are NOT here, and are not missing either: they moved
+# to requirements-translation.txt, which Dockerfile.serve now installs on top
+# of this file so torch can come from the CPU wheel index. Keeping them out
+# of this list means a host that only serves English retrieval still does not
+# pay for them. See Dockerfile.serve and KNOWN_LIMITATIONS 29.
 requests
 # Translates Bangla/Hindi questions and answers (rag.py google_translate).
 deep-translator
@@ -19,3 +21,6 @@ neo4j
 python-dotenv
 pdfplumber
 wordninja
+# Required by subject_specificity.py, via main.py. Needs the
+# en_core_web_sm model too -- Dockerfile.serve downloads it.
+spacy
