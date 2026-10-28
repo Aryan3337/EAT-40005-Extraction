@@ -25,12 +25,25 @@ _COUNT = (
 _DELETE = (
     "MATCH ()-[r]->() WHERE r.run_id = $run_id DELETE r RETURN count(r) AS c"
 )
+# The nodes this run's relationships hang off, collected BEFORE the delete
+# because afterwards there is nothing left to find them by.
+_ENDPOINTS = (
+    "MATCH (a)-[r]->(b) WHERE r.run_id = $run_id "
+    "RETURN collect(DISTINCT elementId(a)) + collect(DISTINCT elementId(b)) "
+    "AS ids"
+)
 # insert_triple MERGEs its nodes, so deleting a run's relationships can
 # strand entities that no other run referenced. They are invisible to
 # retrieval but still sit in the graph and accumulate across rollbacks.
+#
+# Scoped to the endpoints above, NOT to every orphan in the graph. The
+# first version was unscoped and, undoing a 1-triple run on 2026-10-28,
+# also removed 22 unrelated pre-existing orphans. No damage that time, but
+# a delete tool must never reach past what it says it touches.
 _ORPHANS = (
-    "MATCH (n) WHERE NOT (n)--() AND NOT n:User AND NOT n:Conversation "
-    "AND NOT n:Feedback DELETE n RETURN count(n) AS c"
+    "MATCH (n) WHERE elementId(n) IN $ids AND NOT (n)--() "
+    "AND NOT n:User AND NOT n:Conversation AND NOT n:Feedback "
+    "DELETE n RETURN count(n) AS c"
 )
 
 
@@ -59,8 +72,11 @@ def delete_run(run_id: str, *, driver=None, dry_run: bool = False) -> dict:
                 "dry_run": bool(dry_run),
             }
 
+        endpoints = session.run(_ENDPOINTS, run_id=run_id).single()
+        ids = (endpoints or {}).get("ids") or []
+
         deleted = session.run(_DELETE, run_id=run_id).single()
-        orphans = session.run(_ORPHANS).single()
+        orphans = session.run(_ORPHANS, ids=ids).single() if ids else None
         return {
             "run_id": run_id,
             "relationships": (deleted or {}).get("c", 0) or 0,
