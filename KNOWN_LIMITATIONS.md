@@ -1336,6 +1336,83 @@ not fit to present as the primary deliverable, and no prompt wording will
 make it so. What changed is that it no longer arrives with a fabricated
 source attached.
 
+### Measured 2026-10-28: NLLB against mistral:7b, same inputs, same box
+
+Option 4, measured rather than argued. NLLB-200-distilled-600M, run through
+this project's own `local_translation.py` so the result reflects what
+`TRANSLATION_PROVIDER=local` would actually do, in a throwaway container on
+the live instance (16 vCPU, no GPU). Ten answer translations across the five
+benchmark answers, plus three question translations. Weights at
+`/mnt/data/nllb/nllb-600m`; raw output at `/mnt/data/nllb/nllb_results.json`.
+
+**Nothing here was deployed.** Running the comparison is research use, which
+CC-BY-NC-4.0 permits; deploying is the licence question, and it is unanswered.
+
+**What NLLB fixes.**
+
+| Fault, from the table above | mistral:7b | NLLB |
+|---|---|---|
+| Appended transliteration / back-translation / note | present in most | **0 of 10**, and zero Latin characters in any output |
+| Invented provenance (Britannica URL, Journal of Ethnopharmacology) | twice | none |
+| Goalpara, Assam placed in Bangladesh | wrong | **correct** -- `আসামের গোলপারা`, `असम के गोलपरा`, India and Bangladesh distinct |
+| The quoted Page 1 sentence, "almost abolished" | inverted to *has begun* | **faithful** -- `প্রায় বিলুপ্ত হয়ে গেছে এবং কিছু এলাকায় খুব কম গারো মানুষই অনুশীলন করে` |
+| "communicate in both Bengali and Garo" | Hindi answer said *Hindi* | **correct**, `बंगाली और अपनी मातृभाषा गारो` |
+| 31 plants / 23 families | survived | survived (`৩১টি`, `২৩টি`) |
+| Prose | `একটা বিশেষ রক্ত ধরে`, `উত্তম রক্তান্তর সিস্টেম`, `নাসের ঘোড়া` (*horse of the nose*) | fluent and idiomatic throughout |
+
+**Latency, which was not the point but is the largest single number.** 2.6-7.8s
+per answer translation against 30-80s measured for `mistral:7b`, and 0.4-0.5s
+per question translation once the model is warm (12.4s on the first call, which
+is the lazy load). Two translations per query stop being the thing that puts
+the worst case at 610s against nginx's 620s (§28).
+
+**What NLLB gets wrong, which is the part that matters for a decision.**
+
+1. **It drops negations in a list.** "high levels of unemployment, illiteracy,
+   **insufficient** communication, **poor** sanitation, and **inadequate**
+   transportation systems" came back as `পর্যাপ্ত যোগাযোগ` -- *adequate*
+   communication -- and `খারাপ স্বাস্থ্যসেবা`, *poor healthcare*, where the
+   source says sanitation. Two of five list items wrong, one of them inverted.
+   This is the most serious fault found and it is the same class as §29's
+   complaint, smaller in blast radius: it mistranslates what is there rather
+   than adding what is not.
+2. **The Hindi version of the quoted sentence mangles the passive**: `जिसे कुछ
+   क्षेत्रों में बहुत कम गारो लोग ही समाप्त कर देते हैं और उसका अभ्यास करते
+   हैं` reads as *few people abolish it and practise it*. The Bangla of the
+   same sentence is right, so this is not symmetric across languages.
+3. **`asthma` became `হাঁস`, a duck**, in Bangla. Hindi got `अस्थमा` right.
+4. **Proper nouns are spelled two ways inside one answer** -- `সঙ্গশারক` then
+   `সানশারেক` for Sangsharek; `মেইমেন্সিংহ` then `মাইমেনসিং` for Mymensingh.
+5. **Scientific binomials lose their Latin script.** `Justicia adhatoda`
+   becomes `জাস্টিসিয়া অ্যাডাহোডা`, which no reader can look up. `mistral:7b`
+   transliterated them too, so this is not a regression, but a medicinal-plant
+   answer is exactly where it hurts. Worth protecting explicitly.
+6. **A bug in our own chunker, not in NLLB.** `_chunks` splits sentences on
+   `(?<=[.!?।])\s+`, so "the seeds of T. indica and S. cumini" splits after
+   `T.` and `S.`. The output is shredded: `টি-এর বীজও ব্যবহার করা হয়। ইন্ডিকা
+   এবং এস। ... কমিনি।`, and the same in Hindi. Any deployment of this path
+   needs the splitter taught about single-letter abbreviations first. It is
+   cheap to fix and it is in `local_translation.py`, so it is ours.
+
+**The honest summary.** This is not a clean win, it is a change of error class:
+from *invents places, URLs and journal citations, in prose a Bangla reader
+cannot follow* to *fluent prose that sometimes drops a negation or picks the
+wrong word*. Both still need the native-speaker review this entry has always
+asked for. Only one of them is safe to put in front of a client, because only
+one of them fails in ways a reader can see.
+
+**What it does not touch:** the English synthesis (the `Terminalia indica`
+note above survives the swap), retrieval, and §27.
+
+**If it is deployed, four things go with it**, none of them optional:
+`Dockerfile.serve` needs torch, transformers and sentencepiece; the weights
+need to be on `/mnt/data` with `LOCAL_TRANSLATION_MODEL` pointing at them
+(`local_files_only=True` refuses to download at runtime); the abbreviation
+bug in `_chunks` needs fixing; and the two guards ported in `7a251fe` are
+gated on `provider == "llm"`, so they would silently stop running -- that gate
+has to widen in the same commit.
+
+
 ### A cheaper fault found while measuring this
 
 The three Hindi refusals that render `मujhe` are not a typo in a static
