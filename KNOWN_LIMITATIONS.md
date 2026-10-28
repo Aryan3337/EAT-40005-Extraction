@@ -1519,6 +1519,53 @@ names. Its own residual faults are transliterated binomials and a proper
 noun spelled two ways.
 
 
+### DEPLOYED 2026-10-28: the translation engine is NLLB, not a chat model
+
+Marcus settled the licence question -- CC-BY-NC-4.0 grants non-commercial
+use to anyone, there is no application and nobody to ask, and this project
+is non-commercial. `2454429`, live on the instance.
+
+What went with it, because none of it is optional: torch, transformers and
+sentencepiece in `Dockerfile.serve` (torch from the CPU wheel index -- the
+default PyPI build carries CUDA libraries for a GPU this box does not
+have); the 2.4GB of weights mounted read-only from `/mnt/data/nllb` at
+`/app/models` with `LOCAL_TRANSLATION_MODEL` set; `TRANSLATION_PROVIDER=local`;
+and `_GUARD_LOCALLY = {"llm", "local"}` so the two guards ported in
+`7a251fe` keep running -- gated on `provider == "llm"` they would have
+stopped silently at exactly this moment.
+
+**Measured on the live site after deploying:**
+
+| | before (`mistral:7b`) | after (NLLB) |
+|---|---|---|
+| grounded answer, `language=bn` | 70-120s | **22.5s** (first call, including the model load) and **24.9s** |
+| refusal | 1.1-1.8s | **1.1s**, unchanged |
+| the negation sentence | `উত্তম সংবাদ` and worse | `অপর্যাপ্ত যোগাযোগ, দুর্বল স্যানিটেশন এবং অপর্যাপ্ত পরিবহন ব্যবস্থা` -- **all three correct** |
+| Goalpara, Assam | placed in Bangladesh | `আসামের গোলপারা`, correctly in India |
+| appended commentary | transliterations, notes, a fabricated Britannica link | zero Latin characters in any answer |
+| `Local translation unavailable` in the log | n/a | **0** |
+| `discarded: incomplete` in the log | n/a | **0** |
+
+`p85_api` holds 740MB resident with the model loaded, against 11GB free, so
+the box is comfortable. The build also needed room: `/` was at 82% with
+5.2GB free, and `docker builder prune -af` reclaimed **8.98GB** of build
+cache first, which is the only reason this fit. Watch that before any
+future image work.
+
+**Rolling back takes seconds and no rebuild.** The image still carries the
+`llm` path: set `TRANSLATION_PROVIDER=llm` in `deploy/nectar/.env` and
+restart `api`. The pre-switch file is kept at `.env.backup-pre-nllb` on the
+instance.
+
+**What is still true after all of this.** The bodies are better, not
+verified: NLLB transliterates scientific binomials out of Latin script and
+spells a proper noun two ways inside one answer, and the native-speaker
+review this entry has asked for from the start has still not happened. What
+has changed is that the output no longer invents places, URLs or journal
+citations, and no longer reads as broken Bangla. That is the difference
+between "not fit to present" and "fit to review".
+
+
 ### A cheaper fault found while measuring this
 
 The three Hindi refusals that render `मujhe` are not a typo in a static
