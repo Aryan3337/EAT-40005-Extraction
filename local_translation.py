@@ -17,6 +17,16 @@ _BANGLA_NAMES = {
     "গারোরা": "Garo জনগণ", "গারোদের": "Garo জনগণের", "গারো": "Garo",
     "মান্দিরা": "Mandi জনগণ", "মান্দিদের": "Mandi জনগণের", "মান্দি": "Mandi",
 }
+# A sentence end, except after a single-letter abbreviation. The obvious
+# pattern, r"(?<=[.!?।])\s+", splits "the seeds of T. indica and
+# S. cumini" into three fragments, and the Bangla came back as "the seeds
+# of T. are used. Indica and S. Cumini in their formulations" -- measured
+# 2026-10-28 against NLLB, recorded in KNOWN_LIMITATIONS 29. Species
+# abbreviations are ordinary in this corpus, so the splitter has to know
+# about them.
+_SENTENCE_SPLIT = re.compile(r"(?<!\b[A-Z]\.)(?<=[.!?।])\s+")
+
+
 _NAME_PATTERN = re.compile(r"(?<!\w)(" + "|".join(_BANGLA_NAMES) + r")(?!\w)")
 
 
@@ -58,7 +68,7 @@ def _chunks(text, tokenizer, limit=384):
         if not paragraph.strip():
             yield None
             continue
-        for sentence in re.split(r"(?<=[.!?।])\s+", paragraph.strip()):
+        for sentence in re.split(_SENTENCE_SPLIT, paragraph.strip()):
             pending = sentence
             while pending:
                 if len(tokenizer.encode(pending, add_special_tokens=True)) <= limit:
@@ -102,7 +112,7 @@ def translate_local(text, source, target):
                 with torch.inference_mode():
                     output = model.generate(
                         **inputs, forced_bos_token_id=target_id,
-                        max_new_tokens=512, do_sample=False,
+                        max_new_tokens=512, do_sample=False, num_beams=5,
                     )
                 tokens = output[0].tolist()
                 # A length-limited result must not silently drop the rest.
