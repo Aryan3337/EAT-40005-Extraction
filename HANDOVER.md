@@ -56,7 +56,7 @@ The right-hand column points to the **repository** — the online project folder
 | Paper-admission scoring | Scores a newly uploaded paper on credibility, relevance and ethical handling before extraction | Ollama (local AI) + rule-based checks | `confidence_framework.py`, `admin_ingest.py` |
 | Chat/answer server | Finds facts relevant to a question and either asks the AI to write an answer or builds a fallback one. This is the project's **API** — the fixed way the chat website asks for, and receives, an answer | A small web-serving program + Ollama | `rag.py` |
 | Chat website | What a visitor actually sees, types into, and reads answers from | Flutter (a toolkit for building one app that runs as a website, and could also be built for phones) | `flutter_application/` |
-| Hosting | Where the website and chat server live on the public internet | Render (a cloud hosting service) | `Dockerfile.serve`, `scripts/` |
+| Hosting | Where the website and chat server live on the public internet | **Nectar Research Cloud** (Australian academic cloud), one virtual machine running Docker, reachable at <https://136.186.108.232.sslip.io/> | `deploy/nectar/`, `Dockerfile.serve`, `Dockerfile.web` |
 | Remote link to the AI | Lets the hosted website reach the AI model, which runs on a team laptop rather than in the cloud | Tailscale Funnel (a secure internet tunnel) + a small guard program that checks a password before forwarding anything | `ollama_tunnel_proxy.py`, `scripts/tunnel_on.sh`, `scripts/tunnel_off.sh` |
 
 ## 4. Current state
@@ -116,7 +116,7 @@ The right-hand column points to the **repository** — the online project folder
 | What it's for | Account/credential | Notes |
 |---|---|---|
 | Holds the live knowledge graph database | A Neo4j AuraDB account | Should be owned by a shared team account, not a personal one, so it survives any one person leaving |
-| Hosts the live website and chat server | A Render account | Free tier currently in use |
+| Hosts the live website and chat server | A **Nectar Research Cloud** allocation (project `p85-chatbot`) | Allocation expires 19 Oct 2027. Replaced a Render free-tier account; shutting that down was decided on 2026-10-28 and is pending in the Render dashboard |
 | Creates the secure link from the hosted website back to a laptop's AI | A Tailscale account | Only needed when switching on live AI answers for a demo |
 | Where all the project's code and history lives | A GitHub account with repository access | |
 | Lets a visitor use the chat website | Two built-in demo logins (one visitor-level, one administrator-level) | Fixed values, not real individual accounts — see Section 5 |
@@ -153,7 +153,7 @@ No actual passwords, keys or secret values are included in this document, in the
 | **Ollama** | A free tool that lets an AI model run directly on an ordinary computer, instead of relying on a company's cloud service. |
 | **Tunnel (Tailscale Funnel)** | A secure, temporary internet connection that lets the publicly hosted website reach an AI model running on a private laptop. |
 | **Deploy / deployment** | Publishing a new version of the code so it's live on the actual hosted website — currently a manual step for this project (see Section 5). |
-| **Hosting** | The service that keeps the website and chat server running and reachable on the internet (here, Render). |
+| **Hosting** | The service that keeps the website and chat server running and reachable on the internet (here, Nectar Research Cloud). |
 | **Docker / container** | A way of packaging software so it runs the same way wherever it's hosted, like a shipping container that fits any ship or truck regardless of what's inside it. |
 | **Automated test** | A small program that checks a piece of the system still behaves correctly, run automatically rather than by a person clicking through it. |
 | **Pruning** | A planned later step (built but not currently connected to the live system) that would review facts already in the database and remove any that turn out to be wrong — like a librarian going back through shelved books to pull out any later found to be mistaken. |
@@ -164,4 +164,4 @@ No actual passwords, keys or secret values are included in this document, in the
 | **GitHub** | The service that hosts this project's repository. |
 | **Python** | The programming language most of this project's behind-the-scenes code is written in. |
 | **Flutter** | The toolkit used to build the chat website (and which could also build phone apps from the same code). |
-| **Render** | The cloud hosting service this project's website and chat server currently run on. |
+| **Nectar Research Cloud** | The Australian academic cloud service this project's website and chat server run on. Took over from Render in Oct 2026; see `NECTAR_MIGRATION.md`. |

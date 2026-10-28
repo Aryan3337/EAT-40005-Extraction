@@ -199,10 +199,12 @@ also loads the model into RAM. **All verified 2026-10-27, at 63s.**
 
 **Blocked by:** M2 (ideally P1) · **Size:** 0.5 day
 
-**DROPPED 2026-10-28 on Marcus's instruction** — "Render doesn't need to be
-touched, it's void already, nothing relies on it." The deliberate redeploy
-described below is therefore moot; nobody is going to watch a build of a
-deployment that is being abandoned.
+**First dropped 2026-10-28 on Marcus's instruction** — "Render doesn't need
+to be touched, it's void already, nothing relies on it." The deliberate
+redeploy described below is moot either way; nobody is going to watch a build
+of a deployment that is being abandoned. **Then reopened the same day and
+decided the other way, once it turned out that void and reachable are not the
+same thing** — see the finding immediately below.
 
 **But it is still live, and that is now a finding rather than a plan.**
 Checked 2026-10-28 while tracing a bug:
@@ -219,7 +221,43 @@ Checked 2026-10-28 while tracing a bug:
 
 That is worse than void: it is a reachable, unauthenticated, stale copy. The
 recommendation is now to **take it down rather than ignore it**, which is less
-work than the 0.5 day below, not more. Marcus has not decided.
+work than the 0.5 day below, not more.
+
+**DECIDED 2026-10-28: take it down.** Marcus's instruction.
+
+**The repo side is done** (commit below): `HANDOVER.md` no longer tells the
+inheritor that hosting is Render -- it named Render in four places, including
+the accounts table and the glossary, and now names Nectar; `HOSTING.md` opens
+with a SUPERSEDED banner pointing at `NECTAR_MIGRATION.md`;
+`scripts/setup_hosting.sh` carries the same warning at its head, because it
+is a wizard that walks a human into the dead Render flow and asks for a
+service URL that is going away. There is no `render.yaml` in the repo -- the
+services were configured in the dashboard, so nothing in version control
+creates them.
+
+**What is left can only be done in the Render dashboard, by someone with
+that account:**
+
+1. Delete both services -- `eat-40005-extraction` (the API) and
+   `eat-40005-extraction-1` (the site).
+2. Confirm `https://eat-40005-extraction-1.onrender.com` stops answering.
+   Until then the unauthenticated copy is still up; deleting the repo's
+   references does not take a running service down.
+3. Remove the GitHub deploy hook / connected-repo authorisation if Render
+   installed one, so a later push cannot silently redeploy it.
+
+**DO NOT revoke the AuraDB credential, contrary to the original plan below.**
+That step assumed Render had its own. It does not: `NEO4J_USERNAME` is
+**`6ba8a37e`**, the AuraDB *instance id*, which is AuraDB's single built-in
+user -- the same credential the Nectar deployment uses. There is no
+Render-only credential to revoke, and revoking or rotating this one takes
+**production** down with it. If it is rotated anyway -- reasonable, since the
+password sat in a third party's environment variables -- then
+`deploy/nectar/.env` on the instance must be updated and `api` restarted in
+the same maintenance window.
+
+The step below about removing Render URLs from `README.md` found none there;
+only `HOSTING.md` and `HANDOVER.md` carried them.
 
 Ruling Render out is also how the Hindi 503 was traced — that build cannot
 emit the error string the teammate saw, which is what proved the fault was on
@@ -597,7 +635,7 @@ thing, this is it.
 
 | Track | Size | Can start | Needs |
 |---|---|---|---|
-| M — Migrate | ~0.5 d left | M1+M2 **done**; only M3 remains | Nectar dashboard, Render access |
+| M — Migrate | dashboard step only | M1+M2 **done**; M3 decided 2026-10-28 (take Render down) — repo side done, deleting the two services needs Render account access | Nectar dashboard, Render access |
 | P — Parity | ~1 d left | P1 **done**; only P2 remains | Flutter, Docker |
 | O — Optional | 0.5 d | after M2 | — |
 | H — Handover | ~4 d | alongside | whoever did the work |

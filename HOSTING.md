@@ -1,5 +1,20 @@
 # Hosting the demo
 
+> **SUPERSEDED 2026-10-28.** The architecture this document describes --
+> `Dockerfile.serve` on a Render/Railway/Fly free tier, with LLM inference
+> reached back to a team laptop over a Tailscale Funnel -- has been replaced.
+> The system now runs on a single Nectar Research Cloud VM with Ollama on the
+> same box, at <https://136.186.108.232.sslip.io/>. **Shutting the Render
+> deployment down was decided on 2026-10-28; until someone deletes the
+> services in the Render dashboard it is still reachable and still
+> unauthenticated** -- see `NECTAR_IMPLEMENTATION_PLAN.md` M3. See
+> **`NECTAR_MIGRATION.md`** for the current
+> architecture and **`deploy/nectar/README.md`** for how to operate it.
+>
+> Kept because the tunnel scripts and the zero-budget reasoning are still the
+> record of why the project ran the way it did, and `scripts/setup_hosting.sh`
+> still describes the old flow.
+
 No funding for compute as of 2026-10-05: the API runs in the cloud, but LLM
 inference stays on a team laptop, reached back over a Tailscale Funnel. This
 is the demo/POC architecture; a funded, laptop-independent setup (Ollama
