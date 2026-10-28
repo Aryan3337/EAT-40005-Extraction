@@ -552,6 +552,9 @@ done and live**. It is here so the remaining items are findable, and so
 nobody repeats the measurements. The detail, including every raw example,
 is KNOWN_LIMITATIONS 29.
 
+**Who owns what, as of 2026-10-28:** T1 is **out with a team member** and is
+not ours to pick up. That leaves **T2** as the actionable item in this track.
+
 **What changed on 2026-10-28, all deployed:**
 
 | | |
@@ -563,15 +566,26 @@ is KNOWN_LIMITATIONS 29.
 | `2454429` | **The translator is NLLB-200-600M, not `mistral:7b`.** A grounded Bangla answer went from 70-120s to ~22s. |
 
 **T1 — Native-speaker review of the Bangla and Hindi.** *Size: half a day.
-Needs no code, no instance access, and it is the highest-value item in this
-file.* Every engine judgement on this page, including the decision to deploy
-NLLB, was made by reading translations against their English source without
-a Bangla speaker. The faults found were gross enough that the reading is not
+Needs no code and no instance access.* **HANDED TO A TEAM MEMBER 2026-10-28 —
+not ours until they report back. Do not pick this up, and do not re-measure
+the translations to fill the gap.**
+
+Every engine judgement on this page, including the decision to deploy NLLB,
+was made by reading translations against their English source without a
+Bangla speaker. The faults found were gross enough that the reading is not
 in doubt; **the rate is not established, and no one has confirmed the current
-output is good rather than merely better.** Sit someone who reads Bangla in
-front of https://136.186.108.232.sslip.io/ with the eight benchmark
-questions. Until this happens, the honest claim is "fit to review", not
-"correct".
+output is good rather than merely better.** The reviewer's job is to sit in
+front of https://136.186.108.232.sslip.io/ with the eight benchmark questions.
+
+**What is still true while this is out:** the honest claim remains "fit to
+review", not "correct". Delegating the review does not change the claim —
+only their answer does. KNOWN_LIMITATIONS 29 stays open on that basis.
+
+**When they report back**, the result decides the next move: confirmation
+closes 29's translation-quality question, and any faults they find are new
+measured defects that go in 29 with their examples. Note that the instance
+they are reviewing runs `1c3c333`, which is the deployed NLLB engine — their
+findings apply to what users have, which is what matters here.
 
 **T2 — Keep scientific names in Latin script.** *Size: half a day.* NLLB
 renders `Justicia adhatoda` as `জাস্টিসিয়া অ্যাড্যাটোডা`, which a reader

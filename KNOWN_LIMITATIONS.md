@@ -1576,11 +1576,18 @@ instance.
 
 **What is still true after all of this.** The bodies are better, not
 verified: NLLB transliterates scientific binomials out of Latin script and
-spells a proper noun two ways inside one answer, and the native-speaker
-review this entry has asked for from the start has still not happened. What
-has changed is that the output no longer invents places, URLs or journal
-citations, and no longer reads as broken Bangla. That is the difference
-between "not fit to present" and "fit to review".
+spells a proper noun two ways inside one answer. What has changed is that the
+output no longer invents places, URLs or journal citations, and no longer
+reads as broken Bangla. That is the difference between "not fit to present"
+and "fit to review".
+
+**The native-speaker review this entry has asked for from the start was
+handed to a team member on 2026-10-28 and has not reported back** (backlog
+T1). Until it does, "fit to review" is still the claim, and nobody should
+upgrade it by re-reading the translations themselves -- that is the exact
+method this entry says is not enough. The reviewer is looking at the
+deployed `1c3c333`, so whatever they find applies to what users actually
+have.
 
 
 ### A cheaper fault found while measuring this
