@@ -132,6 +132,33 @@ budget. Every finding below is already written into
 | **Accounts live in AuraDB; sessions live in API memory** | Accounts survive `docker compose down` and an instance rebuild with no volume involved. Tokens do not -- a rebuild signs everyone out. A test account is also a write to the production graph, so delete it afterwards |
 | **`nginx.conf` works as written** | This was the plan's single largest untested item. It proxies `/health`, `/query` and the static bundle correctly on first run. No change needed |
 | **An empty `web/` presents as a 403**, `directory index ... is forbidden` | Reads like an nginx permissions fault; it is only the missing frontend upload |
+| **Rebuilding the API does not rebuild the frontend, and nothing says so** | Found 2026-10-28 by auditing rather than by a symptom. `p85_api` had been rebuilt 62s after its code commit, so the API was current -- while `nectar-web` was three hours older than the commit that added the admin extraction button. `POST /admin/extract` was live with no UI able to reach it. A frontend commit deploys only if someone rebuilds `web` too, and the only evidence is an image timestamp |
+
+**Checking what is actually deployed, rather than what is checked out.** The
+instance checkout can be current while a container is not: images are built
+from a build context, so the question is what is inside the container.
+These three answer it, and all three were wrong-footed at least once:
+
+```bash
+# 1. the running container's code against the checkout it should have come from
+for f in rag.py extract_jobs.py main.py; do
+  w=$(sha256sum $f | cut -c1-8)
+  c=$(docker exec p85_api sha256sum /app/$f | cut -c1-8)
+  [ "$w" = "$c" ] && echo "$f match" || echo "$f MISMATCH $w $c"
+done
+
+# 2. the container is on the CURRENT image, not an orphan holding the same tag
+docker inspect p85_api --format '{{.Image}}'; docker inspect nectar-api:latest --format '{{.Id}}'
+
+# 3. the frontend: grep the compiled bundle for a string only the new code has
+docker exec p85_web grep -c 'admin/extract' /usr/share/nginx/html/main.dart.js
+curl -s https://136.186.108.232.sslip.io/main.dart.js | sha256sum  # same as above?
+```
+
+A compiled Flutter bundle cannot be hashed against source, so (3) greps for a
+string the new code introduces and compares what nginx serves with what the
+container holds. Deployed 2026-10-28 at `07bbae1`: both images rebuilt, all
+three checks pass, and the extraction button is reachable for the first time.
 
 ```bash
 git clone -b dev https://github.com/Aryan3337/EAT-40005-Extraction.git
