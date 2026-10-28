@@ -38,6 +38,7 @@ from rag import (  # noqa: E402
     keyword_weights,
     question_keywords,
     score_triple_weighted,
+    topic_focused,
 )
 
 # The 8 questions the backlog's figures were measured on. Chosen to span the
@@ -75,9 +76,20 @@ def graph_path(kg, question, top_k):
     """What Neo4jRAGSkeleton.query does, with Cypher's WHERE simulated locally.
 
     Mirrors rag.py's Neo4jRAGSkeleton.query: candidate set by keyword
-    CONTAINS, weighted scoring, stable sort, dedupe, truncate. Deliberately
-    has no `matches_topic` and no `score > 0` cut -- their absence is what
-    this harness measures.
+    CONTAINS, weighted scoring, stable sort, topic filter, dedupe, truncate.
+
+    It calls rag.topic_focused rather than reimplementing it, so this cannot
+    drift from the code it is meant to measure. Before G1 landed (2026-10-28)
+    this function deliberately had no topic filter, because that absence was
+    what the harness existed to measure; the filter is in the graph path now,
+    so the mirror carries it too.
+
+    The `score > 0` cut is in the graph path now as well, but is deliberately
+    NOT mirrored here: the "score 0" column exists to report how many triples
+    that cut removes, and applying it here would drive the column to 0 by
+    construction and measure nothing. It has read 0 on this corpus before and
+    after G1, which is the backlog's own finding -- the cut is a guard against
+    `passage`- and `question`-only matches, not a measured win.
     """
     keywords = question_keywords(question)
     if not keywords:
@@ -95,6 +107,7 @@ def graph_path(kg, question, top_k):
     candidates = sorted(
         candidates, key=lambda triple: -score_triple_weighted(triple, weights)
     )
+    candidates = topic_focused(keywords, candidates)
     return dedupe_triples(candidates)[:top_k], weights
 
 

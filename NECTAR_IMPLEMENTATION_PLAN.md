@@ -611,9 +611,10 @@ comfortably for three. The natural split:
 - **H2 and H4 are writing, not coding** — the best fit for whoever is least
   comfortable in the codebase, provided they interview the people who did each
   track rather than guessing.
-- **Anyone with spare capacity goes to `NECTAR_BACKLOG.md`**, starting with
-  G1 (the `matches_topic` port), which is the only backlog item that improves
-  answer quality for users and needs no instance access.
+- **Anyone with spare capacity goes to `NECTAR_BACKLOG.md`.** G1, the topic
+  filter port, was the pick here and is **done (2026-10-28)**; it unblocked
+  G2. What G1 still owes is a live re-run of the eight benchmark questions to
+  confirm the false refusal is gone, which does need an instance rebuild.
 
 **If it does not all fit, cut in this order:** O1, then P2 (manual `scp` per
 runbook step 6 still works), then P1's TLS **only** by also disabling the auth

@@ -214,6 +214,63 @@ def score_triple_weighted(triple: Dict[str, Any], weights: Dict[str, float]) -> 
     return score
 
 
+# Words that identify WHO the corpus is about rather than what a question
+# asks. "garo" appears in 22 of the 45 production triples and "community" in
+# 17, so letting either establish topic relevance would keep everything.
+_IDENTITY_TERMS = frozenset({"garo", "mandi", "mande", "people", "community"})
+
+# Topic words whose graph vocabulary differs from the question's. The graph
+# says BILINGUAL and LANGUAGE_USED where a user says "speak".
+_TOPIC_FORMS: Dict[str, Tuple[str, ...]] = {
+    "languages": ("language",),
+    "speak": ("speaks", "speaking", "spoken", "bilingual", "language"),
+}
+
+# Where a topic word may appear. "question" is a CSV-only column; graph rows
+# do not carry it and .get simply misses.
+_TOPIC_FIELDS = ("subject", "predicate", "object", "question", "sentence_ref")
+
+
+def topic_focused(
+    keywords: List[str], triples: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Narrow `triples` to those matching a question's topic words, where the
+    community's own name does not count as a topic.
+
+    WHY THIS IS SHARED: ConceptRetriever.retrieve has filtered this way since
+    the CSV path was written; Neo4jRAGSkeleton.query -- the path the deployed
+    system actually uses -- did not, and the two were never meant to rank
+    differently (see ConceptRetriever's docstring). Measured 2026-10-27 on the
+    live instance, the asymmetry cost a real answer: "What is the Garo
+    population?" was refused with the POPULATION triple ranked first in its
+    own evidence behind nine off-topic triples. KNOWN_LIMITATIONS 27 has the
+    transcript; backlog G1 is this change.
+
+    Returns the input unchanged when nothing matches, rather than returning
+    nothing. A question whose topic words miss the whole corpus is one this
+    filter cannot speak to, and emptying the evidence there would convert a
+    weak answer into a refusal with nothing shown -- a recall loss this
+    filter is not the right place to impose.
+    """
+    topics = [word for word in keywords if word not in _IDENTITY_TERMS]
+    if not topics:
+        return triples
+
+    def on_topic(triple: Dict[str, Any]) -> bool:
+        for word in topics:
+            forms = (word,) + _TOPIC_FORMS.get(word, ())
+            if any(
+                _keyword_matches(form, str(triple.get(field) or "").lower())
+                for form in forms
+                for field in _TOPIC_FIELDS
+            ):
+                return True
+        return False
+
+    focused = [triple for triple in triples if on_topic(triple)]
+    return focused or triples
+
+
 def resolve_port(explicit_port: Optional[int]) -> int:
     """The port to serve on: an explicit --port always wins; otherwise a
     hosting platform's injected $PORT (Render, Railway, Fly.io all set
@@ -506,29 +563,10 @@ class ConceptRetriever:
         # tie-break, so equal-scoring results do not shuffle between calls.
         scored.sort(key=lambda pair: -pair[0])
         matches = [triple for score, triple in scored if score > 0]
-        # In this corpus, community identity alone does not establish topic relevance.
-        identity_terms = {"garo", "mandi", "mande", "people", "community"}
-        topics = [word for word in keywords if word not in identity_terms]
-        topic_forms = {
-            "languages": ("language",),
-            "speak": ("speaks", "speaking", "spoken", "bilingual", "language"),
-        }
-
-        def matches_topic(triple):
-            fields = ("subject", "predicate", "object", "question", "sentence_ref")
-            for word in topics:
-                forms = (word,) + topic_forms.get(word, ())
-                if any(
-                    _keyword_matches(form, str(triple.get(field) or "").lower())
-                    for form in forms
-                    for field in fields
-                ):
-                    return True
-            return False
-
-        focused = [triple for triple in matches if matches_topic(triple)]
-        if focused:
-            matches = focused
+        # In this corpus, community identity alone does not establish topic
+        # relevance. This filter used to live here as a closure; it is shared
+        # with the graph path now, which was missing it -- see topic_focused.
+        matches = topic_focused(keywords, matches)
         return group_responses(dedupe_triples(matches), top_k)
 
 
@@ -779,6 +817,13 @@ class Neo4jRAGSkeleton:
         if not keywords:
             return []
 
+        # NOTE: topic_focused also reads a `question` field, which this RETURN
+        # does not select. Harmless today -- no community data is loaded into
+        # the graph, so no relationship carries one -- and left unselected
+        # deliberately rather than silently widening the query. If community
+        # data is ever loaded here, add it to the RETURN and the WHERE
+        # together, or the topic filter will judge those rows on a field it
+        # cannot see.
         cypher = """
         MATCH (s:Entity)-[r]->(o:Entity)
         WHERE coalesce(r.archived, false) = false
@@ -820,7 +865,23 @@ class Neo4jRAGSkeleton:
         # Stable sort on the negated score keeps Cypher's order as the
         # tie-break, so equal-scoring results do not shuffle between calls.
         weights = keyword_weights(keywords, candidates)
-        candidates.sort(key=lambda triple: -score_triple_weighted(triple, weights))
+        # Scored once and carried, rather than recomputed for the cut below --
+        # the same (score, triple) shape ConceptRetriever.retrieve uses.
+        scored = [(score_triple_weighted(triple, weights), triple) for triple in candidates]
+        scored.sort(key=lambda pair: -pair[0])
+
+        # The two filters ConceptRetriever.retrieve has always applied and this
+        # path was missing, in the same order it applies them. See G1 in
+        # NECTAR_BACKLOG.md and KNOWN_LIMITATIONS 27.
+        #
+        # The cut first: the Cypher above matches `passage`, and topic_focused
+        # reads `question`, neither of which is in _FIELD_WEIGHTS -- so a row
+        # can satisfy either and still score nothing. Measured at zero effect
+        # on the eight benchmark questions, so this is a guard, not a win.
+        candidates = [triple for score, triple in scored if score > 0]
+        # Then the topic filter: drop triples matching only the community's
+        # own name and none of the question's topic.
+        candidates = topic_focused(keywords, candidates)
 
         # Dedupe before truncating, so a duplicate doesn't cost a real
         # candidate its place in top_k. Sorting first means the

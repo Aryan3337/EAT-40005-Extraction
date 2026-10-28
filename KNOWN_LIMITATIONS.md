@@ -983,11 +983,28 @@ question, which answers correctly from one relevant triple among six
 language ones). That assumption is wrong at the margin: past some ratio,
 the junk does not get ignored, it suppresses the answer.
 
-So **backlog G1 (`matches_topic` on the graph path) is not a cosmetic
+So **backlog G1 (the topic filter on the graph path) is not a cosmetic
 fix.** It is plausibly the difference between answering and refusing on
 questions the corpus can answer. Verify that by re-running the eight
 questions after G1 lands -- this entry exists to make that a measurement
 rather than a hope.
+
+**G1 LANDED 2026-10-28.** The filter is now `rag.topic_focused`, shared by
+both retrieval paths instead of living as a closure in the CSV one, and
+`tools/compare_retrieval_paths.py` reports **off-topic 27 -> 0** across the
+eight questions with the CSV column unchanged. For this question the graph
+path now returns the POPULATION triple **alone** where it returned that
+triple plus nine others.
+
+**What is NOT yet verified is the sentence this entry actually cares
+about.** The measurement above is offline, over the 112-triple CSV corpus,
+and it proves the junk is gone from the evidence block. It does **not**
+prove the gate now answers: that needs the eight questions re-run against
+the deployed instance, which needs an API rebuild and deploy. Until someone
+does that, the honest claim is "the dilution this entry blamed is gone",
+not "the false refusal is fixed". The theory that dilution caused the
+refusal remains a theory -- a well-supported one, but the deployed system
+has not been asked.
 
 **Not every refusal is this bug.** Of three refusals in the same run, two
 were correct and should stay: *"How has Garo livelihood changed?"*

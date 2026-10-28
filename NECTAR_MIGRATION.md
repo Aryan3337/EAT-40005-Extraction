@@ -173,15 +173,20 @@ recorded under open items, not resolved here.
 |---|---|---|
 | `filter_community_periods` (time-aware narrowing) | yes | no |
 | Drops zero-scoring triples (`score > 0`) | yes | no |
-| `matches_topic` — community identity alone is not topic relevance | yes | no |
+| `topic_focused` — community identity alone is not topic relevance | yes | **yes, since G1** |
 | `group_responses` (community attribution) | yes | no |
 
-Without `matches_topic`, a question about languages retrieves anything that
-merely mentions "Garo"; without the score cut, zero-scoring triples reach
-synthesis as evidence. Both push in the wrong direction for a project that
-accepts low recall to avoid confident wrong answers. **Investigation and a
-plan are owed before any code changes here** — `Neo4jRAGSkeleton.query` is
-also what Render serves, so this is not a Nectar-local edit.
+Without the topic filter, a question about languages retrieved anything that
+merely mentioned "Garo", and KNOWN_LIMITATIONS 27 recorded that turning into
+a refused question whose answer was its own top-ranked triple. **G1 closed
+that on 2026-10-28**: the filter is now the shared `rag.topic_focused`,
+applied on both paths, and `tools/compare_retrieval_paths.py` reports
+off-topic 27 -> 0 over the eight benchmark questions with the CSV column
+unchanged.
+
+The score cut is still CSV-only. It is left that way deliberately: the same
+harness measures zero-scoring triples at **0** on this corpus, before and
+after G1, so porting it would be untested code for no measured gain.
 
 *The data no longer differs.* **Superseded 2026-10-27.** This paragraph used
 to say AuraDB held 697 nodes / 715 relationships with 670 carrying no current

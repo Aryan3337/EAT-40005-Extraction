@@ -535,11 +535,12 @@ may keep accruing SU. Confirm with Nectar support before relying on either.
   `data/production_graph/*_kg_refined.csv` exactly. The unattributed
   relationships are gone. The remaining 12 relationships are the auth and
   chat-history graph (`User`, `Conversation`, `ChatMessage`).
-- **The four CSV-path precision filters.** `Neo4jRAGSkeleton.query` lacks
-  `filter_community_periods`, the `score > 0` cut, `matches_topic` and
-  `group_responses`, all of which `ConceptRetriever.retrieve` applies. The
-  deployed graph path is measurably less precise than the CSV path. Tracked
-  in `../../NECTAR_MIGRATION.md`.
+- **Two of the four CSV-path precision filters.** `Neo4jRAGSkeleton.query`
+  gained the topic filter and the `score > 0` cut in G1 on 2026-10-28, which
+  took off-topic evidence from 27 to 0 over the eight benchmark questions. It
+  still lacks `filter_community_periods` and `group_responses`. Tracked in
+  `../../NECTAR_MIGRATION.md`. **The deployed image predates G1** until the
+  API is rebuilt.
 - **Backend TTS and local translation.** Both need torch and multi-GB model
   files. `TTS_ENABLED` stays unset and `TRANSLATION_PROVIDER=llm`.
 - **HTTPS.** Port 80 only *as deployed*. The reason given here used to be

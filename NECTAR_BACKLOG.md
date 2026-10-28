@@ -292,7 +292,21 @@ collection for the whole suite, so that command ran **zero tests** and exited
 reverted on 15 Oct. `test_insert.py` no longer errors either; it does not need
 live Neo4j.
 
-## G1 — Port `matches_topic` to the graph path
+## G1 — Port the topic filter to the graph path
+
+**DONE 2026-10-28.** Landed as `rag.topic_focused`, shared by both retrieval
+paths, plus the `score > 0` cut. `tools/compare_retrieval_paths.py` reports
+**off-topic 27 → 0** with the `csv` column unchanged and `score 0` still 0.
+Tests in `tests/test_graph_topic_filter.py` (8, all three steps below).
+
+**One thing this does NOT establish.** The measurement is offline, over the
+112-triple CSV corpus, and it proves the junk is gone from the evidence
+block. Whether the gate now *answers* "What is the Garo population?" instead
+of refusing it needs the eight questions re-run against the deployed
+instance, which needs an API rebuild. Until then KNOWN_LIMITATIONS 27 stays
+open, narrowed to that one unverified sentence. **G2 is unblocked.**
+
+The original entry follows, because its measurements are the before-figures.
 
 **Blocks:** G2 · **Size:** 1–1.5 days · **Highest-value item in this file**
 
@@ -368,7 +382,21 @@ with no live driver. Regression-test both measured cases: the `RESIDENTS` triple
 on a language question, and the population question returning one triple.
 
 Re-run `python tools/compare_retrieval_paths.py` when done: **off-topic must
-reach 0** without the `csv` column dropping. `--top-k` overrides the default if
+reach 0** without the `csv` column dropping.
+
+**What the three steps became (2026-10-28).** Step 1's extraction was not
+kept pure in the end -- it was pure as a refactor, verified by the baseline
+staying at 27, and then the graph path's call changed the figure to 0. Step
+2's fallback is preserved: `topic_focused` returns its input unchanged when
+nothing matches, and a test asserts it. Step 3 went in as specified and is
+still not claimed as a win, but it is no longer unexercised -- two tests
+cover the two cases the rationale named, a `question`-only match and a
+`passage`-only match, both of which score 0 while satisfying the Cypher or
+the filter. The `question` field is commented at the Cypher as asked, not
+added to the RETURN. Tests went in a new `tests/test_graph_topic_filter.py`
+rather than `tests/test_rag_retrieval.py`: that file tests pure scoring
+helpers and has no driver scaffolding, and the filter's story is long enough
+to want its own docstring. `--top-k` overrides the default if
 `SYNTHESIS_EVIDENCE_LIMIT` ever changes; `--question` checks a single case.
 
 ## G2 — Guarded two-hop expansion
