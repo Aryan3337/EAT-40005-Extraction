@@ -1485,6 +1485,40 @@ do the Garo people speak?"). That table is load-bearing for retrieval --
 swap keeps it.
 
 
+### opus-mt, the Apache-2.0 option, measured 2026-10-28 -- fast, clean, and wrong
+
+`Helsinki-NLP/opus-mt-en-inc` and `opus-mt-inc-en`, **Apache-2.0 and
+ungated**, so no licence question and nothing to approve. 295 MB each
+against NLLB's 2.4 GB, and **0.7-1.9s per answer** against NLLB's 4-7s and
+`mistral:7b`'s 30-80s. Same five answers, same splitter, same beams.
+
+It is not accurate enough, and it fails on the faults this entry exists for:
+
+| | opus-mt | NLLB (beams) |
+|---|---|---|
+| "insufficient communication, poor sanitation, inadequate transportation" | `পর্যাপ্ত যোগাযোগ` (*adequate*), "unemployment" twice, and **sanitation replaced by a second transportation** | all three correct |
+| "worth noting that the health status is currently in good shape" | `এটা ঠিক না যে...` -- ***it is not right that*** the health is good | correct |
+| the quoted Page 1 sentence | "almost abolished" **gone**, "very few" became `বেশ কয়েকজন` (*quite a few*) | faithful |
+| `T. indica` / `S. cumini` | `টিডিকা`, `এস জিরির` | intact and in Latin |
+| chronic fever / asthma / vomiting | `দীর্ঘস্থায়ী জ্বালানী` (*chronic fuel*), `দামা`, `কাপড়` (*cloth*) | `দীর্ঘস্থায়ী জ্বর`, `হাঁপানি`, `বমি` |
+| "Garo" | `গেরিও`, `গারিও`, and **"Guerrero"** in question translation | correct |
+| `(Source: Page 1)` | dropped | kept |
+| "Sangsharek" | spelled three ways in one short answer | twice |
+
+**Why this is worse than it scores.** opus-mt reads fluently and states
+things the evidence does not. `mistral:7b` fails visibly -- a Bangla reader
+can see that `উত্তম রক্তান্তর সিস্টেম` is broken and distrust it. "It is not
+right that the community's health is good" reads perfectly well and inverts
+the source. For a project whose whole retrieval design prefers an honest
+refusal to a confident wrong answer, fluent-and-wrong is the worse failure.
+
+**Final ranking, all four engines measured on the same five answers:**
+**NLLB-600M (beam search) > `mistral:7b` > opus-mt > m2m100-418M.** NLLB is
+the only one that keeps negations, quoted text, provenance and species
+names. Its own residual faults are transliterated binomials and a proper
+noun spelled two ways.
+
+
 ### A cheaper fault found while measuring this
 
 The three Hindi refusals that render `मujhe` are not a typo in a static
