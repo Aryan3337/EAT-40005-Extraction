@@ -1413,6 +1413,78 @@ gated on `provider == "llm"`, so they would silently stop running -- that gate
 has to widen in the same commit.
 
 
+### Corrected, same day: three of those faults were ours, not NLLB's
+
+The run above went through `translate_local`, and `translate_local` decodes
+**greedily** -- `model.generate(..., do_sample=False)` with no `num_beams`
+(`local_translation.py:103`) -- and splits sentences with the `_chunks`
+regex that breaks after `T.`. Re-run with `num_beams=5` and an
+abbreviation-safe splitter, same model, same weights, same box:
+
+| fault blamed on NLLB above | under beam search |
+|---|---|
+| "insufficient communication" -> *adequate*, "poor sanitation" -> *healthcare* | **correct**: `অপর্যাপ্ত যোগাযোগ, দুর্বল স্যানিটেশন এবং অপর্যাপ্ত পরিবহন ব্যবস্থা` |
+| `asthma` -> `হাঁস`, a duck | **correct**: `হাঁপানি` |
+| Hindi quoted sentence read as *few people abolish it* | **correct**: `बहुत कम गारो लोगों द्वारा लगभग समाप्त और अभ्यास किया जाता है` |
+| "the seeds of T. indica and S. cumini" shredded | **intact, and left in Latin**: `T. indica এবং S. cumini এর বীজ` |
+
+So **the entry above overstated NLLB's faults.** What survives as genuinely
+the model's: scientific binomials are transliterated out of Latin script
+(`জাস্টিসিয়া অ্যাড্যাটোডা`), and a proper noun can be spelled two ways inside
+one answer (`সঙ্গশেরক` then `স্যাংশারেক`). Everything else on that list was
+our decoding configuration. Numbers, citations (`উৎসঃ পৃষ্ঠা 1`), `T. indica`
+and `Mandai TMPs` all survive, and the quoted Page 1 sentence keeps
+"almost abolished".
+
+**Two one-line changes carry all of that**, and neither affects production
+today because `local` is not the deployed provider: pass `num_beams=5` in
+`local_translation.py`'s `generate`, and change `_chunks`'s split from
+`(?<=[.!?।])\s+` to `(?<!\b[A-Z]\.)(?<=[.!?।])\s+`. Beam search was not
+slower here -- 4-7s per answer against 2.6-26s greedy.
+
+### The licence-clean alternatives, measured 2026-10-28
+
+**IndicTrans2 is MIT and unavailable.** The model card for
+`ai4bharat/indictrans2-en-indic-dist-200M` states `license: mit`, and every
+IndicTrans2 repo tried -- `en-indic-dist-200M`, `en-indic-1B` -- returns
+`GatedRepoError` (HTTP 401): *"Access to model ... is restricted. You must
+have access to it and be authenticated."* Gating is an access control
+separate from the licence, and lifting it is a human action: a HuggingFace
+account, an access request, and a token. Two further integration costs if it
+is chosen: it is **direction-specific**, so en->indic and indic->en are
+separate checkpoints and both must be held, and it needs
+`IndicTransToolkit`'s `IndicProcessor` plus `trust_remote_code=True`, so it
+will not load through the current `local_translation.py` without work.
+
+**`facebook/m2m100_418M` is MIT, ungated, and not good enough.** Tested on
+the same five answers with the same splitter and beams. It is worse than
+NLLB on exactly what matters:
+
+- `plant species` and `formulations` both became `ফাংশন`, *function*
+- `chronic fever` -> `ক্রোনিক ত্বক`, *chronic skin*
+- `vomiting` -> `ভ্রমণ`, *travel*; `nose bleed` -> `নাসা রক্ত`, *NASA blood*
+- `illiteracy`, `insufficient`, `poor` and `inadequate` all collapsed into
+  one word, `অস্বাভাবিক` (*abnormal*)
+- `land ownership` -> `ভূমিকা মালিকত্ব`, *role ownership*
+- `औषधीय formulationsতে` -- **Devanagari spliced into a Bangla sentence**,
+  the same mixed-script fault as `मujhe`
+- the `(Source: Page 1)` citation is dropped entirely
+
+So the ranking on this evidence is **NLLB (beams) > mistral:7b > m2m100**, and
+the one candidate that is both MIT and purpose-built for Bengali and Hindi
+cannot be evaluated without someone requesting access.
+
+**One thing both raw models get wrong and the existing wrapper fixes.**
+Translating the questions without `_prepare_names`, NLLB produced "Where do
+the **Garours** live?" and "the traditional religion of the **Garoths**",
+and m2m100 produced "Which language does **Gary** speak?" and "Where are the
+**Garros** living?". Through `translate_local`, which applies the
+Garo/Mandi name table, all three questions came back correct ("What language
+do the Garo people speak?"). That table is load-bearing for retrieval --
+`Garo` is the single most important keyword in this graph -- and any engine
+swap keeps it.
+
+
 ### A cheaper fault found while measuring this
 
 The three Hindi refusals that render `मujhe` are not a typo in a static
