@@ -63,6 +63,11 @@ services:
       # paper and the whole review queue would then be destroyed by
       # `docker compose down`. Point it at the bind mount below instead.
       - UPLOADS_DIR=/app/uploads
+      # The NLLB weights, mounted below. local_translation.py loads with
+      # local_files_only=True and will not download at runtime, so a wrong
+      # or missing path is a translation failure rather than a silent
+      # fetch -- the answer then degrades to English behind a note.
+      - LOCAL_TRANSLATION_MODEL=/app/models/nllb-600m
     # No command: override. Dockerfile.serve's CMD is already
     #   python -u rag.py --serve --neo4j --host 0.0.0.0
     # which is exactly what the Neo4j/AuraDB path needs.
@@ -91,6 +96,10 @@ services:
       # filter can fail, which is the only thing standing between a crash at
       # minute 50 and losing the whole hour of LLM time.
       - /mnt/data/extract:/app/output
+      # 2.4GB of NLLB weights, read-only: the API never writes here, and
+      # they live on the volume so an image rebuild does not re-download
+      # them (nothing would -- local_files_only=True refuses).
+      - /mnt/data/nllb:/app/models:ro
     restart: unless-stopped
 
   web:

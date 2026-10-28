@@ -13,19 +13,33 @@
 # never baked into the image -- set them as environment variables in the
 # hosting platform's dashboard, the same as --env-file does locally.
 #
-# torch and transformers are deliberately absent. local_tts.py and
-# local_translation.py import them lazily inside functions, so the image
-# starts and English retrieval works without them. The cost is that backend
-# TTS (needs TTS_ENABLED=1) and TRANSLATION_PROVIDER=local are unavailable
-# here; both also want multi-GB model files that local_files_only=True
-# refuses to download at runtime anyway. Set TRANSLATION_PROVIDER to llm so
-# the default "local" path is never taken.
+# torch and transformers ARE here as of 2026-10-28, and the reason they were
+# not is worth keeping: they were excluded for a free-tier host's build
+# minutes and image size. This runs on Nectar now, and the measurement in
+# KNOWN_LIMITATIONS 29 made the case -- mistral:7b, a chat model, was doing
+# the translating and all five substantive Bangla answers were materially
+# wrong, where NLLB-200-600M keeps negations, quoted text, provenance and
+# species names and runs in 4-7s rather than 30-80s.
+#
+# Only the weights are absent from the image: 2.4GB of them live on the
+# volume and compose mounts them read-only at /app/models. local_tts.py
+# still needs TTS_ENABLED=1 and its own model files, which are not here.
 FROM python:3.11-slim
 
 WORKDIR /app
 
 COPY requirements-serve.txt .
 RUN pip install --no-cache-dir -r requirements-serve.txt
+
+# Translation dependencies. torch comes from the CPU wheel index on
+# purpose: the default PyPI build carries CUDA libraries that are several
+# gigabytes, and this instance has no GPU. The second install then finds
+# torch already satisfied and adds only transformers and sentencepiece,
+# which keeps requirements-translation.txt the single source of versions.
+COPY requirements-translation.txt .
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+        "torch>=2.6,<3" \
+ && pip install --no-cache-dir -r requirements-translation.txt
 
 # subject_specificity.py sys.exit(1)s without this, and main.py imports it,
 # so extraction cannot run unless the model is in the image. Pinned to the

@@ -711,6 +711,50 @@ def test_a_real_answer_is_still_translated(monkeypatch):
     assert len(prompts) == 3
 
 
+def test_the_completeness_guard_runs_on_the_local_provider(monkeypatch):
+    """The guards were ported gated on `provider == "llm"`. Switching the
+    deployment to the local NLLB path would have silently stopped them, so
+    the gate names every provider that needs them rather than the one that
+    happened to be deployed when they were written. `online` and `auto` are
+    excluded on purpose: online_translate applies them internally."""
+    monkeypatch.setenv("TRANSLATION_PROVIDER", "local")
+    english = (
+        "The Garo people primarily reside in the Garo Hills, Meghalaya, "
+        "India, and in Mymensingh, Bangladesh."
+    )
+    monkeypatch.setattr("local_translation.translate_local",
+                        lambda text, source, target: english)
+
+    assert _synth().translate_answer(english, "bn") == ""
+
+
+def test_numbers_are_restored_on_the_local_provider(monkeypatch):
+    monkeypatch.setenv("TRANSLATION_PROVIDER", "local")
+    monkeypatch.setattr("local_translation.translate_local",
+                        lambda text, source, target: "গাড়ো জনসংখ্যা ৩০০, ০০০, ০০০ জন।")
+
+    translated = _synth().translate_answer(
+        "The Garo population is 3 million people.", "bn"
+    )
+
+    assert "৩০ লাখ" in translated
+
+
+def test_the_online_path_is_not_guarded_twice(monkeypatch):
+    """online_translate already runs both guards inside itself, so the
+    provider check must leave that path alone."""
+    monkeypatch.setenv("TRANSLATION_PROVIDER", "online")
+    monkeypatch.setattr(rag, "online_translate",
+                        lambda text, source, target: "গারো জাতি।")
+
+    # A five-word source against a two-word translation: the completeness
+    # guard would reject this if it ran here.
+    assert _synth().translate_answer(
+        "The Garo people live in Mymensingh, Bangladesh, and in Meghalaya.",
+        "bn",
+    ) == "গারো জাতি।"
+
+
 # ---------------------------------------------------------------- Google path
 
 def test_local_is_the_default_provider(monkeypatch):
@@ -1285,8 +1329,14 @@ def test_default_local_provider_never_uses_online_or_ollama(monkeypatch, success
     calls = []
 
     def local(text, source, target):
+        # Language-aware since 2026-10-28: the completeness guard now runs on
+        # the local provider too, and it is right to reject an all-English
+        # string offered as a Hindi answer. The question direction still
+        # returns English, because that is what bn->en produces.
         calls.append((source, target))
-        return "translated test" if success else ""
+        if not success:
+            return ""
+        return "translated test" if target == "en" else "अनूदित उत्तर"
 
     def forbidden(*args, **kwargs):
         pytest.fail("Local translation must not call an online or Ollama translator")
@@ -1297,7 +1347,7 @@ def test_default_local_provider_never_uses_online_or_ollama(monkeypatch, success
     monkeypatch.setattr(synth, "_llm_translate", forbidden)
     question = "পরীক্ষার প্রশ্ন"
     assert synth.translate_question(question, "bn") == ("translated test" if success else question)
-    assert synth.translate_answer("Fictional answer.", "hi") == ("translated test" if success else "")
+    assert synth.translate_answer("Fictional answer.", "hi") == ("अनूदित उत्तर" if success else "")
     assert calls == [("bn", "en"), ("en", "hi")]
 
 

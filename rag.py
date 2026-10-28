@@ -1053,6 +1053,15 @@ def _is_plain_english(text: str) -> bool:
 # answered a single request with 429 Too Many Requests on a team laptop on
 # 2026-10-08, which is why MyMemory backs it up.
 TRANSLATION_PROVIDERS = {"local", "auto", "online", "google", "llm"}
+
+# Providers whose output this file has to guard itself. `online` and
+# `auto` are absent on purpose: online_translate runs
+# translation_incomplete and restore_numbers inside itself, so guarding
+# them again here would be doing the work twice. Written as a set rather
+# than `== "llm"` because the guards were ported while llm happened to be
+# deployed, and a switch to local would otherwise have silently dropped
+# them.
+_GUARD_LOCALLY = {"llm", "local"}
 _GOOGLE_MAX_CHARS = 4500  # Google's per-request limit is 5000.
 # After Google refuses with 429, skip it for this long instead of paying a
 # failed round trip on every question.
@@ -1733,7 +1742,7 @@ Translation:"""
         # being "mostly English".
         if (
             translated
-            and provider == "llm"
+            and provider in _GUARD_LOCALLY
             and translation_incomplete(answer, translated, language)
         ):
             # Empty, half-missing, or still mostly English. Returning ""
@@ -1745,7 +1754,7 @@ Translation:"""
                 "incomplete or untranslated"
             )
             translated = ""
-        if translated and provider == "llm":
+        if translated and provider in _GUARD_LOCALLY:
             translated = restore_numbers(answer, translated, language)
         if translated and language == "bn":
             translated = fix_bangla_spelling(translated)
