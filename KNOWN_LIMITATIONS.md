@@ -1218,6 +1218,33 @@ local string comparisons and could gate `llm` output today.
 `google_translate` for unknown words (`rag.py:1305`) -- though its known-word
 dictionary is.
 
+**Both portable guards are now PORTED (`7a251fe`), and the honest accounting
+is that they caught nothing in the sample that motivated them.** Replayed
+over the twenty real captured translations, including two from production:
+nine appendices stripped, **zero translations rejected, zero amounts
+corrected**. They are insurance, not a fix. What they do catch is a failure
+the sample lacked and the path allows: the model returning its input, which
+until now came back non-empty, was accepted as a translation, and reached the
+reader labelled as Bangla -- precisely what `_ENGLISH_ONLY_NOTES` exists to
+prevent -- and a generation truncated by `TRANSLATED_ANSWER_MAX_TOKENS`,
+where half an answer was served as the whole of one.
+
+**One ordering constraint came out of it, with a thin margin.**
+`strip_translation_appendix` has to run before the completeness check: the
+captured bn/old answer for "where do the Garo live" -- sound Bangla followed
+by a 66-word English back-translation -- scores a Latin-word ratio of
+**0.3952** against the detector's 0.4 threshold. A slightly longer appendix
+would have had a good translation thrown away for being "mostly English".
+A test fails if the two are swapped.
+
+Porting it also exposed a test that had been passing for the wrong reason:
+`test_llm_mode_still_uses_the_local_model_and_fixes_names` gave the gate a
+synthesis response with no `RELEVANT:` marker, so the English answer was the
+refusal message and the test was translating *that*. Refusals themselves are
+safe -- 20 English words against 22 Bangla and 25 Hindi clears the guard --
+and that is pinned now, because a lower threshold would start replacing
+refusals with English behind a note.
+
 
 ### Measured again 2026-10-28, later: the prompt is not the fix, the strip is
 
