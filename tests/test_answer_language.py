@@ -632,6 +632,85 @@ def test_a_real_production_translation_survives_both_guards(monkeypatch):
     ) == real
 
 
+# --------------------------------------------- Refusals are not translated
+#
+# KNOWN_LIMITATIONS 29 recorded all three Hindi refusals rendering `मujhe`
+# -- Latin letters spliced into Devanagari mid-word. That is not a typo in
+# the file: `_NO_EVIDENCE_MESSAGES["hi"]` is clean Devanagari and was never
+# being sent. `answer_translations` computed the ENGLISH refusal and put it
+# through the model like any other answer, so what a reader saw was
+# mistral:7b translating "I could not find enough connected evidence".
+#
+# Every refusal path returns the same English string -- no triples at all
+# (`rag.py:1825`), the relevance gate refusing (`NO_GROUNDED_ANSWER_MESSAGE`,
+# `rag.py:1902`), and a fallback with nothing formattable (`rag.py:2058`) --
+# so one comparison catches all three.
+
+
+def _count_llm_calls(monkeypatch, response="RELEVANT: yes\nAn answer."):
+    prompts = []
+
+    def fake_post(url, json, timeout=None, headers=None):
+        prompts.append(json["prompt"])
+        return _Response(response)
+
+    monkeypatch.setattr(rag.requests, "post", fake_post)
+    return prompts
+
+
+def test_a_refusal_reaches_the_reader_in_their_own_script(monkeypatch):
+    """The project's own Bangla and Hindi refusals, served as written."""
+    _count_llm_calls(monkeypatch)
+
+    translations = _synth().answer_translations(
+        "Where do the Garo live?", [], selected_language="bn"
+    )
+
+    assert translations["bn"] == rag._NO_EVIDENCE_MESSAGES["bn"]
+    assert translations["hi"] == rag._NO_EVIDENCE_MESSAGES["hi"]
+    assert translations["en"] == rag._NO_EVIDENCE_MESSAGES["en"]
+
+
+def test_a_refusal_costs_no_model_calls(monkeypatch):
+    """The cheapest win against limitation 28: a refusal that already knows
+    its own wording in all three languages has nothing to generate."""
+    prompts = _count_llm_calls(monkeypatch)
+
+    _synth().answer_translations(
+        "Where do the Garo live?", [], selected_language="bn"
+    )
+
+    assert prompts == []
+
+
+def test_a_gate_refusal_is_served_statically_too(monkeypatch):
+    """Evidence was retrieved and the gate judged it irrelevant. The answer
+    is still a refusal, so it is still not translated -- only the one
+    synthesis call should happen."""
+    prompts = _count_llm_calls(monkeypatch, response="RELEVANT: no")
+
+    translations = _synth().answer_translations(
+        "What is the Garo population?", [_triple()], selected_language="hi"
+    )
+
+    assert translations["hi"] == rag._NO_EVIDENCE_MESSAGES["hi"]
+    assert len(prompts) == 1
+
+
+def test_a_real_answer_is_still_translated(monkeypatch):
+    """The guard that keeps the one above honest: a grounded answer must
+    still go through the model for each language."""
+    prompts = _count_llm_calls(monkeypatch)
+
+    translations = _synth().answer_translations(
+        "Where do the Garo live?", [_triple()], selected_language="bn"
+    )
+
+    assert translations["bn"] != rag._NO_EVIDENCE_MESSAGES["bn"]
+    # one synthesis, plus one translation per language
+    assert len(prompts) == 3
+
+
 # ---------------------------------------------------------------- Google path
 
 def test_local_is_the_default_provider(monkeypatch):

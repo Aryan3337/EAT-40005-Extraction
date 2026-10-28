@@ -1765,6 +1765,31 @@ Translation:"""
         english_answer = self.answer(english_question, triples, "en")
         translations = {"en": english_answer}
 
+        # A refusal already knows its own wording in every language this
+        # project answers in, so it is served rather than generated.
+        #
+        # KNOWN_LIMITATIONS 29 recorded all three Hindi refusals rendering
+        # `मujhe`, Latin letters spliced into Devanagari mid-word. That was
+        # never a typo in the file: _NO_EVIDENCE_MESSAGES["hi"] is clean, and
+        # was never sent. This method computed the ENGLISH refusal and put it
+        # through the model like any other answer, so a reader got mistral:7b
+        # translating "I could not find enough connected evidence" -- the one
+        # sentence whose translation the project already owns.
+        #
+        # Every refusal path returns this exact English string: no triples
+        # (`_no_evidence_message`), the relevance gate declining
+        # (NO_GROUNDED_ANSWER_MESSAGE), and a fallback with nothing
+        # formattable. One comparison covers all three.
+        #
+        # It also takes two generations off every refusal, which is the
+        # cheapest thing available against the latency in §28, and makes a
+        # refusal deterministic -- the same question cannot refuse in three
+        # different wordings on three different days.
+        if english_answer == _NO_EVIDENCE_MESSAGES[DEFAULT_LANGUAGE]:
+            for language in _NO_EVIDENCE_MESSAGES:
+                translations[language] = _NO_EVIDENCE_MESSAGES[language]
+            return translations
+
         def translate(language: str) -> Tuple[str, str]:
             result = self.translate_answer(english_answer, language)
             return language, result or (

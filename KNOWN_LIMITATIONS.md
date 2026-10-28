@@ -1349,8 +1349,30 @@ localized refusals sitting in the file are reachable only through
 
 Serving the static string when there is no evidence would fix the spliced
 script, make refusals deterministic, and remove two LLM generations from
-every refusal -- the cheapest latency win available against §28. Not done:
-it is a behaviour change on the refusal path, which §27 is already about.
+every refusal -- the cheapest latency win available against §28.
+
+**DONE 2026-10-28.** `answer_translations` now compares the English answer
+with `_NO_EVIDENCE_MESSAGES["en"]` and, on a match, serves the project's own
+Bangla and Hindi refusals instead of generating anything. All three refusal
+paths return that one English string -- no triples, the relevance gate
+declining (`NO_GROUNDED_ANSWER_MESSAGE`), and a fallback with nothing
+formattable -- so one comparison covers them all, which a test for the gate
+case pins separately from the no-evidence case. A refusal now costs **zero**
+model calls where it cost two, and is deterministic: the same question
+cannot refuse in three different wordings on three different days.
+
+**A trap found next door, not fixed.** There are two refusal tables.
+`_NO_EVIDENCE_MESSAGES` (module level) holds `bn`, `en`, `hi` -- the
+languages actually answered in. `_no_evidence_message`'s own dict
+(`rag.py:2069`) holds `en`, `es`, `fr`, `hi`, `zh`: it still carries the
+three dropped languages, it has **no `bn` at all**, and its Hindi wording
+*differs* from the module table's. Nothing reaches the divergence today --
+`_no_evidence_message` is only ever called with `en`, because
+`_fallback_answer` is only called with `DEFAULT_LANGUAGE` -- but
+`_no_evidence_message("bn")` would raise `KeyError`, and an editor who fixes
+the wording in one table will not change the other. Worth collapsing into
+one table, together with the stale `es`/`fr`/`zh` tests that still assert
+against it.
 
 
 ## 30. A failed translation threw away a good answer -- FIXED
