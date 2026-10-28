@@ -1316,6 +1316,20 @@ evidence withheld -- but it is a smaller fault than invention, and the
 Britannica and Ethnopharmacology citations above are the real examples of
 invention.
 
+**And the expansion is not only the translator's.** One observation, from the
+post-deploy check on 2026-10-28: asked the same question again, the
+**English** answer itself read "Justicia adhatoda, Plumbago zeylanica,
+Evolvulus nummularius, and **Terminalia** indica" and "the seeds of
+**Terminalia** indica and Syzygium cumini". The evidence supplies `T.
+indica`; in this context that is Tamarindus indica, the tamarind, and
+Terminalia is a different genus. So the synthesis step expands the
+abbreviation too, nondeterministically -- the earlier run of the same
+question left it as `T. indica` -- and picked a genus the evidence never
+named. That is worse than the translation doing it, because the English
+answer is the grounded deliverable everything else is checked against. One
+observation, not a measurement; it wants its own look rather than being
+folded into this entry.
+
 **Still open, and still Marcus's call: options 1, 4 and 5.** The judgement at
 the top of this section is unchanged by today's work -- the Bangla *body* is
 not fit to present as the primary deliverable, and no prompt wording will
