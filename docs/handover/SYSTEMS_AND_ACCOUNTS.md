@@ -217,11 +217,15 @@ Admin/owner access after handover:  __________________________________
 
    The runbook's deploy step says `-b dev` for the same reason.
 
-Current state of `dev` as handed over: local, `origin/dev` and the **running
-server are all on `1692bc8`**, suite **577 passed / 0 failed** plus **103
-Flutter tests**. There is no split to reconcile — a condition worth
-re-checking rather than assuming, because it has been untrue twice in this
-project's history and both times something looked deployed that was not:
+Current state of `dev` as handed over: local, `origin/dev` and the running
+server are **all on the same commit**, with the API image built from it.
+Suite **577 passed / 0 failed** plus **103 Flutter tests**.
+
+No hash is written here on purpose — it would be stale by the next commit,
+and a stale hash is worse than none because it invites a comparison against
+the wrong number. Check it instead, and re-check rather than assume: this
+has been untrue twice in the project's history, and both times something
+looked deployed that was not.
 
 ```bash
 # on the server
