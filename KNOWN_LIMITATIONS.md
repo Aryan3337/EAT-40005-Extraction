@@ -945,7 +945,17 @@ one line of language detection and is no longer urgent. The urgent item is
 §29's body quality.
 
 
-## 27. The relevance gate refuses a question whose answer is the top-ranked triple
+## 27. NOT A DEFECT -- the refused "Garo population" answer was never in the corpus
+
+> **RESOLVED 2026-10-29 by live measurement, and resolved against this
+> entry's own premise.** G1 was deployed and the question re-asked. The
+> dilution is gone exactly as predicted (ten triples became one), and the
+> gate **still refuses** -- because the triple this entry called "the
+> answer" is not the answer. It is the total population of *all* ethnic
+> communities in Bangladesh. The Garo population is not in the corpus, so
+> refusing is the only correct behaviour. Jump to **The live result** below;
+> everything before it is the superseded theory, kept because the reasoning
+> is instructive about how a triple can look like an answer and not be one.
 
 **Measured on the live Nectar deployment, 2026-10-27**, running the eight
 benchmark questions from `tools/compare_retrieval_paths.py` through
@@ -956,7 +966,7 @@ connected evidence to answer that question" -- while the evidence list
 returned alongside that refusal begins:
 
 ```
-Population_Census_2022 -[POPULATION]-> 1,650,159      <-- the answer, ranked 1st
+Population_Census_2022 -[POPULATION]-> 1,650,159      <-- NOT the answer; see below
 Garo_People           -[BILINGUAL]-> Garo_Language
 GaroCommunity         -[LANGUAGE_USED]-> Garo
 GaroCommunity         -[HAS_LANGUAGE_MAINTENANCE]-> GaroLanguage
@@ -970,6 +980,9 @@ ModernCivilization    -[AFFECTS]-> GaroCommunity
 
 The fact is in the corpus, retrieval found it, and ranked it first. The
 system still said it could not answer.
+
+> **This paragraph is the mistake.** The fact is *not* in the corpus. See
+> **The live result**.
 
 **This is the graph-path precision gap turning into a recall failure, and
 it changes how that gap should be argued for.** Nine of those ten triples
@@ -996,15 +1009,139 @@ eight questions with the CSV column unchanged. For this question the graph
 path now returns the POPULATION triple **alone** where it returned that
 triple plus nine others.
 
-**What is NOT yet verified is the sentence this entry actually cares
-about.** The measurement above is offline, over the 112-triple CSV corpus,
-and it proves the junk is gone from the evidence block. It does **not**
-prove the gate now answers: that needs the eight questions re-run against
-the deployed instance, which needs an API rebuild and deploy. Until someone
-does that, the honest claim is "the dilution this entry blamed is gone",
-not "the false refusal is fixed". The theory that dilution caused the
-refusal remains a theory -- a well-supported one, but the deployed system
-has not been asked.
+### The live result, 2026-10-29 -- the theory was wrong and so was the premise
+
+G1 was deployed to the instance (`76709d3`, API image rebuilt, verified by
+hashing `/app/rag.py` in the running container against the checkout) and the
+identical request was sent before and after. Both ran through
+`https://136.186.108.232.sslip.io/query` with `language=en`.
+
+| | triples returned | top triple | answer |
+|---|---|---|---|
+| before, `1c3c333` | **10** | `Population_Census_2022 -[POPULATION]-> 1,650,159` | refusal |
+| after, `76709d3` | **1** | the same triple, now alone | **refusal** |
+
+**G1 did exactly what it promised and it changed nothing about the
+refusal.** The nine off-topic triples are gone from the live evidence block
+-- the offline 27 -> 0 measurement holds in production -- and the gate
+refuses a single, perfectly on-topic triple just as it refused ten. So
+dilution was never the mechanism. The API log names the real one:
+
+```
+Answer synthesis gate refused: the model judged the evidence irrelevant (RELEVANT: no).
+```
+
+The model was reached, saw one triple, and judged it irrelevant.
+
+**It was right.** The `sentence_ref` the model actually reads, which this
+entry never quoted, is:
+
+```
+In the Population Census of (2022), the number of people belonging to
+ethnic communities living in Bangladesh is only 1,650,159
+```
+
+That is the total for **every** ethnic community in Bangladesh, not the
+Garo. The Garo are one such community among many, and in Bangladesh number
+on the order of a hundred thousand. To answer "What is the Garo population?"
+from this triple the model would have to assert a nationwide
+ethnic-minority total as a single community's figure -- the exact confident
+bridging the precision-over-recall posture exists to prevent.
+
+Confirmed against the production graph: a Cypher sweep for every
+relationship whose type or `sentence_ref` contains "populat" returns
+**exactly one row**, the triple above. There is no Garo population figure
+in the graph at all. **The system cannot answer this question, and refusing
+is the only correct response.** This entry is closed as not-a-defect.
+
+**What this costs and what it buys.** G1 keeps its value on the evidence it
+was actually measured against -- nine pieces of junk no longer reach the
+model or the "View verified sources" list, and the question now answers in
+6s instead of 23s because there is less to translate. What it loses is the
+claim that it fixes refusals. Nothing yet shows the gate refusing a
+question the corpus can answer. If such a case exists it has not been
+found, and this entry is no longer evidence for it.
+
+### All eight questions, same run, 2026-10-29
+
+| | time | triples | verdict |
+|---|---|---|---|
+| What languages do the Garo speak? | 62s | 10 | answered |
+| What is the traditional religion of the Garo? | 34s | 10 | answered |
+| Where do the Garo live? | 15s | 3 | answered |
+| What medicinal plants are used? | 280s | 10 | answered |
+| How has Garo livelihood changed? | 118s | 8 | refused, correctly |
+| What is the Garo population? | 40s | 1 | refused, correctly |
+| Tell me about matrilineal inheritance | 61s | 5 | answered |
+| What happens during antepartum care? | 7s | 1 | refused, correctly |
+
+**5 answered, 3 refused, 0 non-200.** The 2026-10-27 run was 4 answered, 3
+refused and **one 504**. The 504 is gone, but credit it to `4f8a6b6`
+(nginx `proxy_read_timeout` 180s -> 620s, deployed 2026-10-28) and to NLLB
+being faster than `mistral:7b` -- not to G1. The question that used to hit
+the ceiling now takes 280s, which would still have 504'd under the old
+180s limit. **All three refusals are correct** and must not be "fixed" by
+loosening the gate.
+
+**Only the population question has a before/after pair.** The other seven
+were measured after the deploy only, so no delta is claimed for them.
+
+### The "off-topic 27 -> 0" figure means less than it sounds like
+
+This matters more than anything else in this entry, because two documents
+lean on that number.
+
+`tools/compare_retrieval_paths.py:155` defines off-topic as:
+
+```python
+kept_ids  = {identity(t) for t in kept}        # kept = the CSV path's output
+off_topic = [t for t in found if identity(t) not in kept_ids]
+```
+
+**It is a divergence metric between the two retrieval paths, not a
+judgement of topicality.** Before G1 the graph path had no topic filter and
+the CSV path did, so they disagreed on 27 triples. After G1 both call the
+same `rag.topic_focused`, so they agree, so the count is **0 by
+construction**. G1 achieved exactly what that measures -- path parity --
+and that is a real and worthwhile result. It is not a claim that off-topic
+evidence stopped reaching the model, and it was never evidence for one.
+
+The live run shows plainly off-topic evidence still arriving:
+
+```
+"What is the traditional religion of the Garo?"  (10 triples)
+   TraditionalGaroHouses -[HAVE_PROPERTY]-> bamboo floor
+   Allopathic_Medicine   -[CONTRASTS_WITH]-> Traditional_Medicine
+   Matrilineal_Rituals   -[VARY]-> Frequency_and_Significance
+
+"What happens during antepartum care?"           (1 triple, the only one)
+   BritishAuthorities -[HAD_INTEREST_IN]-> NaturalResources
+
+"Where do the Garo live?"                        (3 triples)
+   MandiLanguage   -[HAS_RELIGIOUS_SCRIPT]-> Achik_Language
+   YoungGeneration -[ARE_MORE_INVOLVED_THAN]-> OldGeneration
+```
+
+`topic_focused` is a keyword-overlap filter, so "traditional" pulls in
+traditional houses and traditional medicine for a religion question. That
+is the same stemming/overlap weakness `rag.py` already documents in the
+comment above `SYNTHESIS_EVIDENCE_LIMIT`, and closing it is G-track work
+beyond G1. **When quoting G1's result, say "the two retrieval paths now
+agree", not "off-topic evidence is gone".**
+
+**The real defect this exposed is in extraction, not the gate.** The triple
+is stored as `Population_Census_2022 -[POPULATION]-> 1,650,159`: the
+subject names the census and the object names the number, and the scope
+that gives the number its meaning -- *ethnic communities living in
+Bangladesh* -- survives only in `sentence_ref`. Read as a triple it is
+indistinguishable from a Garo population fact, which is why the keyword
+ranker scores it first for a Garo question and why this entry was written
+claiming it was the answer. **A human reading the triple list made exactly
+the error the gate declined to make.** That belongs with limitation 18's
+finding that a usable-*looking* triple was wrong: the lesson is that triple
+subjects drop qualifying scope, and neither a ranker nor a reader can
+recover it without opening `sentence_ref`. Logged as backlog work, not
+fixed here.
 
 **Not every refusal is this bug.** Of three refusals in the same run, two
 were correct and should stay: *"How has Garo livelihood changed?"*
@@ -1679,3 +1816,70 @@ authentication at all**, but its response carries no `language` and no
 `translations` keys -- it serves a build from before answer translation
 existed and cannot emit that error string. See
 `NECTAR_IMPLEMENTATION_PLAN.md` M3.
+
+
+## 31. The first request after an idle gap fails -- 503 on sign-in, 502 on a query
+
+**Found 2026-10-29** while setting up the G1 verification, on the instance
+still running `1c3c333` -- so this is longstanding, not anything G1 did.
+Three requests in a row, same payloads, no code change between them:
+
+```
+POST /auth/register -> 503   ServiceUnavailable: Unable to retrieve routing information
+POST /auth/register -> 503   SessionExpired: Failed to read from defunct connection
+POST /auth/register -> 201   (succeeded, ~3s later)
+POST /query         -> 502   SessionExpired: Failed to read from defunct connection
+```
+
+Underneath each one, from the API log:
+
+```
+<CONNECTION> error: Failed to read from defunct connection
+IPv4Address(('p-mt-...neo4j.io', 7687)): TimeoutError('The read operation timed out')
+```
+
+**A user meets this as "the site is broken", then it works when they try
+again.** Sign-in returns "Authentication service unavailable." and a
+question returns a bare 502 from nginx. Retrying immediately succeeds,
+which is also why it has probably been dismissed as flakiness until now.
+
+**Root cause, read out of the installed driver (neo4j 6.4.1) rather than
+guessed.** Two defaults combine with how this code calls the driver:
+
+| | |
+|---|---|
+| `neo4j/_sync/config.py:51` | `liveness_check_timeout = None` -- the pool **never checks a pooled connection is alive** before handing it out |
+| `neo4j/_sync/config.py:45` | `max_connection_lifetime = 3600` -- so it will reuse a socket idle for up to an hour |
+
+`auth_store.py:25` and `rag.py:793` both construct their driver as
+`GraphDatabase.driver(URI, auth=...)` with **no pool configuration**, so
+both defaults apply. AuraDB (or the NAT on the path out of Nectar) drops
+idle TCP well inside 3600s, so after any quiet period every connection in
+the pool is dead, and the pool hands one out without looking.
+
+That alone would be survivable if anything retried. Nothing does:
+**43 production call sites use unmanaged `session.run()`**, which the driver
+does not retry. `SessionExpired` and `ServiceUnavailable` are precisely the
+two classes the driver treats as retryable in a *managed* transaction, so
+the error is one the driver is built to absorb and we have opted out of
+absorbing. The only managed transaction in the repo is
+`neo4j_loader/insert.py:91` (`session.execute_write`), in the offline
+loader -- the API has none.
+
+**The fix, cheapest first.** Not applied: this was found during a deploy
+authorised for the G1 verification alone, and changing connection
+behaviour in the same rebuild would have confounded that measurement.
+
+1. Pass `liveness_check_timeout` (e.g. 10s) to both drivers. **Two lines,
+   no call-site changes.** The pool then pings any connection idle longer
+   than that and silently replaces a dead one. This removes the
+   user-visible fault.
+2. Convert the API's `session.run()` call sites to
+   `execute_read`/`execute_write`. This is the documented pattern and the
+   real robustness fix, but it is 43 call sites and wants its own testing.
+
+(1) is a sensible thing to ship on its own. (2) is backlog.
+
+**Do not "fix" this by raising a timeout or adding a retry loop in the HTTP
+handler.** The connection is dead, not slow -- waiting longer cannot help,
+and a handler-level retry duplicates machinery the driver already has.

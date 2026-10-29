@@ -15,6 +15,7 @@ tracks, independent of each other and of the deployment:
 E1 ──> E2 ──> E3 ──> E4 ──> E5     needs a running instance (M2)
 G1 ──> G2                           needs nothing
 G3 ──> G4                           needs nothing
+G5                                  needs nothing; measure first
 T1..T5                              translation; T1 needs only a Bangla speaker
 ```
 
@@ -299,12 +300,37 @@ paths, plus the `score > 0` cut. `tools/compare_retrieval_paths.py` reports
 **off-topic 27 → 0** with the `csv` column unchanged and `score 0` still 0.
 Tests in `tests/test_graph_topic_filter.py` (8, all three steps below).
 
-**One thing this does NOT establish.** The measurement is offline, over the
-112-triple CSV corpus, and it proves the junk is gone from the evidence
-block. Whether the gate now *answers* "What is the Garo population?" instead
-of refusing it needs the eight questions re-run against the deployed
-instance, which needs an API rebuild. Until then KNOWN_LIMITATIONS 27 stays
-open, narrowed to that one unverified sentence. **G2 is unblocked.**
+**Say what that number is, because it reads stronger than it is.** The
+harness defines off-topic as "returned by the graph path and *not* by the CSV
+path" (`tools/compare_retrieval_paths.py:155`). It measures **divergence
+between the two paths**, not topicality. Once both call the same
+`topic_focused` they agree, so 0 is arrived at by construction. Path parity
+is exactly what G1 set out to deliver and it delivered it. It is not a claim
+that off-topic evidence stopped reaching the model -- the live run on
+2026-10-29 still shows `TraditionalGaroHouses -[HAVE_PROPERTY]-> bamboo
+floor` under "What is the traditional religion of the Garo?", because
+"traditional" overlaps. **Quote this as "the two retrieval paths now agree".**
+See KNOWN_LIMITATIONS 27 for the full live numbers.
+
+**VERIFIED LIVE 2026-10-29, and the news is mixed.** Deployed to the
+instance (`76709d3`, API rebuilt, container `/app/rag.py` hash-checked
+against the checkout) and the eight questions re-run through
+`https://136.186.108.232.sslip.io/query`.
+
+*The win is real and it holds in production.* "What is the Garo population?"
+returned **10 triples before and 1 after**, the nine off-topic ones gone,
+and the question answered in **6s instead of 23s** because there is less
+evidence to translate.
+
+*The hoped-for win was never available.* The gate **still refuses** that
+question, on a single perfectly on-topic triple. The API log says the model
+judged the evidence irrelevant -- and it was right: the triple's
+`sentence_ref` is a count of *all* ethnic communities in Bangladesh, not the
+Garo, and a Cypher sweep confirms the graph holds **no** Garo population
+figure. The corpus cannot answer the question, so refusing is correct.
+**KNOWN_LIMITATIONS 27 is closed as not-a-defect**, and G1 should no longer
+be sold as a refusal fix -- no case of the gate refusing an answerable
+question has been found. **G2 is unblocked.**
 
 The original entry follows, because its measurements are the before-figures.
 
@@ -519,6 +545,54 @@ assume either figure.
 
 **Done when:** `--dry-run` lists exactly the intended merges, a real run reduces
 entity count, and a before/after triple count proves nothing was lost.
+
+## G5 — A triple's subject drops the scope that gives it meaning
+
+**Blocked by:** nothing · **Size:** unclear; measure before scoping
+
+**Found 2026-10-29**, as the thing KNOWN_LIMITATIONS 27 actually exposed
+once the refusal it reported turned out to be correct. The graph holds:
+
+```
+Population_Census_2022 -[POPULATION]-> 1,650,159
+  sentence_ref: In the Population Census of (2022), the number of people
+  belonging to ethnic communities living in Bangladesh is only 1,650,159
+```
+
+The subject names the census, the object names the number, and **the scope
+that gives the number its meaning -- *ethnic communities living in
+Bangladesh* -- survives only inside `sentence_ref`.** Read as a triple it is
+indistinguishable from a Garo population fact.
+
+**Two things went wrong because of that, which is why this is worth an
+entry.** The keyword ranker scored it top for "What is the Garo
+population?", a question it does not answer. And a human writing
+KNOWN_LIMITATIONS 27 read the triple list, concluded it *was* the answer,
+and filed a defect against the gate for correctly refusing it -- then
+argued from that defect that G1 would fix refusals. The gate was the only
+component in the chain that did not make the error.
+
+**Why this is not G3.** G3 is about the same entity under several names.
+This is one entity whose name is missing a qualifier it needs, which no
+amount of canonicalisation recovers.
+
+**Start by measuring, not fixing.** Nobody knows the rate. Sweep the 112
+triples for ones whose `sentence_ref` contains a restricting phrase absent
+from subject and object -- a place, a date, a population group, a
+"only"/"among"/"of those" construction -- and count them. If it is rare,
+this is a data-quality note for the handover and nothing more. If it is
+common, every grounded answer in the system is quoting facts stripped of
+their scope, which is a precision problem of the same family as
+limitation 18 and more serious than anything in Track T.
+
+**Do not fix it by feeding `sentence_ref` to the ranker.** That was tried
+in spirit already -- `passage` and `sentence_ref` are in the Cypher match
+and *not* in `_FIELD_WEIGHTS`, which is exactly the mismatch G1's
+`score > 0` cut exists to clean up. Matching more text would raise recall
+of mis-scoped triples, not lower it.
+
+**Done when:** the rate is a number in this file, and the decision to fix
+or accept is recorded with that number next to it.
 
 ---
 
