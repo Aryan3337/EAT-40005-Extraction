@@ -2160,15 +2160,18 @@ Answer:"""
         }
         return introductions.get(language, introductions[DEFAULT_LANGUAGE]) + " ".join(statements)
 
+    # One table, not two. This used to carry its own en/es/fr/hi/zh dict,
+    # which had no "bn" (a KeyError waiting for the first caller to pass
+    # one) and worded Hindi differently from _NO_EVIDENCE_MESSAGES. Nothing
+    # reached the divergence -- the only _fallback_answer caller passes
+    # DEFAULT_LANGUAGE -- so this closes a trap rather than fixing a fault.
+    # Falls back to English instead of raising: normalize_language already
+    # screens the API boundary, so an unsupported code here means an
+    # internal caller, and a refusal in the wrong language beats a 500.
     def _no_evidence_message(self, language: str) -> str:
-        messages = {
-            "en": "I could not find enough connected evidence to answer that question. Try naming a specific person, place, event, or relationship.",
-            "es": "No encontré suficiente evidencia relacionada para responder. Intenta mencionar una persona, un lugar, un evento o una relación específica.",
-            "fr": "Je n’ai pas trouvé suffisamment d’informations liées pour répondre. Essayez de nommer une personne, un lieu, un événement ou une relation précise.",
-            "hi": "इस प्रश्न का उत्तर देने के लिए पर्याप्त जुड़ी हुई जानकारी नहीं मिली। किसी व्यक्ति, स्थान, घटना या संबंध का नाम लेकर पूछें।",
-            "zh": "没有找到足够相关的信息来回答这个问题。请尝试指出具体的人物、地点、事件或关系。",
-        }
-        return messages[language]
+        return _NO_EVIDENCE_MESSAGES.get(
+            language, _NO_EVIDENCE_MESSAGES[DEFAULT_LANGUAGE]
+        )
 
     # Converts one graph triple into a readable, grounded sentence.
     def _format_triple(
@@ -2235,12 +2238,26 @@ Answer:"""
             sentence = translated_templates.get(language, {}).get(predicate_key)
             if sentence:
                 return sentence + ("。" if language == "zh" else ".")
+            # `.get`, not `[language]`. This dict is both dead and broken:
+            # es/fr/zh can no longer arrive (normalize_language screens them
+            # against ANSWER_LANGUAGES = en/hi/bn), and `bn`, which can, was
+            # the one key missing -- so every predicate raised KeyError for
+            # Bangla. Latent only, because _format_triple's single caller
+            # chain passes DEFAULT_LANGUAGE (rag.py:2000).
+            #
+            # The fallback renders the relation in no language rather than
+            # inventing Bangla grammar. This is the LLM-offline template
+            # path, and KNOWN_LIMITATIONS 29 is the record of what happens
+            # when unreviewed target-language text ships: a neutral
+            # subject-predicate-object line is honest, a guessed Bangla one
+            # is not. A real Bangla phrasing belongs with the T-track
+            # reviewer, not here.
             localized_relation = {
                 "es": f"relación «{raw_predicate}» con",
                 "fr": f"relation « {raw_predicate} » avec",
                 "hi": f"का संबंध «{raw_predicate}»",
                 "zh": f"通过“{raw_predicate}”关系关联到",
-            }[language]
+            }.get(language, f"«{raw_predicate}»")
             return f"{subject} {localized_relation} {obj}{'。' if language == 'zh' else '.'}"
 
         is_plural = self._is_plural_subject(subject)
