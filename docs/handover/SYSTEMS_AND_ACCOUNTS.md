@@ -217,10 +217,21 @@ Admin/owner access after handover:  __________________________________
 
    The runbook's deploy step says `-b dev` for the same reason.
 
-Current state of `dev` as handed over: **`1943bcc`** locally, `origin/dev` at
-`0075e22`, suite **577 passed / 0 failed** plus **103 Flutter tests**. The
-running server is intentionally one build behind at `76709d3` — the exact
-build the retrieval-precision work was verified on.
+Current state of `dev` as handed over: local, `origin/dev` and the **running
+server are all on `1692bc8`**, suite **577 passed / 0 failed** plus **103
+Flutter tests**. There is no split to reconcile — a condition worth
+re-checking rather than assuming, because it has been untrue twice in this
+project's history and both times something looked deployed that was not:
+
+```bash
+# on the server
+cd ~/EAT-40005-Extraction && git rev-parse --short HEAD
+docker exec p85_api sha256sum /app/rag.py && sha256sum rag.py   # must match
+```
+
+The second line is the one that matters. The first only tells you what is on
+the server's disk; a container keeps running the image it was built from, so
+a `git pull` with no rebuild leaves the two disagreeing silently.
 
 ---
 
@@ -228,16 +239,25 @@ build the retrieval-precision work was verified on.
 
 Real server-side accounts now: `POST /auth/register`, salted PBKDF2-SHA256
 password hashes (310,000 rounds) as `:User` nodes in AuraDB, opaque in-memory
-session tokens. **Four live accounts as at 29 Oct 2026** — teammates
-self-register, so read the current list from the admin dashboard
-(*Users*, or `GET /admin/users`) rather than trusting this table:
+session tokens. **Five live accounts as at 29 Oct 2026, 21:00: two admins
+and three teammates' own logins.**
 
-| Account | Role | Note |
-|---|---|---|
-| `mandiadmin` | admin | Legacy. Not an email address — written by hand in Cypher, predates the validator. **To be retired** once the shared account is confirmed working |
-| `s2026_eat40006_p85@outlook.com` | admin | Created 28 Oct. Password in `/mnt/data/admin_pw.txt` (mode 600) — replace it |
-| `betty231@gmail.com` / `betty` | user | A teammate, actively using the site |
-| `nuren24@gmail.com` / `nuren24` | user | A teammate, actively using the site |
+Only the two admin accounts below are part of the handover. The teammate
+logins are deliberately not listed here — they are personal data, they
+change without warning (one disappeared and two appeared in the 24 hours
+before handover), and nobody needs to inherit them. **Read the current
+list live** from the admin dashboard (*Users*, or `GET /admin/users`);
+never treat a list in a document as current.
+
+| Admin account | Note |
+|---|---|
+| `mandiadmin` | Legacy. Not an email address — written by hand in Cypher, predates the validator. **To be retired** once the shared account is confirmed working |
+| `s2026_eat40006_p85@outlook.com` | Created 28 Oct. Password in `/mnt/data/admin_pw.txt` (mode 600) — replace it |
+
+Before pruning any `user` account, ask the team who it belongs to.
+Deleting one destroys that person's saved conversations and feedback,
+and at least one current login is a bare-looking address that could
+easily be mistaken for a test account but has not been confirmed as one.
 
 ```
 Admin login to hand over:  s2026_eat40006_p85@outlook.com

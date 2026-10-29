@@ -1868,7 +1868,7 @@ loader -- the API has none.
 
 **The fix, cheapest first.**
 
-1. **DONE, WRITTEN BUT NOT DEPLOYED.** `config.NEO4J_LIVENESS_CHECK_TIMEOUT`
+1. **DONE AND DEPLOYED (29 Oct 2026, evening).** `config.NEO4J_LIVENESS_CHECK_TIMEOUT`
    (10s) is passed to both drivers, so the pool pings any connection idle
    longer than that and silently replaces a dead one. One shared constant,
    not two copies, because two copies drift -- this entry's neighbour T5
@@ -1883,10 +1883,28 @@ loader -- the API has none.
    `requirements.txt` and `requirements-serve.txt`, so re-check this if a
    future rebuild pulls a new major.
 
-   **Not deployed.** It was written on the day of the G1 verification, and
-   a second API rebuild would have signed every teammate out again and
-   moved the instance off the exact build G1 was verified on. It ships with
-   whatever the next deploy is.
+   **Deployed on the evening of 29 Oct 2026**, the night before handover,
+   alongside T5. It had been held back for a day because a second API
+   rebuild signs every teammate out and moves the instance off the exact
+   build G1 was verified on; what settled it was the API log showing a real
+   teammate register and log in successfully and then take a 502
+   `SessionExpired` on their very first `POST /query`. A defect that greets
+   a new user on their first question was not worth carrying into a
+   handover demo.
+
+   The instance now runs `1692bc8`. Verified after the rebuild:
+   `/app/config.py` and `/app/rag.py` hash-match the checkout, the constant
+   is present in the container, both drivers receive the kwarg, startup log
+   is clean, and one authenticated query returned 200 with 10 triples in
+   34s. `neo4j` resolved to 6.4.1 again on the rebuild (PyPI's current
+   release), so the unpinned-dependency risk above did not fire this time.
+
+   **What is *not* proven:** that the 502 is gone. The pool is empty after
+   a restart, so the first request succeeds whether or not the fix works.
+   Confirming it needs a genuine idle gap — leave the site alone for an
+   hour or so, then make one request and expect a 200 rather than a 502.
+   Until someone does that, this is "the documented fix for this exact
+   failure is live", not "measured fixed".
 
 2. **Still open, backlog.** Convert the API's `session.run()` call sites to
    `execute_read`/`execute_write`. This is the documented pattern and the

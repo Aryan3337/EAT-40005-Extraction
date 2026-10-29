@@ -23,10 +23,11 @@ Every number here was measured on the live system, not estimated.
 3. **It is a list of facts, not a web of them.** 139 of 159 entities appear in
    exactly one fact, so the system cannot answer "what connects X to Y". It
    retrieves single facts; it does not reason across them.
-4. **The first request after a quiet period fails, then works on retry.** The
-   database connection goes stale while idle. A user meets this as "the site
-   is broken" and then it is fine. A one-line fix is written and tested but
-   not yet deployed (§31).
+4. **The first request after a quiet period used to fail, then work on
+   retry.** The database connection went stale while idle, and a user met
+   this as "the site is broken" before it was fine. The fix was **deployed
+   on the evening of 29 Oct**; it has not yet been confirmed by a real idle
+   gap, so expect it to be gone but verify rather than promise (§31).
 5. **Answers are slow: typically 15–60 seconds, up to ~5 minutes.** Every
    question is answered three times over — English, Hindi and Bangla — because
    Bangla is the deliverable for users in Bangladesh (§28).
@@ -151,15 +152,27 @@ inside that, so after any quiet period every connection in the pool is dead.
 Nothing retries, because all 43 places the API talks to the database use the
 unmanaged call style the driver does not retry.
 
-**Status: fixed in code, tested, committed — and not deployed.** It ships with
-the next deployment, and does not change anything else. *(§31, with the
-driver's own source lines cited)*
+**Status: fixed, and deployed on the evening of 29 Oct** (instance now
+`1692bc8`). The fix tells the driver to ping any connection idle longer than
+10 seconds and replace it if it is dead. It changes nothing else.
+*(§31, with the driver's own source lines cited)*
 
-**It is affecting people now.** The live API log on the evening of 29 Oct
-shows a teammate signing in successfully and then getting a **502 on their
-very next question**, with `SessionExpired: Failed to read from defunct
-connection` underneath it — the exact fault above, on the current build,
-hours before the handover.
+**Why it was deployed the night before handover.** The live API log that
+evening showed a teammate signing in successfully and then getting a **502
+on their very next question**, with `SessionExpired: Failed to read from
+defunct connection` underneath it. A fault that greets a new user on their
+first question was not worth carrying into the demo.
+
+**Do not claim it is measured fixed.** A restart empties the connection
+pool, so the first request after a deployment succeeds whether or not the
+fix works. Proving it needs a real idle gap: leave the site alone for an
+hour, then ask one question and expect a 200. Worth doing in the first
+week — it is also the cheapest way to find out if the fix was wrong.
+
+Part two of this defect is still open: all 43 places the API talks to the
+database use the unmanaged call style the driver will not retry, so nothing
+recovers if a connection dies mid-request. That is a backlog item, not a
+one-liner.
 
 > This is the item most likely to be reported as "the chatbot is broken".
 > Deploying the fix is the cheapest reliability win available.
@@ -414,8 +427,10 @@ stored and why. *(§13, and `data/production_graph/README.md`)*
 
 ## G. If one week of work were available, in order
 
-1. **Deploy the idle-connection fix** (B1). Written, tested, not deployed —
-   the cheapest reliability win in the list.
+1. **Confirm the idle-connection fix actually worked** (B1). It was deployed
+   on 29 Oct but a restart hides the fault, so it is unproven: leave the
+   site idle an hour, ask one question, expect a 200. Five minutes of work
+   that either closes §31 or reopens it.
 2. **Finish the access handover**: second SSH key, console password, back up
    the credentials file, confirm the database tier (B3, B4).
 3. **Delete the old unauthenticated host** (D3).
