@@ -34,3 +34,8 @@ flutter_application/windows/flutter/generated_plugins.cmake
 # Nectar deploy: build output and secrets
 deploy/nectar/web/*
 !deploy/nectar/web/.gitkeep
+
+# The handover accounts inventory, with real credentials filled in. The
+# tracked docs/handover/SYSTEMS_AND_ACCOUNTS.md holds only placeholders;
+# a *.filled.md copy is the local one and must never be committed.
+docs/handover/*.filled.md

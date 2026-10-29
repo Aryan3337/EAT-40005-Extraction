@@ -482,22 +482,24 @@ Three things that have each cost a debugging session here:
 - **Every API rebuild signs every teammate out** -- sessions are held in
   memory, not in the database.
 
-**After editing `nginx.conf`, recreate the container -- a reload is not
-enough:**
+**After editing `nginx.conf`, rebuild the `web` image -- neither a reload
+nor a recreate is enough:**
 
 ```bash
-docker compose up -d --force-recreate web
+docker compose up -d --build web
 ```
 
-`nginx.conf` is a single-FILE bind mount, and almost everything that
-writes a file replaces it rather than editing it in place -- `git pull`,
-`tar -x`, `scp`, even `sed -i`. The replacement is a new inode, and the
-running container stays bound to the old one. So `nginx -s reload` cheerfully
-re-reads the file you thought you changed and reports success. Cost an
-entirely avoidable debugging detour on 2026-10-27.
+`nginx.conf` is baked into the image by `Dockerfile.web` as of `62b1378`,
+and nothing mounts it any more. So editing the file on disk changes nothing
+in the running container until the image is rebuilt -- `nginx -s reload` and
+`--force-recreate` will both report success and both serve the old config.
 
-The certificate mounts are DIRECTORY mounts and do not have this problem,
-which is why renewal pickup works with a plain reload.
+A rebuild of `web` recompiles the Flutter bundle, which takes several
+minutes. That is the whole cost: `web` holds no sessions, so rebuilding it
+does **not** sign anyone out. Only an `api` rebuild does that.
+
+The certificate mounts are DIRECTORY mounts, so renewal pickup still works
+with a plain reload and needs no rebuild.
 
 **Watching credit burn:** `m3.xlarge` costs 0.457 SU/hr, so the 4000 SU
 budget is about a year of continuous uptime. Check consumption under
