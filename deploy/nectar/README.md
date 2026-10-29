@@ -586,6 +586,37 @@ sudo sshd -T | grep -i '^passwordauthentication'   # must still say "no"
 break-glass is not a break-glass. Store the password wherever the team keeps
 shared credentials -- never in this repo.
 
+### Dashboard access is not server access
+
+They are different credentials and it is worth being precise about it:
+
+- **Nectar dashboard** (AAF / Swinburne login) — lets you reboot, shelve,
+  resize, open the console, and **rebuild**. As of 2026-10-29 six people
+  hold it on this project, three of them `tenantmanager`. Check
+  *Identity -> Projects -> Members* for the current list rather than
+  trusting a copy written here.
+- **SSH key** — lets you actually change anything *inside* the box: deploy,
+  read logs, restart a container, edit `.env`. Dashboard access grants none
+  of this.
+
+So the dashboard is the backstop, not the day job. It is also why the
+console password above matters more than it first appears: it is the switch
+that turns everyone's existing dashboard access into a real recovery path,
+without anyone needing a key.
+
+> **DO NOT CLICK "REBUILD" IN THE DASHBOARD.**
+>
+> It sits directly beside *Reboot* in the instance's action menu, and it is
+> the one button that cannot be undone. Rebuild re-images the root disk:
+> the IP changes, `136.186.108.232.sslip.io` stops resolving to us, the
+> certificate no longer matches, `~/.ssh/authorized_keys` is reset to the
+> launch keypair, and `deploy/nectar/.env` — with the AuraDB credentials —
+> is gone. *Reboot* is safe and the stack comes back on its own (docker is
+> enabled, all four services are `restart: unless-stopped`).
+>
+> If the site is misbehaving, reboot or restart a container. Never rebuild
+> without reading the next section first.
+
 ### What a lockout actually costs
 
 If every key is lost and there is no console password, the only option is a
