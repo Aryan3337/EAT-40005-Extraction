@@ -72,3 +72,24 @@ def resolve_neo4j_uri(raw):
 URI = resolve_neo4j_uri(os.getenv("NEO4J_URI"))
 USERNAME = os.getenv("NEO4J_USERNAME")
 PASSWORD = os.getenv("NEO4J_PASSWORD")
+
+
+# Seconds a pooled connection may sit idle before the driver pings it on the
+# way out of the pool. KNOWN_LIMITATIONS 31: the neo4j default is None, which
+# means *never check*, and `max_connection_lifetime` is 3600 -- so the pool
+# would hand out a socket that had been idle for up to an hour. AuraDB (or
+# the NAT on the way out of Nectar) reaps idle TCP long before that, and the
+# first request after a quiet period died on the dead socket: HTTP 503 from
+# sign-in, 502 from a query, succeeding on an immediate retry.
+#
+# This is the cheap half of the fix. The real one is managed transactions
+# (`execute_read`/`execute_write`), which retry `SessionExpired` and
+# `ServiceUnavailable` for you; all 43 production call sites use unmanaged
+# `session.run()` and so retry nothing. That conversion is backlog.
+#
+# 10s because the ping costs one round trip and only happens on a connection
+# that has been idle at least that long, so a busy API pays nothing.
+# Deliberately ONE constant shared by both drivers (auth_store.py and
+# Neo4jRAGSkeleton) -- two copies would drift the way the two refusal message
+# tables did.
+NEO4J_LIVENESS_CHECK_TIMEOUT = 10.0

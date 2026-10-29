@@ -778,7 +778,12 @@ class Neo4jRAGSkeleton:
 
     # Opens a Neo4j driver using the project's environment configuration.
     def __init__(self):
-        from config import PASSWORD, URI, USERNAME
+        from config import (
+            NEO4J_LIVENESS_CHECK_TIMEOUT,
+            PASSWORD,
+            URI,
+            USERNAME,
+        )
 
         if GraphDatabase is None:
             raise ImportError("The 'neo4j' package is required to use Neo4jRAGSkeleton. Install it with 'pip install neo4j'.")
@@ -790,7 +795,14 @@ class Neo4jRAGSkeleton:
         if not uri or not username or not password:
             raise ValueError("Neo4j configuration is incomplete. Set URI, USERNAME, and PASSWORD in config or environment.")
 
-        self.driver = GraphDatabase.driver(uri, auth=(username, password))
+        # liveness_check_timeout: see config.NEO4J_LIVENESS_CHECK_TIMEOUT
+        # and KNOWN_LIMITATIONS 31. Without it the first query after an
+        # idle gap returned 502 on a connection AuraDB had already reaped.
+        self.driver = GraphDatabase.driver(
+            uri,
+            auth=(username, password),
+            liveness_check_timeout=NEO4J_LIVENESS_CHECK_TIMEOUT,
+        )
 
     # Finds graph relationships whose entities or source text match the question.
     def query(self, question: str, top_k: int = DEFAULT_TOP_K) -> List[Dict]:

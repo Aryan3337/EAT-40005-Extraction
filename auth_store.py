@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from neo4j import GraphDatabase
 
-from config import PASSWORD, URI, USERNAME
+from config import NEO4J_LIVENESS_CHECK_TIMEOUT, PASSWORD, URI, USERNAME
 
 
 class AuthStore:
@@ -22,7 +22,14 @@ class AuthStore:
                 "NEO4J_URI, NEO4J_USERNAME and NEO4J_PASSWORD are required "
                 "for authentication."
             )
-        self._driver = GraphDatabase.driver(URI, auth=(USERNAME, PASSWORD))
+        # liveness_check_timeout: see config.NEO4J_LIVENESS_CHECK_TIMEOUT
+        # and KNOWN_LIMITATIONS 31. Without it the first sign-in after an
+        # idle gap returned 503 on a connection AuraDB had already reaped.
+        self._driver = GraphDatabase.driver(
+            URI,
+            auth=(USERNAME, PASSWORD),
+            liveness_check_timeout=NEO4J_LIVENESS_CHECK_TIMEOUT,
+        )
         self._sessions: Dict[str, Dict[str, str]] = {}
         with self._driver.session() as session:
             session.run(

@@ -1866,19 +1866,33 @@ absorbing. The only managed transaction in the repo is
 `neo4j_loader/insert.py:91` (`session.execute_write`), in the offline
 loader -- the API has none.
 
-**The fix, cheapest first.** Not applied: this was found during a deploy
-authorised for the G1 verification alone, and changing connection
-behaviour in the same rebuild would have confounded that measurement.
+**The fix, cheapest first.**
 
-1. Pass `liveness_check_timeout` (e.g. 10s) to both drivers. **Two lines,
-   no call-site changes.** The pool then pings any connection idle longer
-   than that and silently replaces a dead one. This removes the
-   user-visible fault.
-2. Convert the API's `session.run()` call sites to
+1. **DONE, WRITTEN BUT NOT DEPLOYED.** `config.NEO4J_LIVENESS_CHECK_TIMEOUT`
+   (10s) is passed to both drivers, so the pool pings any connection idle
+   longer than that and silently replaces a dead one. One shared constant,
+   not two copies, because two copies drift -- this entry's neighbour T5
+   exists because two message tables did exactly that. Tests in
+   `tests/test_neo4j_pool_config.py`.
+
+   **Verified the kwarg is real, not silently swallowed:** neo4j **6.4.1**
+   (what the container runs) accepts `liveness_check_timeout=10.0`, and an
+   unknown kwarg is rejected with `ConfigurationError` -- so acceptance is
+   validation, not tolerance. Local 6.2.0 accepts it too, so there is no
+   version skew for a developer run. `neo4j` is **unpinned** in
+   `requirements.txt` and `requirements-serve.txt`, so re-check this if a
+   future rebuild pulls a new major.
+
+   **Not deployed.** It was written on the day of the G1 verification, and
+   a second API rebuild would have signed every teammate out again and
+   moved the instance off the exact build G1 was verified on. It ships with
+   whatever the next deploy is.
+
+2. **Still open, backlog.** Convert the API's `session.run()` call sites to
    `execute_read`/`execute_write`. This is the documented pattern and the
-   real robustness fix, but it is 43 call sites and wants its own testing.
-
-(1) is a sensible thing to ship on its own. (2) is backlog.
+   real robustness fix -- (1) prevents the common case, (2) is what actually
+   recovers when a connection dies mid-request anyway. 43 call sites, wants
+   its own testing.
 
 **Do not "fix" this by raising a timeout or adding a retry loop in the HTTP
 handler.** The connection is dead, not slow -- waiting longer cannot help,
