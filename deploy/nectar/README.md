@@ -453,15 +453,34 @@ docker compose ps                    # what is running
 docker compose logs -f api           # follow API logs
 docker compose restart api           # restart just the API
 docker compose down                  # stop everything
-docker compose up -d --build         # rebuild after a git pull
+docker compose build api             # rebuild ONLY the backend
+docker compose up -d api             # and swap it in
 ```
 
-**Updating after a code change:**
+**Updating after a code change.** `api` and `web` BOTH have a `build:`
+stanza, so `docker compose up -d --build` rebuilds the Flutter web image as
+well -- a full toolchain build for what is usually a backend-only change.
+Build the service you actually changed:
 
 ```bash
-cd ~/EAT-40005-Extraction && git pull
-cd deploy/nectar && docker compose up -d --build
+cd ~/EAT-40005-Extraction
+git fetch origin && git checkout -B dev origin/dev   # the instance tracks dev
+cd deploy/nectar
+
+docker compose build api && docker compose up -d api   # backend change
+docker compose build web && docker compose up -d web   # flutter_application/ change
 ```
+
+Three things that have each cost a debugging session here:
+
+- **Rebuilding `api` does not rebuild `web`,** or the reverse. On
+  2026-10-28 the API was current while the web bundle was three hours
+  stale, so a finished backend feature had no UI able to reach it.
+- **Verify what actually deployed** rather than trusting the build:
+  `docker exec p85_api sha256sum /app/rag.py` against `sha256sum rag.py`
+  in the checkout.
+- **Every API rebuild signs every teammate out** -- sessions are held in
+  memory, not in the database.
 
 **After editing `nginx.conf`, recreate the container -- a reload is not
 enough:**
@@ -487,6 +506,106 @@ budget is about a year of continuous uptime. Check consumption under
 Shutting an instance off is not the same as shelving it —
 `openstack server shelve` releases the resources, while a shut-off instance
 may keep accruing SU. Confirm with Nectar support before relying on either.
+
+## Access: who can get into the box
+
+**Read this before the handover, not after.** Audited 2026-10-29.
+
+The instance accepts **public-key SSH only**, as one user:
+
+```
+ssh -i ~/.ssh/p85_nectar ubuntu@136.186.108.232
+```
+
+Everything else is shut, and that is deliberate -- but it means there is no
+second way in:
+
+| Door | State |
+|---|---|
+| SSH password | `PasswordAuthentication no` |
+| Root over SSH | `PermitRootLogin no` |
+| Nectar dashboard VNC console | `ubuntu` password **locked** -- nothing to type |
+| SSH key | the only route |
+
+`ubuntu` has `NOPASSWD:ALL`, so anyone holding a key has full root.
+
+**Adding a keypair in the Nectar dashboard does nothing to a running
+instance.** OpenStack injects a keypair at launch only. Editing
+`~/.ssh/authorized_keys` is the only way to grant access to a box that is
+already up.
+
+### Adding someone's key
+
+Get their **public** key (`ssh-ed25519 AAAA... name@host`, one line, from
+`~/.ssh/id_ed25519.pub`). If what you were sent begins `-----BEGIN`, that is
+a *private* key -- stop, tell them, and ask for the `.pub`.
+
+```bash
+# On the instance. APPEND -- a single > wipes the only key you have.
+echo 'ssh-ed25519 AAAA... alice@laptop' >> ~/.ssh/authorized_keys
+
+chmod 600 ~/.ssh/authorized_keys        # sshd ignores the file if it is group/world readable
+ssh-keygen -l -f ~/.ssh/authorized_keys # one fingerprint per key: check the count went up
+```
+
+**Then verify from a second terminal, with the first one still open.**
+
+```bash
+ssh -i ~/.ssh/<their-key> ubuntu@136.186.108.232 'echo OK; whoami'
+```
+
+If that prints `OK` and `ubuntu`, the key works. Only then close the original
+session. If you close it first and the key is malformed, nobody can get back
+in -- a malformed line is silently ignored, it does not raise an error.
+
+A key added this way **survives reboots**: cloud-init's `config_ssh` and
+`config_users_groups` carry per-instance semaphores that are already
+satisfied, so they re-run only if the instance-id changes -- a rebuild, not a
+reboot. Verified 2026-10-29.
+
+### Removing someone's key
+
+Delete their line from `~/.ssh/authorized_keys` and re-check the fingerprint
+count. Revocation is per-key, which is the whole reason to add individual
+keys rather than pass one private key around.
+
+### Break-glass: the console password
+
+Because SSH password auth is off, a password on `ubuntu` is usable **only**
+from the Nectar dashboard's console, which already requires a Nectar/AAF
+login. That makes it the one recovery path that does **not** change the
+instance's IP.
+
+```bash
+sudo passwd ubuntu          # set it
+sudo passwd -S ubuntu       # expect P (usable), not L (locked)
+sudo sshd -T | grep -i '^passwordauthentication'   # must still say "no"
+```
+
+**Then actually test it from the dashboard console, once.** An untested
+break-glass is not a break-glass. Store the password wherever the team keeps
+shared credentials -- never in this repo.
+
+### What a lockout actually costs
+
+If every key is lost and there is no console password, the only option is a
+dashboard **rebuild**:
+
+- **The IP changes.** There is no floating IP (section 4), so
+  `136.186.108.232.sslip.io` stops working, every link handed to teammates
+  and the client breaks, and the certificate must be reissued for the new
+  name -- staging-first, because sslip.io shares one Let's Encrypt rate
+  limit (section 7).
+- **`deploy/nectar/.env` is on the root disk and goes with it**, taking the
+  AuraDB credentials. Recoverable from the Aura console; it is the only
+  irreplaceable thing not on the volume.
+- **The 20 GiB volume survives** and carries what matters: ollama models,
+  the NLLB weights, `uploads/` (admitted papers and the review queue),
+  extraction output, and the Let's Encrypt certificates. Detach and reattach
+  it.
+
+So a lockout is recoverable, and what it costs is the URL. Keep more than one
+person holding a key.
 
 ## Troubleshooting
 
