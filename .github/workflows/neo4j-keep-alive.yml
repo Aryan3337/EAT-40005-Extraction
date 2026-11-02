@@ -1,0 +1,24 @@
+name: Neo4j keep-alive
+
+# Aura Free pauses after ~3 days idle. GitHub cron cannot express "every 2.5
+# days", so this runs on odd days of the month (gap is 2 days, 1 day at month
+# end) -- always under 3 days.
+on:
+  schedule:
+    - cron: "0 2 1-31/2 * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install neo4j python-dotenv
+      - run: python keep_alive.py
+        env:
+          NEO4J_URI: ${{ secrets.NEO4J_URI }}
+          NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+          NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
